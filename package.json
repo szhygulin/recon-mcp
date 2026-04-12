@@ -1,0 +1,54 @@
+{
+  "name": "recon-mcp",
+  "version": "0.1.0",
+  "description": "MCP server providing AI agents with real-time DeFi position, security, staking, and portfolio intelligence, with Ledger Live transaction signing via WalletConnect.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "recon-mcp": "dist/index.js",
+    "recon-mcp-setup": "dist/setup.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "setup": "node dist/setup.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "mcp",
+    "defi",
+    "ethereum",
+    "aave",
+    "uniswap",
+    "lido",
+    "eigenlayer",
+    "ledger",
+    "walletconnect"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@lifi/sdk": "^3.16.3",
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@walletconnect/sign-client": "^2.17.0",
+    "@walletconnect/utils": "^2.17.0",
+    "qrcode-terminal": "^0.12.0",
+    "viem": "^2.21.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  }
+}
