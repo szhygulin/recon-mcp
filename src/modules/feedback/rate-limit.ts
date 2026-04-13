@@ -13,12 +13,12 @@ type FeedbackEvent = { ts: number; hash: string };
 
 /**
  * The state-file path is computed lazily from an env-var override so tests can
- * redirect writes into a temp dir. Default: `~/.recon-mcp/feedback-log.json`.
+ * redirect writes into a temp dir. Default: `~/.recon-crypto-mcp/feedback-log.json`.
  */
 function getStateFilePath(): string {
   return (
-    process.env.RECON_MCP_FEEDBACK_STATE_FILE ??
-    join(homedir(), ".recon-mcp", "feedback-log.json")
+    process.env.RECON_FEEDBACK_STATE_FILE ??
+    join(homedir(), ".recon-crypto-mcp", "feedback-log.json")
   );
 }
 

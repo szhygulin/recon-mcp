@@ -353,7 +353,7 @@ describe("L1: writeUserConfig refuses symlinks at the target path", () => {
   let originalHome: string | undefined;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "recon-mcp-test-"));
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-crypto-mcp-test-"));
     originalHome = process.env.HOME;
     process.env.HOME = tmpDir;
     vi.resetModules();
@@ -368,7 +368,7 @@ describe("L1: writeUserConfig refuses symlinks at the target path", () => {
   it("throws when config.json is a symlink to another file", async () => {
     // Pre-place config.json as a symlink pointing at a sensitive file path.
     // writeUserConfig must refuse rather than clobber the symlink target.
-    const configDir = join(tmpDir, ".recon-mcp");
+    const configDir = join(tmpDir, ".recon-crypto-mcp");
     const { mkdirSync } = await import("node:fs");
     mkdirSync(configDir, { recursive: true });
     const target = join(tmpDir, "victim.txt");
@@ -400,7 +400,7 @@ describe("L2: patchUserConfig rpc-change hook", () => {
   let originalHome: string | undefined;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "recon-mcp-test-"));
+    tmpDir = mkdtempSync(join(tmpdir(), "recon-crypto-mcp-test-"));
     originalHome = process.env.HOME;
     process.env.HOME = tmpDir;
     vi.resetModules();

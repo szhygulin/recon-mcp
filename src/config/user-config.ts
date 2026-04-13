@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import type { UserConfig } from "../types/index.js";
 
-const CONFIG_DIR = join(homedir(), ".recon-mcp");
+const CONFIG_DIR = join(homedir(), ".recon-crypto-mcp");
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 
 /** Read the user config file; returns null if it doesn't exist. Throws on malformed JSON. */
@@ -14,7 +14,7 @@ export function readUserConfig(): UserConfig | null {
     return JSON.parse(raw) as UserConfig;
   } catch (err) {
     throw new Error(
-      `~/.recon-mcp/config.json is malformed: ${(err as Error).message}. Delete it or re-run \`recon-mcp-setup\`.`
+      `~/.recon-crypto-mcp/config.json is malformed: ${(err as Error).message}. Delete it or re-run \`recon-crypto-mcp-setup\`.`
     );
   }
 }
@@ -24,7 +24,7 @@ export function writeUserConfig(config: UserConfig): void {
     mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   }
   // Refuse to follow symlinks or hardlinks when writing the config. A local
-  // attacker with write access to ~/.recon-mcp (or with a race-window before
+  // attacker with write access to ~/.recon-crypto-mcp (or with a race-window before
   // first-run setup creates the dir) could pre-place config.json as a symlink
   // to another file (~/.ssh/authorized_keys, ~/.bashrc, etc.) so the next
   // writeFileSync clobbers it. lstatSync on the path (not following the link)

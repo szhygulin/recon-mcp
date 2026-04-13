@@ -12,7 +12,7 @@ import {
 
 /**
  * Default WalletConnect Cloud project ID. Users should provide their own via
- * WALLETCONNECT_PROJECT_ID or `recon-mcp-setup` — the default is a placeholder
+ * WALLETCONNECT_PROJECT_ID or `recon-crypto-mcp-setup` — the default is a placeholder
  * that will 401 against production relay. We keep a constant here so the code
  * compiles; `getProjectId()` will throw if a real ID is not set.
  */
@@ -58,7 +58,7 @@ function getProjectId(): string {
   const id = resolveWalletConnectProjectId(readUserConfig()) || DEFAULT_PROJECT_ID;
   if (!id) {
     throw new Error(
-      "No WalletConnect project ID configured. Set WALLETCONNECT_PROJECT_ID in your env or re-run `recon-mcp-setup`. " +
+      "No WalletConnect project ID configured. Set WALLETCONNECT_PROJECT_ID in your env or re-run `recon-crypto-mcp-setup`. " +
         "Create a free project at https://cloud.walletconnect.com."
     );
   }
@@ -67,16 +67,16 @@ function getProjectId(): string {
 
 export async function getSignClient(): Promise<InstanceType<typeof SignClient>> {
   if (client) return client;
-  // Persist WC symkey/pairing/session state under ~/.recon-mcp so it survives process exit.
+  // Persist WC symkey/pairing/session state under ~/.recon-crypto-mcp so it survives process exit.
   // Without this, the SignClient defaults to an unstorage path in cwd — which Claude Code
   // kills on exit, leaving the saved session topic useless (no keys to decrypt the relay).
   const storageDbPath = join(getConfigDir(), "walletconnect.db");
   client = await SignClient.init({
     projectId: getProjectId(),
     metadata: {
-      name: "Recon MCP",
+      name: "Recon Crypto MCP",
       description: "MCP server that prepares DeFi transactions for Ledger Live signing.",
-      url: "https://github.com/",
+      url: "https://github.com/szhygulin/recon-crypto-mcp",
       icons: [],
     },
     storageOptions: { database: storageDbPath },
@@ -211,7 +211,7 @@ export async function requestSendTransaction(tx: UnsignedTx): Promise<`0x${strin
   const c = await getSignClient();
   if (!currentSession) {
     throw new Error(
-      "No active WalletConnect session. Pair Ledger Live first via `pair_ledger_live` or `recon-mcp-setup`."
+      "No active WalletConnect session. Pair Ledger Live first via `pair_ledger_live` or `recon-crypto-mcp-setup`."
     );
   }
   const chainId = CHAIN_IDS[tx.chain];

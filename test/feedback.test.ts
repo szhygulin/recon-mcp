@@ -12,12 +12,12 @@ let stateFile: string;
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "recon-feedback-"));
   stateFile = join(tmpDir, "feedback-log.json");
-  process.env.RECON_MCP_FEEDBACK_STATE_FILE = stateFile;
+  process.env.RECON_FEEDBACK_STATE_FILE = stateFile;
   delete process.env.RECON_FEEDBACK_ENDPOINT;
 });
 
 afterEach(() => {
-  delete process.env.RECON_MCP_FEEDBACK_STATE_FILE;
+  delete process.env.RECON_FEEDBACK_STATE_FILE;
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -135,8 +135,8 @@ describe("requestCapability (prefilled URL mode)", () => {
       description: "User asked for Pendle positions; no existing tool reads them.",
     })) as { status: string; issueUrl: string; repo: string; rateLimit: unknown };
     expect(res.status).toBe("prefilled_url");
-    expect(res.issueUrl).toMatch(/^https:\/\/github\.com\/szhygulin\/recon-mcp\/issues\/new\?/);
-    expect(res.repo).toBe("szhygulin/recon-mcp");
+    expect(res.issueUrl).toMatch(/^https:\/\/github\.com\/szhygulin\/recon-crypto-mcp\/issues\/new\?/);
+    expect(res.repo).toBe("szhygulin/recon-crypto-mcp");
     expect(res.rateLimit).toEqual(RATE_LIMITS);
   });
 

@@ -175,16 +175,16 @@ async function main() {
   const hasEnvProvider = process.env.RPC_PROVIDER && process.env.RPC_API_KEY;
   if (!cfg && !hasEnvChain && !hasEnvProvider) {
     console.error(
-      "[recon-mcp] warning: no RPC provider configured. Run `recon-mcp-setup` or set RPC_PROVIDER + RPC_API_KEY."
+      "[recon-crypto-mcp] warning: no RPC provider configured. Run `recon-crypto-mcp-setup` or set RPC_PROVIDER + RPC_API_KEY."
     );
   }
 
   const server = new McpServer(
     {
-      name: "recon-mcp",
+      name: "recon-crypto-mcp",
       title: "Recon — Ledger-Signed Crypto Portfolio & DeFi",
       version: "0.1.0",
-      websiteUrl: "https://github.com/szhygulin/recon-mcp",
+      websiteUrl: "https://github.com/szhygulin/recon-crypto-mcp",
     },
     {
       instructions: [
@@ -230,7 +230,7 @@ async function main() {
         "",
         "CAPABILITY GAPS: if the user asks for something this server cannot do (unsupported",
         "protocol, chain, token, or a workflow none of the existing tools cover), call",
-        "`request_capability` to file a GitHub issue on the recon-mcp repo. By default it",
+        "`request_capability` to file a GitHub issue on the recon-crypto-mcp repo. By default it",
         "returns a prefilled URL for the user to click — nothing is sent automatically. Use",
         "this only after confirming no existing tool fits; it is rate-limited (3/hour,",
         "10/day, dedup'd for 7 days). Never substitute this for completing the task.",
@@ -688,7 +688,7 @@ async function main() {
     "request_capability",
     {
       description:
-        "File a capability request against the recon-mcp GitHub repository when the user asks for something this server cannot do " +
+        "File a capability request against the recon-crypto-mcp GitHub repository when the user asks for something this server cannot do " +
         "(e.g. an unsupported protocol, chain, token, or missing tool). " +
         "USE ONLY AFTER confirming no existing tool can accomplish the task. " +
         "By default this returns a pre-filled GitHub issue URL — NO data is transmitted; the user must click through to submit. " +
@@ -705,6 +705,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[recon-mcp] fatal:", err);
+  console.error("[recon-crypto-mcp] fatal:", err);
   process.exit(1);
 });

@@ -60,7 +60,7 @@ export async function verifyChainId(chain: SupportedChain): Promise<void> {
     throw new Error(
       `RPC for ${chain} returned chainId ${actual}, expected ${expected}. ` +
         `The configured endpoint does NOT point at ${chain} — refusing to proceed. ` +
-        `Fix via \`recon-mcp-setup\` or the relevant env var.`
+        `Fix via \`recon-crypto-mcp-setup\` or the relevant env var.`
     );
   }
   verifiedChains.add(chain);

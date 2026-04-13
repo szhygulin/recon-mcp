@@ -233,7 +233,7 @@ export interface UnsignedTx {
   handle?: string;
 }
 
-/** Shape of ~/.recon-mcp/config.json. */
+/** Shape of ~/.recon-crypto-mcp/config.json. */
 export interface UserConfig {
   rpc: {
     provider: RpcProvider;

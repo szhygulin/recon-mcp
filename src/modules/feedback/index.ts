@@ -2,9 +2,9 @@ import { requestCapabilityInput, type RequestCapabilityArgs } from "./schemas.js
 import { checkAndRecord, hashPayload, RATE_LIMITS } from "./rate-limit.js";
 
 const REPO_OWNER = "szhygulin";
-const REPO_NAME = "recon-mcp";
+const REPO_NAME = "recon-crypto-mcp";
 const ISSUE_LABEL = "agent-request";
-const USER_AGENT = "recon-mcp/0.1.0 capability-request";
+const USER_AGENT = "recon-crypto-mcp/0.1.0 capability-request";
 const POST_TIMEOUT_MS = 8_000;
 const MAX_POST_BODY_BYTES = 16_384;
 const MAX_PREFILLED_URL_BYTES = 7168;
@@ -64,7 +64,7 @@ export async function requestCapability(args: RequestCapabilityArgs) {
   return {
     status: "prefilled_url" as const,
     message:
-      "No data has been transmitted. Show this URL to the user — opening it prefills a GitHub issue on the recon-mcp repo; " +
+      "No data has been transmitted. Show this URL to the user — opening it prefills a GitHub issue on the recon-crypto-mcp repo; " +
       "submission requires the user to click 'Submit new issue'." +
       (truncated
         ? " The issue body was truncated to fit GitHub's prefilled-URL length limit; tell the user to paste the full context into the issue before submitting."
@@ -113,7 +113,7 @@ function buildIssueBody(opts: {
 
   const agent = opts.agentName ? neutralizeMentions(opts.agentName) : undefined;
   const footer =
-    "_Submitted via the `request_capability` tool in recon-mcp by an AI agent" +
+    "_Submitted via the `request_capability` tool in recon-crypto-mcp by an AI agent" +
     (agent ? ` (${agent})` : "") +
     "._";
   lines.push("---", footer);

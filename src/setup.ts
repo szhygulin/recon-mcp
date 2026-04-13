@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * Interactive setup for Recon MCP.
+ * Interactive setup for Recon Crypto MCP.
  *
  *   - Picks an RPC provider (Infura / Alchemy / custom) and validates the API key
  *     against a live eth_chainId call.
  *   - Optionally captures an Etherscan API key (improves contract-verification tools).
  *   - Optionally captures a WalletConnect Cloud project ID.
  *   - Optionally pairs Ledger Live over WalletConnect right now.
- *   - Persists everything to ~/.recon-mcp/config.json (0600) and prints a Claude
- *     Desktop config snippet the user can copy.
+ *   - Persists everything to ~/.recon-crypto-mcp/config.json (0600) and prints a
+ *     Claude Desktop config snippet the user can copy.
  *
  * Env vars always override the config file at runtime — the setup flow is for
  * users who'd rather not manage env vars.
@@ -214,10 +214,10 @@ async function pairLedgerLiveFlow(p: Prompt): Promise<void> {
 }
 
 function printClaudeDesktopSnippet(): void {
-  const binPath = "recon-mcp"; // installed via `npm i -g recon-mcp`
+  const binPath = "recon-crypto-mcp"; // installed via `npm i -g recon-crypto-mcp`
   const snippet = {
     mcpServers: {
-      "recon-mcp": {
+      "recon-crypto-mcp": {
         command: binPath,
       },
     },
@@ -230,7 +230,7 @@ function printClaudeDesktopSnippet(): void {
       JSON.stringify(
         {
           mcpServers: {
-            "recon-mcp": {
+            "recon-crypto-mcp": {
               command: "node",
               args: [`${process.cwd()}/dist/index.js`],
             },
@@ -243,7 +243,7 @@ function printClaudeDesktopSnippet(): void {
 }
 
 async function main() {
-  console.log("Recon MCP — interactive setup\n");
+  console.log("Recon Crypto MCP — interactive setup\n");
   console.log(`Config path: ${getConfigPath()}`);
 
   const p = new Prompt();

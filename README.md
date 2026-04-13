@@ -1,8 +1,12 @@
-# Recon MCP
+# Recon Crypto MCP
+
+[![npm version](https://img.shields.io/npm/v/recon-crypto-mcp.svg)](https://www.npmjs.com/package/recon-crypto-mcp)
+[![license](https://img.shields.io/npm/l/recon-crypto-mcp.svg)](./LICENSE)
+[![node](https://img.shields.io/node/v/recon-crypto-mcp.svg)](package.json)
 
 **Self-custodial crypto portfolio and DeFi, managed by AI agents — signed on your Ledger hardware wallet.**
 
-Recon MCP is a Model Context Protocol server that lets AI agents — **Claude Code, Claude Desktop, Cursor**, and any MCP-compatible client — read your on-chain positions across **Ethereum, Arbitrum, and Polygon** and prepare EVM transactions that you sign on your **Ledger device via WalletConnect**. Your private keys never leave the hardware wallet, and every transaction is previewed in human-readable form before you approve it on the device.
+Recon Crypto MCP is a Model Context Protocol server that lets AI agents — **Claude Code, Claude Desktop, Cursor**, and any MCP-compatible client — read your on-chain positions across **Ethereum, Arbitrum, and Polygon** and prepare EVM transactions that you sign on your **Ledger device via WalletConnect**. Your private keys never leave the hardware wallet, and every transaction is previewed in human-readable form before you approve it on the device.
 
 Supported protocols: **Aave V3, Compound V3 (Comet), Morpho Blue, Uniswap V3 LP, Lido (stETH/wstETH), EigenLayer**, plus **LiFi** for swap/bridge aggregation and **1inch** for optional intra-chain quote comparison.
 
@@ -57,7 +61,7 @@ Read-only (no Ledger pairing required):
 
 Meta:
 
-- `request_capability` — agent-facing escape hatch: files a GitHub issue on this repo when the user asks for something recon-mcp can't do (new protocol, new chain, missing tool). Default mode returns a pre-filled issue URL (zero spam risk — user must click to submit). Operators can set `RECON_FEEDBACK_ENDPOINT` to a proxy that posts directly. Rate-limited: 30s between calls, 3/hour, 10/day, 7-day dedupe on identical summaries.
+- `request_capability` — agent-facing escape hatch: files a GitHub issue on this repo when the user asks for something recon-crypto-mcp can't do (new protocol, new chain, missing tool). Default mode returns a pre-filled issue URL (zero spam risk — user must click to submit). Operators can set `RECON_FEEDBACK_ENDPOINT` to a proxy that posts directly. Rate-limited: 30s between calls, 3/hour, 10/day, 7-day dedupe on identical summaries.
 
 Execution (Ledger-signed via WalletConnect):
 
@@ -79,14 +83,25 @@ Execution (Ledger-signed via WalletConnect):
 
 ## Install
 
+### From npm (recommended)
+
 ```bash
+npm install -g recon-crypto-mcp
+recon-crypto-mcp-setup
+```
+
+### From source
+
+```bash
+git clone https://github.com/szhygulin/recon-crypto-mcp.git
+cd recon-crypto-mcp
 npm install
 npm run build
 ```
 
 ## Setup
 
-Run the interactive setup to pick an RPC provider, validate the key, optionally pair Ledger Live, and write `~/.recon-mcp/config.json`:
+Run the interactive setup to pick an RPC provider, validate the key, optionally pair Ledger Live, and write `~/.recon-crypto-mcp/config.json`:
 
 ```bash
 npm run setup
@@ -101,19 +116,20 @@ Add to `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "recon-mcp": {
-      "command": "node",
-      "args": ["/absolute/path/to/recon-mcp/dist/index.js"]
+    "recon-crypto-mcp": {
+      "command": "recon-crypto-mcp"
     }
   }
 }
 ```
 
+(If you installed from source rather than via `npm i -g`, swap `"command": "recon-crypto-mcp"` for `"command": "node"` and `"args": ["/absolute/path/to/recon-crypto-mcp/dist/index.js"]`.)
+
 The setup script prints a ready-to-paste snippet.
 
 ## Environment variables
 
-All are optional if the matching field is in `~/.recon-mcp/config.json`; env vars take precedence when both are set.
+All are optional if the matching field is in `~/.recon-crypto-mcp/config.json`; env vars take precedence when both are set.
 
 - `ETHEREUM_RPC_URL`, `ARBITRUM_RPC_URL`, `POLYGON_RPC_URL` — custom RPC endpoints
 - `RPC_PROVIDER` (`infura` | `alchemy`) + `RPC_API_KEY` — alternative to custom URLs
@@ -121,7 +137,8 @@ All are optional if the matching field is in `~/.recon-mcp/config.json`; env var
 - `ONEINCH_API_KEY` — enables 1inch quote comparison in `get_swap_quote`
 - `WALLETCONNECT_PROJECT_ID` — required for Ledger Live signing
 - `RPC_BATCH=1` — opt into JSON-RPC batching (off by default; many public endpoints mishandle batched POSTs)
-- `RECON_FEEDBACK_ENDPOINT` — optional https URL for `request_capability` to POST directly (e.g. a maintainer-operated proxy that creates GitHub issues with a bot token). When unset (the default), `request_capability` returns a pre-filled GitHub issue URL for the user to click through; nothing is transmitted automatically. **Operator responsibility:** the recon-mcp client does not sign or authenticate POST requests. If you set this endpoint, the proxy MUST enforce its own auth (IP allowlist, Cloudflare Access, HMAC header validation, etc.) — otherwise any caller who learns the URL can submit to it. The on-process rate limiter (3/hour, 10/day) is a courtesy, not a security control.
+- `RECON_ALLOW_INSECURE_RPC=1` — opt out of the https/private-IP check on RPC URLs. Only set this when pointing at a local anvil/hardhat fork; never in production.
+- `RECON_FEEDBACK_ENDPOINT` — optional https URL for `request_capability` to POST directly (e.g. a maintainer-operated proxy that creates GitHub issues with a bot token). When unset (the default), `request_capability` returns a pre-filled GitHub issue URL for the user to click through; nothing is transmitted automatically. **Operator responsibility:** the recon-crypto-mcp client does not sign or authenticate POST requests. If you set this endpoint, the proxy MUST enforce its own auth (IP allowlist, Cloudflare Access, HMAC header validation, etc.) — otherwise any caller who learns the URL can submit to it. The on-process rate limiter (3/hour, 10/day) is a courtesy, not a security control.
 
 ## Development
 
@@ -133,4 +150,4 @@ npm run test:watch
 
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE).

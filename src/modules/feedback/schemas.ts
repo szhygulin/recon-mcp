@@ -27,7 +27,7 @@ export const requestCapabilityInput = z.object({
         .string()
         .max(100)
         .optional()
-        .describe("Name of the recon-mcp tool the agent tried first, if any."),
+        .describe("Name of the recon-crypto-mcp tool the agent tried first, if any."),
       chain: z.string().max(50).optional().describe("Chain involved, if relevant."),
       errorObserved: z
         .string()

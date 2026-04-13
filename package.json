@@ -1,16 +1,17 @@
 {
-  "name": "recon-mcp",
+  "name": "recon-crypto-mcp",
   "version": "0.1.0",
   "description": "MCP server for AI agents (Claude Code, Claude Desktop, Cursor) to manage a self-custodial crypto portfolio through a Ledger hardware wallet. Reads on-chain wallet balances, ENS, token prices, and DeFi positions across Ethereum/Arbitrum/Polygon (Aave V3, Compound V3, Morpho Blue, Uniswap V3 LP, Lido stETH, EigenLayer), surfaces liquidation/health-factor alerts and protocol risk scores, then prepares unsigned EVM transactions (supply, borrow, repay, withdraw, stake, unstake, native/ERC-20 send, and LiFi-routed swaps and cross-chain bridges) that the user signs on their Ledger device via WalletConnect — private keys never leave the hardware wallet.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "recon-mcp": "dist/index.js",
-    "recon-mcp-setup": "dist/setup.js"
+    "recon-crypto-mcp": "dist/index.js",
+    "recon-crypto-mcp-setup": "dist/setup.js"
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
@@ -102,15 +103,15 @@
     "multisig",
     "timelock"
   ],
-  "homepage": "https://github.com/szhygulin/recon-mcp#readme",
+  "homepage": "https://github.com/szhygulin/recon-crypto-mcp#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/szhygulin/recon-mcp.git"
+    "url": "git+https://github.com/szhygulin/recon-crypto-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/szhygulin/recon-mcp/issues"
+    "url": "https://github.com/szhygulin/recon-crypto-mcp/issues"
   },
-  "author": "",
+  "author": "Viacheslav Zhygulin",
   "license": "MIT",
   "dependencies": {
     "@lifi/sdk": "^3.16.3",

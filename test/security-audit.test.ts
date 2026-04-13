@@ -456,13 +456,13 @@ describe("H9: Etherscan field sanitization", () => {
 // H10 — RPC URLs validated (https, no RFC1918/loopback) + chainId check.
 // ====================================================================
 describe("H10: RPC URL validation", () => {
-  const savedAllow = process.env.RECON_MCP_ALLOW_INSECURE_RPC;
+  const savedAllow = process.env.RECON_ALLOW_INSECURE_RPC;
   beforeEach(() => {
-    delete process.env.RECON_MCP_ALLOW_INSECURE_RPC;
+    delete process.env.RECON_ALLOW_INSECURE_RPC;
   });
   afterAll(() => {
-    if (savedAllow === undefined) delete process.env.RECON_MCP_ALLOW_INSECURE_RPC;
-    else process.env.RECON_MCP_ALLOW_INSECURE_RPC = savedAllow;
+    if (savedAllow === undefined) delete process.env.RECON_ALLOW_INSECURE_RPC;
+    else process.env.RECON_ALLOW_INSECURE_RPC = savedAllow;
   });
 
   it("rejects plaintext http:// URLs", async () => {
@@ -507,9 +507,9 @@ describe("H10: RPC URL validation", () => {
     ).not.toThrow();
   });
 
-  it("RECON_MCP_ALLOW_INSECURE_RPC=1 opts out (for anvil/hardhat forks)", async () => {
+  it("RECON_ALLOW_INSECURE_RPC=1 opts out (for anvil/hardhat forks)", async () => {
     const { validateRpcUrl } = await import("../src/config/chains.js");
-    process.env.RECON_MCP_ALLOW_INSECURE_RPC = "1";
+    process.env.RECON_ALLOW_INSECURE_RPC = "1";
     expect(() => validateRpcUrl("ethereum", "http://127.0.0.1:8545")).not.toThrow();
   });
 });
