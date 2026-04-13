@@ -283,4 +283,9 @@ async function main() {
   }
 }
 
-main();
+main().then(() => {
+  // WalletConnect's SignClient keeps websocket/relay handles open that prevent
+  // a natural event-loop exit. Force-exit so the CLI returns control to the
+  // shell; process.exitCode (set on error) is honored.
+  process.exit();
+});

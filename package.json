@@ -1,6 +1,6 @@
 {
   "name": "recon-crypto-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server for AI agents (Claude Code, Claude Desktop, Cursor) to manage a self-custodial crypto portfolio through a Ledger hardware wallet. Reads on-chain wallet balances, ENS, token prices, and DeFi positions across Ethereum/Arbitrum/Polygon (Aave V3, Compound V3, Morpho Blue, Uniswap V3 LP, Lido stETH, EigenLayer), surfaces liquidation/health-factor alerts and protocol risk scores, then prepares unsigned EVM transactions (supply, borrow, repay, withdraw, stake, unstake, native/ERC-20 send, and LiFi-routed swaps and cross-chain bridges) that the user signs on their Ledger device via WalletConnect — private keys never leave the hardware wallet.",
   "type": "module",
   "main": "dist/index.js",
