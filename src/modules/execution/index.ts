@@ -1,4 +1,4 @@
-import { encodeFunctionData, formatUnits } from "viem";
+import { encodeFunctionData, formatUnits, parseEther, parseUnits } from "viem";
 import qrcodeTerminal from "qrcode-terminal";
 import {
   initiatePairing,
@@ -27,6 +27,8 @@ import type {
   PrepareLidoStakeArgs,
   PrepareLidoUnstakeArgs,
   PrepareEigenLayerDepositArgs,
+  PrepareNativeSendArgs,
+  PrepareTokenSendArgs,
   SendTransactionArgs,
   GetTransactionStatusArgs,
 } from "./schemas.js";
@@ -192,6 +194,64 @@ export async function prepareEigenLayerDeposit(args: PrepareEigenLayerDepositArg
       symbol: meta.symbol,
     })
   );
+}
+
+// ----- Native + ERC-20 transfers -----
+
+export async function prepareNativeSend(args: PrepareNativeSendArgs): Promise<UnsignedTx> {
+  const wallet = args.wallet as `0x${string}`;
+  const chain = args.chain as SupportedChain;
+  const to = args.to as `0x${string}`;
+  const value = parseEther(args.amount);
+  return enrichTx({
+    chain,
+    to,
+    data: "0x",
+    value: value.toString(),
+    from: wallet,
+    description: `Send ${args.amount} native coin to ${to} on ${chain}`,
+    decoded: { functionName: "transfer", args: { to, amount: args.amount } },
+  });
+}
+
+export async function prepareTokenSend(args: PrepareTokenSendArgs): Promise<UnsignedTx> {
+  const wallet = args.wallet as `0x${string}`;
+  const chain = args.chain as SupportedChain;
+  const token = args.token as `0x${string}`;
+  const to = args.to as `0x${string}`;
+  const meta = await resolveAssetMeta(chain, token);
+
+  let amountWei: bigint;
+  let displayAmount = args.amount;
+  if (args.amount === "max") {
+    const client = getClient(chain);
+    amountWei = (await client.readContract({
+      address: token,
+      abi: erc20Abi,
+      functionName: "balanceOf",
+      args: [wallet],
+    })) as bigint;
+    displayAmount = formatUnits(amountWei, meta.decimals);
+  } else {
+    amountWei = parseUnits(args.amount, meta.decimals);
+  }
+
+  return enrichTx({
+    chain,
+    to: token,
+    data: encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "transfer",
+      args: [to, amountWei],
+    }),
+    value: "0",
+    from: wallet,
+    description: `Send ${displayAmount} ${meta.symbol} to ${to} on ${chain}`,
+    decoded: {
+      functionName: "transfer",
+      args: { to, amount: displayAmount, symbol: meta.symbol },
+    },
+  });
 }
 
 // ----- Send + status -----

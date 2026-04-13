@@ -42,6 +42,23 @@ export const prepareEigenLayerDepositInput = z.object({
   amount: z.string(),
 });
 
+export const prepareNativeSendInput = z.object({
+  wallet: walletSchema,
+  chain: chainEnum.default("ethereum"),
+  to: addressSchema,
+  /** Human-readable amount in the native unit (e.g. "0.5" = 0.5 ETH). */
+  amount: z.string(),
+});
+
+export const prepareTokenSendInput = z.object({
+  wallet: walletSchema,
+  chain: chainEnum.default("ethereum"),
+  token: addressSchema,
+  to: addressSchema,
+  /** Human-readable amount; decimals resolved from the token contract. "max" sends the full balance. */
+  amount: z.string(),
+});
+
 export const sendTransactionInput = z.object({
   chain: chainEnum,
   to: addressSchema,
@@ -64,5 +81,7 @@ export type PrepareAaveRepayArgs = z.infer<typeof prepareAaveRepayInput>;
 export type PrepareLidoStakeArgs = z.infer<typeof prepareLidoStakeInput>;
 export type PrepareLidoUnstakeArgs = z.infer<typeof prepareLidoUnstakeInput>;
 export type PrepareEigenLayerDepositArgs = z.infer<typeof prepareEigenLayerDepositInput>;
+export type PrepareNativeSendArgs = z.infer<typeof prepareNativeSendInput>;
+export type PrepareTokenSendArgs = z.infer<typeof prepareTokenSendInput>;
 export type SendTransactionArgs = z.infer<typeof sendTransactionInput>;
 export type GetTransactionStatusArgs = z.infer<typeof getTransactionStatusInput>;

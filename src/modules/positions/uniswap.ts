@@ -92,6 +92,19 @@ export async function getUniswapPositions(
   wallet: `0x${string}`,
   chain: SupportedChain
 ): Promise<LPPosition[]> {
+  try {
+    return await readUniswapPositions(wallet, chain);
+  } catch {
+    // Degrade to empty — same reasoning as Aave reader. LP breakdown is decorative; it
+    // shouldn't be able to sink the whole portfolio call on a transient RPC miss.
+    return [];
+  }
+}
+
+async function readUniswapPositions(
+  wallet: `0x${string}`,
+  chain: SupportedChain
+): Promise<LPPosition[]> {
   const client = getClient(chain);
   const npm = CONTRACTS[chain].uniswap.positionManager as `0x${string}`;
   const factory = CONTRACTS[chain].uniswap.factory as `0x${string}`;

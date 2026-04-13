@@ -15,9 +15,20 @@ export function getClient(chain: SupportedChain): PublicClient {
 
   const userConfig = readUserConfig();
   const url = resolveRpcUrl(chain, userConfig);
+  // Do NOT set `batch: true` by default. JSON-RPC batching works on Infura/Alchemy but is
+  // silently mis-handled by many public endpoints — we saw calls like getUserAccountData,
+  // NPM.balanceOf, Multicall3.aggregate3 return 0x under load, purely because they were
+  // coalesced into a batched POST the provider couldn't fulfill. Individual eth_call
+  // requests are slower but never ghost-fail. Users on premium endpoints can opt back in
+  // via RPC_BATCH=1. Multicall3 still batches at the contract layer regardless.
+  const batchEnabled = process.env.RPC_BATCH === "1";
   const client = createPublicClient({
     chain: VIEM_CHAINS[chain],
-    transport: http(url, { batch: true, retryCount: 2, retryDelay: 1000 }),
+    transport: http(url, {
+      batch: batchEnabled,
+      retryCount: 3,
+      retryDelay: 500,
+    }),
   });
   clients.set(chain, client);
   return client;

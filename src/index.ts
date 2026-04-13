@@ -53,6 +53,8 @@ import {
   prepareLidoStake,
   prepareLidoUnstake,
   prepareEigenLayerDeposit,
+  prepareNativeSend,
+  prepareTokenSend,
   sendTransaction,
   getTransactionStatus,
 } from "./modules/execution/index.js";
@@ -66,9 +68,52 @@ import {
   prepareLidoStakeInput,
   prepareLidoUnstakeInput,
   prepareEigenLayerDepositInput,
+  prepareNativeSendInput,
+  prepareTokenSendInput,
   sendTransactionInput,
   getTransactionStatusInput,
 } from "./modules/execution/schemas.js";
+
+import { getTokenBalance, resolveName, reverseResolve } from "./modules/balances/index.js";
+import {
+  getTokenBalanceInput,
+  resolveNameInput,
+  reverseResolveInput,
+} from "./modules/balances/schemas.js";
+
+import { getCompoundPositions } from "./modules/compound/index.js";
+import {
+  buildCompoundSupply,
+  buildCompoundWithdraw,
+  buildCompoundBorrow,
+  buildCompoundRepay,
+} from "./modules/compound/actions.js";
+import {
+  getCompoundPositionsInput,
+  prepareCompoundSupplyInput,
+  prepareCompoundWithdrawInput,
+  prepareCompoundBorrowInput,
+  prepareCompoundRepayInput,
+} from "./modules/compound/schemas.js";
+
+import { getMorphoPositions } from "./modules/morpho/index.js";
+import {
+  buildMorphoSupply,
+  buildMorphoWithdraw,
+  buildMorphoBorrow,
+  buildMorphoRepay,
+  buildMorphoSupplyCollateral,
+  buildMorphoWithdrawCollateral,
+} from "./modules/morpho/actions.js";
+import {
+  getMorphoPositionsInput,
+  prepareMorphoSupplyInput,
+  prepareMorphoWithdrawInput,
+  prepareMorphoBorrowInput,
+  prepareMorphoRepayInput,
+  prepareMorphoSupplyCollateralInput,
+  prepareMorphoWithdrawCollateralInput,
+} from "./modules/morpho/schemas.js";
 
 import { readUserConfig } from "./config/user-config.js";
 
@@ -363,6 +408,179 @@ async function main() {
       inputSchema: getTransactionStatusInput.shape,
     },
     handler(getTransactionStatus)
+  );
+
+  // ---- Module 7: Balances & ENS ----
+  server.registerTool(
+    "get_token_balance",
+    {
+      description:
+        "Fetch a wallet's balance of any ERC-20 token or the chain's native coin. Pass `token: \"native\"` for ETH (or chain-native asset) or an ERC-20 contract address. Returns amount, decimals, symbol, and USD value.",
+      inputSchema: getTokenBalanceInput.shape,
+    },
+    handler(getTokenBalance)
+  );
+
+  server.registerTool(
+    "resolve_ens_name",
+    {
+      description:
+        "Resolve an ENS name (e.g. vitalik.eth) to an Ethereum address via mainnet ENS resolver. Returns null if unregistered.",
+      inputSchema: resolveNameInput.shape,
+    },
+    handler(resolveName)
+  );
+
+  server.registerTool(
+    "reverse_resolve_ens",
+    {
+      description:
+        "Reverse-resolve an Ethereum address to its primary ENS name. Returns null if no primary name is set.",
+      inputSchema: reverseResolveInput.shape,
+    },
+    handler(reverseResolve)
+  );
+
+  server.registerTool(
+    "prepare_native_send",
+    {
+      description:
+        "Build an unsigned native-coin send transaction (ETH on Ethereum/Arbitrum). Pass a human-readable amount like \"0.5\".",
+      inputSchema: prepareNativeSendInput.shape,
+    },
+    handler(prepareNativeSend)
+  );
+
+  server.registerTool(
+    "prepare_token_send",
+    {
+      description:
+        "Build an unsigned ERC-20 transfer transaction. Pass `amount: \"max\"` to send the full balance (resolved at build time).",
+      inputSchema: prepareTokenSendInput.shape,
+    },
+    handler(prepareTokenSend)
+  );
+
+  // ---- Module 8: Compound V3 ----
+  server.registerTool(
+    "get_compound_positions",
+    {
+      description:
+        "Fetch Compound V3 (Comet) positions for a wallet across supported markets (cUSDCv3, cUSDTv3, cWETHv3, etc.). Returns base-token supplied/borrowed, per-asset collateral, and USD totals.",
+      inputSchema: getCompoundPositionsInput.shape,
+    },
+    handler(getCompoundPositions)
+  );
+
+  server.registerTool(
+    "prepare_compound_supply",
+    {
+      description:
+        "Build an unsigned Compound V3 supply transaction (base token or collateral). If an ERC-20 approve() is required first, it is returned as the outer tx with supply in `.next`.",
+      inputSchema: prepareCompoundSupplyInput.shape,
+    },
+    handler(buildCompoundSupply)
+  );
+
+  server.registerTool(
+    "prepare_compound_withdraw",
+    {
+      description:
+        "Build an unsigned Compound V3 withdraw transaction. Pass `amount: \"max\"` to withdraw the full supplied balance.",
+      inputSchema: prepareCompoundWithdrawInput.shape,
+    },
+    handler(buildCompoundWithdraw)
+  );
+
+  server.registerTool(
+    "prepare_compound_borrow",
+    {
+      description:
+        "Build an unsigned Compound V3 borrow transaction — encoded as withdraw(baseToken) beyond the user's supplied balance. Base token is resolved on-chain from the Comet.",
+      inputSchema: prepareCompoundBorrowInput.shape,
+    },
+    handler(buildCompoundBorrow)
+  );
+
+  server.registerTool(
+    "prepare_compound_repay",
+    {
+      description:
+        "Build an unsigned Compound V3 repay transaction — encoded as supply(baseToken) against an outstanding borrow. Includes an approve step if needed. Pass `amount: \"max\"` for a full repay.",
+      inputSchema: prepareCompoundRepayInput.shape,
+    },
+    handler(buildCompoundRepay)
+  );
+
+  // ---- Module 9: Morpho Blue ----
+  server.registerTool(
+    "get_morpho_positions",
+    {
+      description:
+        "Fetch Morpho Blue positions for a wallet across a given list of market IDs. Each market is identified by a bytes32 id (keccak256 of its MarketParams). Returns per-market supplied/borrowed assets and collateral.",
+      inputSchema: getMorphoPositionsInput.shape,
+    },
+    handler(getMorphoPositions)
+  );
+
+  server.registerTool(
+    "prepare_morpho_supply",
+    {
+      description:
+        "Build an unsigned Morpho Blue supply transaction (deposits loan token for yield). Market params are resolved on-chain from the market id. Includes an approve step if needed.",
+      inputSchema: prepareMorphoSupplyInput.shape,
+    },
+    handler(buildMorphoSupply)
+  );
+
+  server.registerTool(
+    "prepare_morpho_withdraw",
+    {
+      description:
+        "Build an unsigned Morpho Blue withdraw transaction (withdraws supplied loan token). Explicit amount only — \"max\" is not supported; query your position first.",
+      inputSchema: prepareMorphoWithdrawInput.shape,
+    },
+    handler(buildMorphoWithdraw)
+  );
+
+  server.registerTool(
+    "prepare_morpho_borrow",
+    {
+      description:
+        "Build an unsigned Morpho Blue borrow transaction. Requires pre-existing collateral in the market.",
+      inputSchema: prepareMorphoBorrowInput.shape,
+    },
+    handler(buildMorphoBorrow)
+  );
+
+  server.registerTool(
+    "prepare_morpho_repay",
+    {
+      description:
+        "Build an unsigned Morpho Blue repay transaction. Includes an approve step if needed. Explicit amount only — \"max\" is not supported.",
+      inputSchema: prepareMorphoRepayInput.shape,
+    },
+    handler(buildMorphoRepay)
+  );
+
+  server.registerTool(
+    "prepare_morpho_supply_collateral",
+    {
+      description:
+        "Build an unsigned Morpho Blue supplyCollateral transaction — adds collateral to a market. Includes an approve step if needed.",
+      inputSchema: prepareMorphoSupplyCollateralInput.shape,
+    },
+    handler(buildMorphoSupplyCollateral)
+  );
+
+  server.registerTool(
+    "prepare_morpho_withdraw_collateral",
+    {
+      description:
+        "Build an unsigned Morpho Blue withdrawCollateral transaction — removes collateral from a market. Explicit amount only.",
+      inputSchema: prepareMorphoWithdrawCollateralInput.shape,
+    },
+    handler(buildMorphoWithdrawCollateral)
   );
 
   const transport = new StdioServerTransport();

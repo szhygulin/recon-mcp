@@ -124,19 +124,119 @@ Focus on read-only operations to ship fast and validate demand:
 
 **Not in MVP:** Transaction execution, historical P&L, tax exports, vault positions, validator comparison
 
-## Phase 2
+## Phase 2 — broader coverage and richer reads
 
-- Expand protocol coverage (Compound, Morpho, Curve, Pendle, Rocket Pool)
-- Add chains (Base, Optimism, Polygon)
-- Historical P&L and performance tracking
-- Token risk analysis (honeypot detection)
-- Validator comparison and restaking exposure mapping
+### Chain expansion
+- Add EVM chains (Base, Optimism, Polygon) — reuses existing viem/LiFi/Aave V3 tooling
+- Add non-EVM chains:
+  - Tron — native TRX + TRC-20 (notably USDT-TRC20) balances, portfolio integration, and native/TRC-20 send txs signed via Ledger Live WalletConnect `tron:` namespace. Requires a separate SDK (e.g. `tronweb`) and address/validation layer
+  - Bitcoin — native BTC balance, portfolio integration, and send txs via a UTXO library plus a REST indexer (mempool.space / Blockstream). Signing via Ledger Live WalletConnect `bip122:` namespace. Smart-contract-dependent tools (Aave, Uniswap, staking, security) are N/A
 
-## Phase 3
+### Protocol expansion
+- Lending: Compound V3, Morpho Blue, Spark
+- DEX/LP: Curve, Balancer, PancakeSwap (BSC extension if added)
+- Staking/restaking: Rocket Pool (rETH), Frax (sfrxETH), Karak, Symbiotic
+- Yield: Pendle (PT/YT positions, maturity warnings), Ethena (sUSDe)
+- Perps: GMX, Hyperliquid position reads (no execution in Phase 2)
 
-- Transaction execution tools (deposit, withdraw, stake, unstake)
-- Tax summary export
-- Remote hosted tier with pre-indexed data and real-time alerts
+### Arbitrary-token portfolio
+- **Any-token balance lookup**: `get_token_balance(wallet, token_address, chain)` — accepts any ERC-20 / TRC-20 contract the user specifies, not just the curated "top tokens" list. Resolves symbol, decimals, and price via on-chain reads + DefiLlama (fallback to CoinGecko contract-address endpoint).
+- **Multi-wallet portfolio**: `get_portfolio_summary` extended to accept an array of addresses and/or a named "wallet set" saved in user-config; outputs a consolidated view plus per-wallet breakdown.
+- **ENS / name resolution**: accept `vitalik.eth`, `domain.tron`, or hex addresses interchangeably; reverse-resolve hex → primary name in outputs.
+- **NFT holdings**: ERC-721 / ERC-1155 enumeration via Alchemy/QuickNode NFT APIs, with floor-price + last-sale hints from Reservoir / OpenSea.
+- **Token metadata enrichment**: add `get_token_info(address, chain)` that returns contract verification, top holders, trading volume, LP depth, honeypot-risk indicators.
+
+### Analytics / intelligence
+- Historical P&L and cost-basis tracking (FIFO, lot-level) per wallet
+- Realized vs. unrealized gains, per-token and portfolio-level
+- Position-level APR / yield tracking with 7d and 30d averages
+- Token risk analysis: honeypot detection, liquidity-lock checks, mint authority, ownership concentration
+- Approval audit: list active ERC-20/721 approvals, flag high-risk ones, return a pre-built `revoke` tx per item (revoke.cash-style) — read in Phase 2, action in Phase 3
+- Validator / operator comparison for staking + restaking (uptime, slashing history, commission)
+- Airdrop eligibility checks against known campaigns (requires maintained snapshot data)
+- Liquidation-risk projections across all lending protocols (not just Aave)
+- Gas oracle + 30-day historical fee distributions per chain
+
+### Safety reads
+- Phishing/scam address lookup (Scamsniffer, Chainabuse, OFAC)
+- Contract security extended: on-chain verification on non-Etherscan explorers (Blockscout, Arbiscan, Polygonscan, Tronscan)
+- Simulated outcome preview for any tx — `simulate_tx(unsignedTx)` using `eth_call` + state-override / Tenderly integration; returns balance deltas, slippage vs. expected, and side-effects
+
+## Phase 3 — expanded execution
+
+All execution tools route through Ledger Live via WalletConnect (existing safety pattern: explicit `confirmed: true`, human-readable preview, simulated outcome).
+
+### Send / receive
+- `prepare_native_send(chain, to, amount)` — ETH / MATIC / ARB / BTC / TRX
+- `prepare_token_send(chain, token, to, amount)` — any ERC-20 / TRC-20 (including `amount: "max"`)
+- `prepare_nft_send(chain, collection, tokenId, to)` — ERC-721 and ERC-1155 with quantity
+- `prepare_batch_send` — multiple transfers bundled via Multicall3 or EIP-7702 delegated batching
+
+### Swap / bridge (already in MVP via LiFi — extend)
+- Limit-order tool on top of CoW Swap / 1inch Fusion
+- DCA (dollar-cost-average) via scheduled tx generation — user signs a batch manifest; MCP returns the next-due slice on request
+- Slippage-aware repricing for long-running quotes
+- Refuel bridge for cross-chain gas top-ups
+
+### Lending / borrowing — expand beyond Aave
+- Same verb set (supply, withdraw, borrow, repay, `set_collateral_mode`, `migrate_position`) for Compound, Morpho, Spark
+- Health-factor-aware `suggest_repay` / `suggest_deleverage` that builds the minimum-sized tx to reach a target HF
+- Flashloan-backed deleveraging on Aave V3 (single-tx collateral swap)
+
+### Staking / restaking / yield
+- `prepare_claim_rewards(protocol, wallet)` — Lido rewards are auto-compounding, but add Rocket Pool, Pendle PT claim at maturity, EigenLayer + Karak rewards
+- `prepare_restake_delegation(operator)` — EigenLayer operator switch
+- `prepare_pendle_buy_pt` / `prepare_pendle_redeem` — yield-fixing workflows
+- `prepare_unstake_timer_check` — return the unlock timestamp for any locked staking position
+
+### LP management
+- `prepare_uniswap_v3_mint` / `collect_fees` / `decrease_liquidity` / `burn`
+- `prepare_uniswap_v3_rebalance` — out-of-range → in-range reposition in one batched tx
+- `prepare_curve_add_liquidity` / `remove_liquidity`
+- `prepare_balancer_join_pool` / `exit_pool`
+
+### NFT marketplace
+- `prepare_nft_list(collection, tokenId, price, marketplace)` — Seaport / Blur / OpenSea
+- `prepare_nft_buy(listing_id, marketplace)`
+- `prepare_nft_cancel_listing`
+- `prepare_nft_accept_offer`
+
+### Governance
+- `list_open_proposals(protocol, wallet)` — outstanding votes for any protocol the user has governance tokens in (Snapshot + on-chain Governor)
+- `prepare_vote(proposal_id, support, reason?)`
+- `prepare_delegate(protocol, delegatee)`
+- `prepare_claim_governance_reward`
+
+### Approval management
+- `list_active_approvals(wallet, chain)` — ERC-20 + ERC-721 `setApprovalForAll` + Permit2 allowances
+- `prepare_revoke_approval(token, spender)` — one-tx revoke
+- `prepare_batch_revoke` — revoke all high-risk approvals in one bundle
+
+### Airdrops / claims
+- `check_airdrop_eligibility(wallet)` — across known open claims
+- `prepare_airdrop_claim(campaign, wallet)` — produce the merkle-proofed claim tx
+
+### Pre-trade safety (execution side)
+- Every `prepare_*` tool returns a `simulation` field: expected balance deltas, gas cost in USD, price impact vs. reference, and recipient reputation flag
+- `check_destination(address)` — is it a known mixer, sanctioned, phishing report, contract with admin override?
+- Mandatory safety gate on transfers > threshold the user configures
+
+### Account abstraction (opt-in)
+- EIP-7702 session delegation: a one-time signed authorization that lets the MCP execute a narrow, time-bounded policy (e.g. "auto-rebalance LP below 1% impact, only on Arbitrum, for 24 hours") without further signing
+- Gasless UX via paymasters on L2s
+
+### Automation scaffolding (MCP-side)
+- `schedule_tx(cron, preparedTx)` — persist a tx template; on each `/tick` the MCP returns the next-due instance for the agent to prompt and sign
+- `watch_condition(rule, tx_template)` — e.g. "if HF < 1.4, prepare a 20% repay tx" — the tool returns the pre-signed-but-not-broadcast tx when the rule fires (full on-chain keepers are out of scope)
+
+### Non-crypto adjacencies
+- Tax summary export: CSV in Koinly/CoinTracker format, lot-level with cost basis
+- Portfolio reports: PDF / Markdown snapshot for record keeping
+- Address book: named contacts with chain + tag metadata
+
+### Infrastructure
+- Remote hosted tier with pre-indexed data (subgraphs + internal indexer) for sub-second reads
+- Real-time push alerts (health factor, liquidation, whale movement, exploit-pause, governance notices) via webhooks/email/Telegram
 - Premium features behind API key
 
 ---

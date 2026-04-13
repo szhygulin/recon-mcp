@@ -1,11 +1,13 @@
-import SignClient from "@walletconnect/sign-client";
+import { SignClient } from "@walletconnect/sign-client";
 import type { SessionTypes } from "@walletconnect/types";
 import { getSdkError } from "@walletconnect/utils";
+import { join } from "node:path";
 import { CHAIN_IDS, type SupportedChain, type UnsignedTx } from "../types/index.js";
 import {
   readUserConfig,
   patchUserConfig,
   resolveWalletConnectProjectId,
+  getConfigDir,
 } from "../config/user-config.js";
 
 /**
@@ -47,6 +49,10 @@ function getProjectId(): string {
 
 export async function getSignClient(): Promise<InstanceType<typeof SignClient>> {
   if (client) return client;
+  // Persist WC symkey/pairing/session state under ~/.recon-mcp so it survives process exit.
+  // Without this, the SignClient defaults to an unstorage path in cwd — which Claude Code
+  // kills on exit, leaving the saved session topic useless (no keys to decrypt the relay).
+  const storageDbPath = join(getConfigDir(), "walletconnect.db");
   client = await SignClient.init({
     projectId: getProjectId(),
     metadata: {
@@ -55,15 +61,27 @@ export async function getSignClient(): Promise<InstanceType<typeof SignClient>> 
       url: "https://github.com/",
       icons: [],
     },
+    storageOptions: { database: storageDbPath },
   });
 
-  // Attempt to restore the most recent session.
+  // Attempt to restore the most recent session. Prefer the explicit topic from user config,
+  // but fall back to the most recent active session if the topic is missing or stale (can
+  // happen if the user manually edited config or the session expired and was renewed).
   const cfg = readUserConfig();
   const topic = cfg?.walletConnect?.sessionTopic;
+  const all = client.session.getAll();
   if (topic) {
-    const all = client.session.getAll();
     const match = all.find((s) => s.topic === topic);
     if (match) currentSession = match;
+  }
+  if (!currentSession && all.length > 0) {
+    currentSession = all[all.length - 1];
+    patchUserConfig({
+      walletConnect: {
+        sessionTopic: currentSession.topic,
+        pairingTopic: currentSession.pairingTopic,
+      },
+    });
   }
 
   return client;

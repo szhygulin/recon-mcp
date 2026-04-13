@@ -99,6 +99,7 @@ export interface SecurityReport {
   privilegedRoles: PrivilegedRole[];
 }
 
+/** Per-wallet slice of a multi-wallet portfolio, or a stand-alone single-wallet summary. */
 export interface PortfolioSummary {
   wallet: `0x${string}`;
   chains: SupportedChain[];
@@ -115,6 +116,19 @@ export interface PortfolioSummary {
     lp: LPPosition[];
     staking: StakingPosition[];
   };
+}
+
+/** Multi-wallet portfolio aggregation. */
+export interface MultiWalletPortfolioSummary {
+  wallets: `0x${string}`[];
+  chains: SupportedChain[];
+  totalUsd: number;
+  walletBalancesUsd: number;
+  lendingNetUsd: number;
+  lpUsd: number;
+  stakingUsd: number;
+  perChain: Record<SupportedChain, number>;
+  perWallet: PortfolioSummary[];
 }
 
 /** Unsigned transaction, ready to be sent to Ledger Live for signing. */

@@ -1,0 +1,77 @@
+import { getClient } from "../../data/rpc.js";
+import { erc20Abi } from "../../abis/erc20.js";
+import { makeTokenAmount } from "../../data/format.js";
+import { getTokenPrice } from "../../data/prices.js";
+import { NATIVE_SYMBOL } from "../../config/contracts.js";
+import type {
+  GetTokenBalanceArgs,
+  ResolveNameArgs,
+  ReverseResolveArgs,
+} from "./schemas.js";
+import type { SupportedChain, TokenAmount } from "../../types/index.js";
+
+/**
+ * Fetch the balance of an arbitrary token (ERC-20 by address, or the chain's native coin).
+ * Returns `{ ...TokenAmount, zero: true }` when the wallet has no balance.
+ */
+export async function getTokenBalance(args: GetTokenBalanceArgs): Promise<TokenAmount> {
+  const wallet = args.wallet as `0x${string}`;
+  const chain = args.chain as SupportedChain;
+  const client = getClient(chain);
+
+  if (args.token === "native") {
+    const [balance, price] = await Promise.all([
+      client.getBalance({ address: wallet }),
+      getTokenPrice(chain, "native"),
+    ]);
+    return makeTokenAmount(
+      chain,
+      "0x0000000000000000000000000000000000000000" as `0x${string}`,
+      balance,
+      18,
+      NATIVE_SYMBOL[chain],
+      price
+    );
+  }
+
+  const token = args.token as `0x${string}`;
+  const [balance, decimals, symbol] = await client.multicall({
+    contracts: [
+      { address: token, abi: erc20Abi, functionName: "balanceOf", args: [wallet] },
+      { address: token, abi: erc20Abi, functionName: "decimals" },
+      { address: token, abi: erc20Abi, functionName: "symbol" },
+    ],
+    allowFailure: false,
+  });
+  const price = await getTokenPrice(chain, token);
+  return makeTokenAmount(
+    chain,
+    token,
+    balance as bigint,
+    Number(decimals),
+    symbol as string,
+    price
+  );
+}
+
+/**
+ * ENS forward resolution: name → address. Only Ethereum mainnet ENS is supported (viem routes
+ * through the mainnet resolver even for subdomains used cross-chain).
+ */
+export async function resolveName(
+  args: ResolveNameArgs
+): Promise<{ name: string; address: `0x${string}` | null }> {
+  const client = getClient("ethereum");
+  const address = await client.getEnsAddress({ name: args.name });
+  return { name: args.name, address };
+}
+
+/** ENS reverse resolution: address → primary name. Returns null if the address has no primary name set. */
+export async function reverseResolve(
+  args: ReverseResolveArgs
+): Promise<{ address: `0x${string}`; name: string | null }> {
+  const client = getClient("ethereum");
+  const address = args.address as `0x${string}`;
+  const name = await client.getEnsName({ address });
+  return { address, name };
+}

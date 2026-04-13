@@ -6,8 +6,23 @@ import { getTokenPrice } from "../../data/prices.js";
 import { getLendingPositions, getLpPositions } from "../positions/index.js";
 import { getStakingPositions } from "../staking/index.js";
 import type { GetPortfolioSummaryArgs } from "./schemas.js";
-import type { PortfolioSummary, SupportedChain, TokenAmount } from "../../types/index.js";
+import type {
+  MultiWalletPortfolioSummary,
+  PortfolioSummary,
+  SupportedChain,
+  TokenAmount,
+} from "../../types/index.js";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
+
+function zeroNative(wallet: `0x${string}`, chain: SupportedChain): TokenAmount {
+  return makeTokenAmount(
+    chain,
+    "0x0000000000000000000000000000000000000000" as `0x${string}`,
+    0n,
+    18,
+    NATIVE_SYMBOL[chain]
+  );
+}
 
 async function fetchNativeBalance(wallet: `0x${string}`, chain: SupportedChain): Promise<TokenAmount> {
   const client = getClient(chain);
@@ -56,17 +71,67 @@ async function fetchTopErc20Balances(
   return out;
 }
 
-export async function getPortfolioSummary(args: GetPortfolioSummaryArgs): Promise<PortfolioSummary> {
-  const wallet = args.wallet as `0x${string}`;
+export async function getPortfolioSummary(
+  args: GetPortfolioSummaryArgs
+): Promise<PortfolioSummary | MultiWalletPortfolioSummary> {
+  if (!args.wallet && !(args.wallets && args.wallets.length > 0)) {
+    throw new Error("Provide either `wallet` or a non-empty `wallets` array.");
+  }
   const chains = ((args.chains as SupportedChain[] | undefined) ?? [...SUPPORTED_CHAINS]);
+  const wallets = args.wallets?.length
+    ? (args.wallets as `0x${string}`[])
+    : [args.wallet as `0x${string}`];
 
-  // Run everything in parallel — each is independent.
+  // Branch: single wallet returns the flat summary; multi-wallet aggregates.
+  if (wallets.length === 1) {
+    return buildWalletSummary(wallets[0], chains);
+  }
+
+  const perWallet = await Promise.all(wallets.map((w) => buildWalletSummary(w, chains)));
+  const totalUsd = round(perWallet.reduce((s, p) => s + p.totalUsd, 0), 2);
+  const walletBalancesUsd = round(perWallet.reduce((s, p) => s + p.walletBalancesUsd, 0), 2);
+  const lendingNetUsd = round(perWallet.reduce((s, p) => s + p.lendingNetUsd, 0), 2);
+  const lpUsd = round(perWallet.reduce((s, p) => s + p.lpUsd, 0), 2);
+  const stakingUsd = round(perWallet.reduce((s, p) => s + p.stakingUsd, 0), 2);
+  const perChain: Record<SupportedChain, number> = Object.fromEntries(
+    chains.map((c) => [c, 0])
+  ) as Record<SupportedChain, number>;
+  for (const p of perWallet) {
+    for (const c of chains) {
+      perChain[c] = round((perChain[c] ?? 0) + (p.perChain[c] ?? 0), 2);
+    }
+  }
+  return {
+    wallets,
+    chains,
+    totalUsd,
+    walletBalancesUsd,
+    lendingNetUsd,
+    lpUsd,
+    stakingUsd,
+    perChain,
+    perWallet,
+  };
+}
+
+async function buildWalletSummary(
+  wallet: `0x${string}`,
+  chains: SupportedChain[]
+): Promise<PortfolioSummary> {
+  // Each subquery is independent — one failing shouldn't kill the summary. We swap
+  // Promise.all for per-task catchers that return empty payloads on error, so a flaky
+  // Aave read (say, "returned no data") still lets us report native + ERC-20 + LP totals.
+  const emptyPositions = { wallet, positions: [] as never[] };
   const [nativeAmounts, erc20Amounts, lending, lp, staking] = await Promise.all([
-    Promise.all(chains.map((c) => fetchNativeBalance(wallet, c))),
-    Promise.all(chains.map((c) => fetchTopErc20Balances(wallet, c))),
-    getLendingPositions({ wallet, chains }),
-    getLpPositions({ wallet, chains }),
-    getStakingPositions({ wallet, chains }),
+    Promise.all(
+      chains.map((c) =>
+        fetchNativeBalance(wallet, c).catch(() => zeroNative(wallet, c))
+      )
+    ),
+    Promise.all(chains.map((c) => fetchTopErc20Balances(wallet, c).catch(() => []))),
+    getLendingPositions({ wallet, chains }).catch(() => emptyPositions as never),
+    getLpPositions({ wallet, chains }).catch(() => emptyPositions as never),
+    getStakingPositions({ wallet, chains }).catch(() => emptyPositions as never),
   ]);
 
   // Filter zero native balances out.
@@ -93,10 +158,6 @@ export async function getPortfolioSummary(args: GetPortfolioSummaryArgs): Promis
     chains.map((c) => [c, 0])
   ) as Record<SupportedChain, number>;
 
-  for (const t of [...native, ...erc20]) {
-    // The token's chain is encoded in the caller context — we know from arrays.
-  }
-  // Simpler re-walk with index awareness:
   chains.forEach((c, i) => {
     const chainNative = nativeAmounts[i]?.valueUsd ?? 0;
     const chainErc20 = erc20Amounts[i].reduce((s, t) => s + (t.valueUsd ?? 0), 0);

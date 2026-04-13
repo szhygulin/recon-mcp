@@ -50,8 +50,24 @@ function rayMul(a: bigint, b: bigint): bigint {
   return (a * b + RAY / 2n) / RAY;
 }
 
-/** Fetch the fully-resolved Aave V3 lending position on a single chain. Returns null if the user has no Aave activity. */
+/**
+ * Fetch the fully-resolved Aave V3 lending position on a single chain.
+ * Returns null if the user has no Aave activity OR the RPC returned empty data for any of
+ * the required reads (batching mis-handling, rate-limit, transient). The caller treats a
+ * null result as "no position on this chain" — safer than exploding the whole portfolio.
+ */
 export async function getAaveLendingPosition(
+  wallet: `0x${string}`,
+  chain: SupportedChain
+): Promise<LendingPosition | null> {
+  try {
+    return await readAaveLendingPosition(wallet, chain);
+  } catch {
+    return null;
+  }
+}
+
+async function readAaveLendingPosition(
   wallet: `0x${string}`,
   chain: SupportedChain
 ): Promise<LendingPosition | null> {
@@ -66,22 +82,21 @@ export async function getAaveLendingPosition(
     functionName: "getPool",
   })) as `0x${string}`;
 
-  // Fetch aggregate + reserves + per-user data in parallel.
-  const [account, userReservesResult, reservesResult] = await Promise.all([
-    client.readContract({ address: poolAddr, abi: aavePoolAbi, functionName: "getUserAccountData", args: [wallet] }),
-    client.readContract({
-      address: uiProvider,
-      abi: aaveUiPoolDataProviderAbi,
-      functionName: "getUserReservesData",
-      args: [provider, wallet],
-    }),
-    client.readContract({ address: uiProvider, abi: aaveUiPoolDataProviderAbi, functionName: "getReservesData", args: [provider] }),
-  ]);
+  // Aggregate data (HF, totals, LTV) comes from Pool.getUserAccountData — a stable ABI that
+  // has not changed across Aave V3 upgrades. Per-reserve breakdown relies on the more volatile
+  // UiPoolDataProviderV3 struct, whose shape drifts between chains/versions (stable-rate fields
+  // were removed in 3.2, extra fields added/shifted later). If that decode fails, we keep the
+  // aggregate — the user still gets HF and totals, just without the per-asset split.
+  const account = (await client.readContract({
+    address: poolAddr,
+    abi: aavePoolAbi,
+    functionName: "getUserAccountData",
+    args: [wallet],
+  })) as readonly [bigint, bigint, bigint, bigint, bigint, bigint];
 
   const [totalCollateralBase, totalDebtBase, availableBorrowsBase, currentLiquidationThreshold, ltv, healthFactor] =
-    account as unknown as [bigint, bigint, bigint, bigint, bigint, bigint];
+    account;
 
-  // Early exit if the wallet has no Aave activity.
   if (totalCollateralBase === 0n && totalDebtBase === 0n) return null;
 
   const agg: AggregateData = {
@@ -93,18 +108,48 @@ export async function getAaveLendingPosition(
     healthFactor,
   };
 
-  const [userReservesRaw] = userReservesResult as unknown as [UserReserve[], number];
-  const [reservesRaw, baseCurrencyRaw] = reservesResult as unknown as [ReserveData[], BaseCurrencyInfo];
+  let userReservesRaw: UserReserve[] = [];
+  let reservesRaw: ReserveData[] = [];
+  let baseCurrencyRaw: BaseCurrencyInfo | null = null;
+  try {
+    const [userReservesResult, reservesResult] = await Promise.all([
+      client.readContract({
+        address: uiProvider,
+        abi: aaveUiPoolDataProviderAbi,
+        functionName: "getUserReservesData",
+        args: [provider, wallet],
+      }),
+      client.readContract({
+        address: uiProvider,
+        abi: aaveUiPoolDataProviderAbi,
+        functionName: "getReservesData",
+        args: [provider],
+      }),
+    ]);
+    [userReservesRaw] = userReservesResult as unknown as [UserReserve[], number];
+    const [rr, bc] = reservesResult as unknown as [ReserveData[], BaseCurrencyInfo];
+    reservesRaw = rr;
+    baseCurrencyRaw = bc;
+  } catch {
+    // UiPoolDataProvider ABI drift — surface what we have (aggregate only).
+  }
+
   const reservesBySymbol = new Map<string, ReserveData>(
     reservesRaw.map((r) => [r.underlyingAsset.toLowerCase(), r])
   );
 
+  const collateral: TokenAmount[] = [];
+  const debt: TokenAmount[] = [];
+
+  // Skip per-reserve breakdown if the UiPoolDataProvider call failed — aggregate totals above
+  // are still returned.
+  if (!baseCurrencyRaw) {
+    return buildPosition(chain, agg, collateral, debt);
+  }
+
   // Unit-of-account price = USD price with `networkBaseTokenPriceDecimals` decimals
   const usdUnit = 10 ** baseCurrencyRaw.networkBaseTokenPriceDecimals;
   const marketBase = Number(baseCurrencyRaw.marketReferenceCurrencyUnit);
-
-  const collateral: TokenAmount[] = [];
-  const debt: TokenAmount[] = [];
 
   for (const ur of userReservesRaw) {
     const reserve = reservesBySymbol.get(ur.underlyingAsset.toLowerCase());
@@ -147,6 +192,15 @@ export async function getAaveLendingPosition(
     }
   }
 
+  return buildPosition(chain, agg, collateral, debt);
+}
+
+function buildPosition(
+  chain: SupportedChain,
+  agg: AggregateData,
+  collateral: TokenAmount[],
+  debt: TokenAmount[]
+): LendingPosition {
   const totalCollateralUsd = Number(formatUnits(agg.totalCollateralBase, BASE_DECIMALS));
   const totalDebtUsd = Number(formatUnits(agg.totalDebtBase, BASE_DECIMALS));
   // healthFactor returned by Aave is scaled 1e18; cap at a big number if no debt.
@@ -154,7 +208,6 @@ export async function getAaveLendingPosition(
     agg.totalDebtBase === 0n
       ? Number.POSITIVE_INFINITY
       : Number(formatUnits(agg.healthFactor, 18));
-
   return {
     protocol: "aave-v3",
     chain,
