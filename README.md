@@ -31,6 +31,12 @@ This is an **agent-driven portfolio management** tool, not a wallet replacement.
 
 EVM: Ethereum, Arbitrum, Polygon.
 
+## Roadmap
+
+- **MetaMask support** (WalletConnect) — planned for the next release, alongside the existing Ledger Live integration. Will let users sign through a MetaMask-paired session when a hardware wallet isn't available.
+- **Base** — coming soon. EVM L2, reuses the existing viem/Aave V3/LiFi tooling.
+- **Solana** — coming soon. Non-EVM: introduces a separate SDK (`@solana/web3.js`), base58 addresses, and the WalletConnect `solana:` namespace for signing.
+
 ## Tools exposed to the agent
 
 Read-only (no Ledger pairing required):
