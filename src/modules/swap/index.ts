@@ -77,6 +77,30 @@ async function resolveDecimals(
   }
 }
 
+/**
+ * On-chain decimals read with no fallback path. Returns undefined for native (no
+ * contract to read) and undefined on RPC failure so callers can distinguish "known
+ * to match" from "couldn't verify". Used by prepareSwap to cross-check LiFi's
+ * reported token metadata before returning signable calldata.
+ */
+async function readOnchainDecimals(
+  chain: SupportedChain,
+  token: `0x${string}` | "native"
+): Promise<number | undefined> {
+  if (token === "native") return undefined;
+  try {
+    const client = getClient(chain);
+    const d = (await client.readContract({
+      address: token,
+      abi: erc20Abi,
+      functionName: "decimals",
+    })) as number;
+    return Number(d);
+  } catch {
+    return undefined;
+  }
+}
+
 export async function getSwapQuote(args: GetSwapQuoteArgs) {
   const chain = args.fromChain as SupportedChain;
   const toChain = args.toChain as SupportedChain;
@@ -240,6 +264,68 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
   const txRequest = quote.transactionRequest;
   if (!txRequest || !txRequest.to || !txRequest.data) {
     throw new Error("LiFi did not return a transactionRequest for this quote.");
+  }
+
+  // Cross-check LiFi's reported token decimals against on-chain reads. A mismatch
+  // would mean either LiFi has stale metadata or the route targets a token different
+  // from what we asked for — in either case, the formatted expectedOut/minOut shown
+  // to the user would be wrong, so refuse. Native assets are skipped (no contract).
+  const fromToken = args.fromToken as `0x${string}` | "native";
+  const toToken = args.toToken as `0x${string}` | "native";
+  const [fromDecimalsOnchain, toDecimalsOnchain] = await Promise.all([
+    readOnchainDecimals(chain, fromToken),
+    readOnchainDecimals(args.toChain as SupportedChain, toToken),
+  ]);
+  if (
+    fromDecimalsOnchain !== undefined &&
+    fromDecimalsOnchain !== quote.action.fromToken.decimals
+  ) {
+    throw new Error(
+      `Decimals mismatch for fromToken ${quote.action.fromToken.symbol} (${quote.action.fromToken.address}): ` +
+        `LiFi reports ${quote.action.fromToken.decimals}, on-chain says ${fromDecimalsOnchain}. ` +
+        `Refusing to return calldata.`
+    );
+  }
+  if (
+    toDecimalsOnchain !== undefined &&
+    toDecimalsOnchain !== quote.action.toToken.decimals
+  ) {
+    throw new Error(
+      `Decimals mismatch for toToken ${quote.action.toToken.symbol} (${quote.action.toToken.address}): ` +
+        `LiFi reports ${quote.action.toToken.decimals}, on-chain says ${toDecimalsOnchain}. ` +
+        `Refusing to return calldata.`
+    );
+  }
+
+  // Sanity-check the quote before returning signable calldata. LiFi has been observed
+  // returning toAmount scaled wrong on certain aggregator integrations (e.g. 10 USDC →
+  // ~4500 ETH). The calldata embeds the bogus minOut and won't execute, but we refuse
+  // up front so the user doesn't waste a signature on a broken quote. Mirrors the
+  // warning path in getSwapQuote.
+  const fromPriceUsd = Number(quote.action.fromToken.priceUSD ?? NaN);
+  const toPriceUsd = Number(quote.action.toToken.priceUSD ?? NaN);
+  const fromAmountFormatted = Number(
+    formatUnits(BigInt(quote.action.fromAmount), quote.action.fromToken.decimals)
+  );
+  const toAmountFormatted = Number(
+    formatUnits(BigInt(quote.estimate.toAmount), quote.action.toToken.decimals)
+  );
+  if (
+    Number.isFinite(fromPriceUsd) &&
+    Number.isFinite(toPriceUsd) &&
+    fromPriceUsd > 0 &&
+    toPriceUsd > 0
+  ) {
+    const fromUsd = fromAmountFormatted * fromPriceUsd;
+    const toUsd = toAmountFormatted * toPriceUsd;
+    if (fromUsd > 0 && toUsd / fromUsd > 10) {
+      throw new Error(
+        `LiFi returned a malformed quote: toAmount=${toAmountFormatted} ${quote.action.toToken.symbol} ` +
+          `(~$${toUsd.toFixed(2)}) for input ~$${fromUsd.toFixed(2)} (route: ${quote.tool}). ` +
+          `Output is >10× the input value, so the calldata is not safe to sign. ` +
+          `Re-run get_swap_quote to fetch a fresh route.`
+      );
+    }
   }
 
   const fromSym = quote.action.fromToken.symbol;
