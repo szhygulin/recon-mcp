@@ -77,12 +77,44 @@ export const CONTRACTS = {
       cWETHv3: "0x6f7D514bbD4aFf3BcD1140B7344b32f063dEe486",
     },
   },
+  polygon: {
+    aave: {
+      // Aave V3 uses the same PoolAddressesProvider address across most L2s
+      // (deterministic deploy); UiPoolDataProviderV3 is chain-specific.
+      poolAddressProvider: "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb",
+      uiPoolDataProvider: "0xC69728f11E9E6127733751c8410432913123acf1",
+    },
+    uniswap: {
+      positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
+      factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+    },
+    // Lido has no native deployment on Polygon (stMATIC is a separate protocol
+    // from a different team); we intentionally omit the `lido` entry so the
+    // staking reader short-circuits for this chain.
+    tokens: {
+      USDC: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+      "USDC.e": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+      USDT: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
+      DAI: "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063",
+      WETH: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",
+      WMATIC: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",
+      WBTC: "0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6",
+      LINK: "0x53E0bca35eC356BD5ddDFebbD1Fc0fD03FaBad39",
+      AAVE: "0xD6DF932A45C0f255f85145f286eA0b292B21C90B",
+    },
+    compound: {
+      cUSDCv3: "0xF25212E676D1F7F89Cd72fFEe66158f541246445",
+      "cUSDT.ev3": "0xaeB318360f27748Acb200CE616E389A6C9409a07",
+    },
+  },
 } as const;
 
 export type ChainContracts<C extends SupportedChain> = (typeof CONTRACTS)[C];
 
-/** Native asset symbol per chain (all EVM chains we support use ETH as native). */
+/** Native asset symbol per chain. */
 export const NATIVE_SYMBOL: Record<SupportedChain, string> = {
   ethereum: "ETH",
   arbitrum: "ETH",
+  // Polygon's native token is MATIC (rebranding to POL is in progress — same contract).
+  polygon: "MATIC",
 };

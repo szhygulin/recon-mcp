@@ -13,11 +13,16 @@ const DEFILLAMA_BASE = "https://coins.llama.fi";
 const LLAMA_CHAIN: Record<SupportedChain, string> = {
   ethereum: "ethereum",
   arbitrum: "arbitrum",
+  polygon: "polygon",
 };
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-/** Address used by DefiLlama for native-ETH pricing (wraps to WETH on their side for most chains). */
-const ETH_COINGECKO_ID = "coingecko:ethereum";
+/** Coingecko ID for each chain's native asset. Ethereum + Arbitrum share ETH; Polygon uses MATIC. */
+const NATIVE_COINGECKO_ID: Record<SupportedChain, string> = {
+  ethereum: "coingecko:ethereum",
+  arbitrum: "coingecko:ethereum",
+  polygon: "coingecko:matic-network",
+};
 
 export interface PriceQuery {
   chain: SupportedChain;
@@ -30,7 +35,7 @@ interface LlamaResponse {
 
 function queryToLlamaKey(q: PriceQuery): string {
   if (q.address === "native" || q.address.toLowerCase() === ZERO_ADDRESS) {
-    return ETH_COINGECKO_ID;
+    return NATIVE_COINGECKO_ID[q.chain];
   }
   return `${LLAMA_CHAIN[q.chain]}:${q.address.toLowerCase()}`;
 }

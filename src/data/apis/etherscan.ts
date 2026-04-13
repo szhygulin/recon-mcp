@@ -6,6 +6,7 @@ import type { SupportedChain } from "../../types/index.js";
 const API_BASE: Record<SupportedChain, string> = {
   ethereum: "https://api.etherscan.io/api",
   arbitrum: "https://api.arbiscan.io/api",
+  polygon: "https://api.polygonscan.com/api",
 };
 
 export interface ContractInfo {
