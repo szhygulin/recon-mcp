@@ -367,7 +367,7 @@ async function main() {
     "prepare_aave_borrow",
     {
       description:
-        "Build an unsigned Aave V3 borrow transaction (stable or variable rate). The borrower must already have sufficient collateral supplied.",
+        "Build an unsigned Aave V3 borrow transaction (variable rate — stable rate is deprecated and reverts on production markets). The borrower must already have sufficient collateral supplied.",
       inputSchema: prepareAaveBorrowInput.shape,
     },
     txHandler(prepareAaveBorrow)

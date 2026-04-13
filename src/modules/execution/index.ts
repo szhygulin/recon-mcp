@@ -151,7 +151,6 @@ export async function prepareAaveBorrow(args: PrepareAaveBorrowArgs): Promise<Un
       amount: args.amount,
       decimals: meta.decimals,
       symbol: meta.symbol,
-      interestRateMode: args.interestRateMode,
     })
   );
 }
@@ -166,7 +165,6 @@ export async function prepareAaveRepay(args: PrepareAaveRepayArgs): Promise<Unsi
       amount: args.amount,
       decimals: meta.decimals,
       symbol: meta.symbol,
-      interestRateMode: args.interestRateMode,
     })
   );
 }

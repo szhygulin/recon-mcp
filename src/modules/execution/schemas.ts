@@ -24,12 +24,10 @@ const baseAaveAction = z.object({
 
 export const prepareAaveSupplyInput = baseAaveAction;
 export const prepareAaveWithdrawInput = baseAaveAction;
-export const prepareAaveBorrowInput = baseAaveAction.extend({
-  interestRateMode: z.enum(["stable", "variable"]).default("variable"),
-});
-export const prepareAaveRepayInput = baseAaveAction.extend({
-  interestRateMode: z.enum(["stable", "variable"]).default("variable"),
-});
+// Aave V3 stable-rate borrowing is disabled on all production markets — we only
+// build variable-rate borrow/repay txs. No `interestRateMode` arg on purpose.
+export const prepareAaveBorrowInput = baseAaveAction;
+export const prepareAaveRepayInput = baseAaveAction;
 
 export const prepareLidoStakeInput = z.object({
   wallet: walletSchema,
