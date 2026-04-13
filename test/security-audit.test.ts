@@ -197,6 +197,7 @@ describe("H1: USDT-style approve(0) reset in Aave action builder", () => {
       amount: "100",
       decimals: 6,
       symbol: "USDT",
+      approvalCap: "exact",
     });
     // Outer tx = approve(0).
     expect(tx.to).toBe(USDT);
@@ -252,6 +253,7 @@ describe("H1: USDT-style approve(0) reset in Aave action builder", () => {
       amount: "100",
       decimals: 6,
       symbol: "USDT",
+      approvalCap: "exact",
     });
     // Outer = approve(amount) (no reset needed).
     expect(tx.description).toMatch(/Approve USDT.*exact amount/i);
@@ -295,6 +297,7 @@ describe("H2: Aave repay-max sizes approval against live debt", () => {
       amount: "max",
       decimals: 6,
       symbol: "USDC",
+      approvalCap: "exact",
     });
     // First step is an approve with amount = debt * 1.01.
     expect(tx.to).toBe(USDC);

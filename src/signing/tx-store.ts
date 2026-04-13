@@ -61,17 +61,39 @@ export function issueHandles(tx: UnsignedTx): UnsignedTx {
   return withHandle;
 }
 
-/** Retrieve the tx named by `handle`, or throw if unknown/expired. */
+/**
+ * Retrieve the tx named by `handle`, or throw if unknown/expired. Does NOT
+ * delete the entry — we need retry-on-device-disconnect to work, so the handle
+ * stays valid until either:
+ *   (a) the tx is successfully submitted to the relay (caller invokes
+ *       `retireHandle` after the WalletConnect request resolves), or
+ *   (b) the TTL expires.
+ * Callers must call `retireHandle(handle)` on successful submission so replays
+ * fail loudly instead of silently re-submitting the same payload.
+ */
 export function consumeHandle(handle: string): UnsignedTx {
   prune();
   const entry = store.get(handle);
   if (!entry) {
     throw new Error(
-      `Unknown or expired tx handle. Prepared transactions expire after 15 minutes. ` +
-        `Re-run the prepare_* tool to get a fresh handle.`
+      `Unknown or expired tx handle. Prepared transactions expire after 15 minutes and ` +
+        `are single-use after a successful submission. Re-run the prepare_* tool to get a fresh handle.`
     );
   }
-  // Handle remains valid — user may legitimately retry signing (e.g. device
-  // disconnect, WalletConnect timeout) before it expires.
   return entry.tx;
+}
+
+/**
+ * Mark a handle as used. Called after the tx has been successfully submitted
+ * so the same handle cannot replay the submission. Safe to call on a handle
+ * that was already pruned.
+ */
+export function retireHandle(handle: string): void {
+  store.delete(handle);
+}
+
+/** Test-only: true if `handle` is still active (not retired, not expired). */
+export function hasHandle(handle: string): boolean {
+  prune();
+  return store.has(handle);
 }

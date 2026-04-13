@@ -18,14 +18,20 @@ import {
  */
 const DEFAULT_PROJECT_ID = "";
 
-/** EVM namespace requested when proposing a session. Includes both chains we support. */
-const REQUIRED_NAMESPACES = {
+/**
+ * EVM namespace requested when proposing a session. We deliberately omit
+ * `personal_sign` and `eth_signTypedData_v4` — no tool in this server produces
+ * either, so requesting them would be an over-broad capability grant. Blind
+ * typed-data signing is the canonical Permit2 / off-chain-order phishing
+ * surface; scoping the session away from it means a compromised process can't
+ * issue those requests against a live pairing without reconnecting (which the
+ * user would see prompted on their device).
+ */
+export const REQUIRED_NAMESPACES = {
   eip155: {
     methods: [
       "eth_sendTransaction",
       "eth_signTransaction",
-      "personal_sign",
-      "eth_signTypedData_v4",
       "eth_chainId",
     ],
     chains: Object.values(CHAIN_IDS).map((id) => `eip155:${id}`),

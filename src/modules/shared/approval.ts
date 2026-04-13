@@ -5,6 +5,14 @@ import { getClient } from "../../data/rpc.js";
 import type { SupportedChain, UnsignedTx } from "../../types/index.js";
 
 /**
+ * Distinctive description tag used whenever an approval is emitted at
+ * maxUint256. Makes it easy to eyeball the Ledger preview text and also lets
+ * tests assert the user-visible surfacing.
+ */
+export const UNLIMITED_APPROVAL_WARNING =
+  "[WARNING: UNLIMITED APPROVAL — verify on Ledger device screen]";
+
+/**
  * Shared ERC-20 approval builder. Every prepare_* tool that needs an allowance
  * before its main call routes through buildApprovalTx() so the USDT reset
  * pattern, the optional cap logic, and the description string stay in one
@@ -64,13 +72,21 @@ export interface BuildApprovalArgs {
 
 /**
  * Build an approve tx (or a reset→approve chain for USDT-style tokens).
- * Returns null when the current allowance already covers `amountWei` —
- * no approval needed.
+ * Returns null when no approval tx is needed.
  *
- * Note: we key the "skip" check off amountWei (what the action needs), not
- * approvalAmount (what the cap says). If the user's cap is lower than their
- * current allowance, we leave the allowance alone rather than reducing it.
- * Reducing would be an extra tx the user didn't ask for.
+ * Three outcomes, in order:
+ *   1. Current allowance already satisfies the action AND the cap — return
+ *      null. "Satisfies the cap" means: the user asked for "unlimited" (no
+ *      cap), OR the existing allowance is ≤ approvalAmount. In other words,
+ *      we only leave the allowance alone when doing so respects the caller's
+ *      intent.
+ *   2. Current allowance satisfies the action BUT exceeds an explicit cap —
+ *      emit reset(0) → approve(cap). The user asked for a ceiling and we
+ *      enforce it even if it means an extra tx. This is the fix for the
+ *      silent-no-op footgun where a prior unlimited approval would defeat a
+ *      new `approvalCap: "500"` request.
+ *   3. Current allowance is below what the action needs — emit approve(cap)
+ *      (or reset→approve for USDT-style tokens when allowance > 0).
  */
 export async function buildApprovalTx(a: BuildApprovalArgs): Promise<UnsignedTx | null> {
   const client = getClient(a.chain);
@@ -80,8 +96,15 @@ export async function buildApprovalTx(a: BuildApprovalArgs): Promise<UnsignedTx 
     functionName: "allowance",
     args: [a.wallet, a.spender],
   })) as bigint;
-  if (allowance >= a.amountWei) return null;
 
+  const isUnlimitedRequest = a.approvalAmount === maxUint256;
+  const actionCovered = allowance >= a.amountWei;
+  const capRespected = isUnlimitedRequest || allowance <= a.approvalAmount;
+
+  // Case 1: existing allowance is already fine for the action and within the cap.
+  if (actionCovered && capRespected) return null;
+
+  const warning = isUnlimitedRequest ? ` ${UNLIMITED_APPROVAL_WARNING}` : "";
   const approveTx: UnsignedTx = {
     chain: a.chain,
     to: a.asset,
@@ -92,16 +115,21 @@ export async function buildApprovalTx(a: BuildApprovalArgs): Promise<UnsignedTx 
     }),
     value: "0",
     from: a.wallet,
-    description: `Approve ${a.symbol} for ${a.spenderLabel} (${a.approvalDisplay})`,
+    description: `Approve ${a.symbol} for ${a.spenderLabel} (${a.approvalDisplay})${warning}`,
     decoded: {
       functionName: "approve",
       args: { spender: a.spender, amount: a.approvalDisplay },
     },
   };
 
+  // Emit a reset whenever the current allowance is nonzero. Covers both the
+  // USDT non-zero → non-zero revert AND the case-2 cap-enforcement rewrite
+  // (reducing an existing allowance to the new cap).
   if (allowance > 0n) {
-    // USDT-style reset: some ERC-20s (notably USDT on Ethereum) revert on
-    // approve(nonzero → nonzero). Chain approve(0) → approve(N).
+    const resetReason =
+      actionCovered && !capRespected
+        ? `Reduce ${a.symbol} allowance to respect approvalCap (was above the cap)`
+        : `Reset ${a.symbol} allowance to 0 (required by USDT-style tokens before re-approval)`;
     return {
       chain: a.chain,
       to: a.asset,
@@ -112,7 +140,7 @@ export async function buildApprovalTx(a: BuildApprovalArgs): Promise<UnsignedTx 
       }),
       value: "0",
       from: a.wallet,
-      description: `Reset ${a.symbol} allowance to 0 (required by USDT-style tokens before re-approval)`,
+      description: resetReason,
       decoded: { functionName: "approve", args: { spender: a.spender, amount: "0" } },
       next: approveTx,
     };

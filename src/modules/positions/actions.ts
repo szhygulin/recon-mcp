@@ -3,6 +3,7 @@ import { aavePoolAbi } from "../../abis/aave-pool.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { getClient } from "../../data/rpc.js";
 import { getAavePoolAddress } from "./aave.js";
+import { buildApprovalTx, resolveApprovalCap } from "../shared/approval.js";
 import type { SupportedChain, UnsignedTx } from "../../types/index.js";
 
 /**
@@ -26,70 +27,6 @@ function assertNotNativePseudoaddr(asset: `0x${string}`, op: string): void {
   }
 }
 
-/**
- * Build an approve(spender, amount) tx, optionally preceded by approve(0).
- * Some ERC-20s (notably USDT on Ethereum) revert on approve(nonzero) when the
- * current allowance is already nonzero — the caller must zero it out first.
- * We always emit the reset when prior allowance is nonzero; it's a few-thousand-
- * gas no-op on well-behaved tokens and avoids maintaining an allowlist.
- */
-async function ensureApproval(
-  chain: SupportedChain,
-  owner: `0x${string}`,
-  spender: `0x${string}`,
-  asset: `0x${string}`,
-  amount: bigint,
-  symbol: string,
-  _decimals: number
-): Promise<UnsignedTx | null> {
-  const client = getClient(chain);
-  const allowance = (await client.readContract({
-    address: asset,
-    abi: erc20Abi,
-    functionName: "allowance",
-    args: [owner, spender],
-  })) as bigint;
-  if (allowance >= amount) return null;
-
-  const approveTx: UnsignedTx = {
-    chain,
-    to: asset,
-    data: encodeFunctionData({
-      abi: erc20Abi,
-      functionName: "approve",
-      args: [spender, amount],
-    }),
-    value: "0",
-    from: owner,
-    description: `Approve ${symbol} for Aave V3 Pool (exact amount)`,
-    decoded: {
-      functionName: "approve",
-      args: { spender, amount: formatUnits(amount, _decimals) },
-    },
-  };
-
-  if (allowance > 0n) {
-    // USDT-style reset: chain approve(0) → approve(amount).
-    const resetTx: UnsignedTx = {
-      chain,
-      to: asset,
-      data: encodeFunctionData({
-        abi: erc20Abi,
-        functionName: "approve",
-        args: [spender, 0n],
-      }),
-      value: "0",
-      from: owner,
-      description: `Reset ${symbol} allowance to 0 (required by USDT-style tokens before re-approval)`,
-      decoded: { functionName: "approve", args: { spender, amount: "0" } },
-      next: approveTx,
-    };
-    return resetTx;
-  }
-
-  return approveTx;
-}
-
 interface AaveActionParams {
   wallet: `0x${string}`;
   chain: SupportedChain;
@@ -97,6 +34,8 @@ interface AaveActionParams {
   amount: string; // human-readable amount ("100.5")
   decimals: number;
   symbol: string;
+  /** Optional ERC-20 approval cap — see resolveApprovalCap for semantics. */
+  approvalCap?: string;
 }
 
 function parseAmountFriendly(amount: string, decimals: number): bigint {
@@ -107,7 +46,22 @@ export async function buildAaveSupply(p: AaveActionParams): Promise<UnsignedTx> 
   assertNotNativePseudoaddr(p.asset, "supply");
   const pool = await getAavePoolAddress(p.chain);
   const amountWei = parseAmountFriendly(p.amount, p.decimals);
-  const approval = await ensureApproval(p.chain, p.wallet, pool, p.asset, amountWei, p.symbol, p.decimals);
+  const { approvalAmount, display } = resolveApprovalCap(
+    p.approvalCap,
+    amountWei,
+    p.decimals
+  );
+  const approval = await buildApprovalTx({
+    chain: p.chain,
+    wallet: p.wallet,
+    asset: p.asset,
+    spender: pool,
+    amountWei,
+    approvalAmount,
+    approvalDisplay: display,
+    symbol: p.symbol,
+    spenderLabel: "Aave V3 Pool",
+  });
 
   const supplyTx: UnsignedTx = {
     chain: p.chain,
@@ -221,7 +175,7 @@ export async function buildAaveRepay(p: AaveActionParams): Promise<UnsignedTx> {
   assertNotNativePseudoaddr(p.asset, "repay");
   const pool = await getAavePoolAddress(p.chain);
   let amountWei: bigint;
-  let approvalAmount: bigint;
+  let neededForApproval: bigint;
   if (p.amount === "max") {
     amountWei = maxUint256;
     // Aave caps the repay at the user's actual debt internally, but transferFrom
@@ -234,21 +188,28 @@ export async function buildAaveRepay(p: AaveActionParams): Promise<UnsignedTx> {
           "If you borrowed at stable rate historically, repay via the Aave UI (legacy flow)."
       );
     }
-    approvalAmount = (debt * 101n) / 100n;
+    neededForApproval = (debt * 101n) / 100n;
   } else {
     amountWei = parseAmountFriendly(p.amount, p.decimals);
-    approvalAmount = amountWei;
+    neededForApproval = amountWei;
   }
 
-  const approval = await ensureApproval(
-    p.chain,
-    p.wallet,
-    pool,
-    p.asset,
-    approvalAmount,
-    p.symbol,
+  const { approvalAmount, display } = resolveApprovalCap(
+    p.approvalCap,
+    neededForApproval,
     p.decimals
   );
+  const approval = await buildApprovalTx({
+    chain: p.chain,
+    wallet: p.wallet,
+    asset: p.asset,
+    spender: pool,
+    amountWei: neededForApproval,
+    approvalAmount,
+    approvalDisplay: display,
+    symbol: p.symbol,
+    spenderLabel: "Aave V3 Pool",
+  });
 
   const repayTx: UnsignedTx = {
     chain: p.chain,

@@ -73,20 +73,53 @@ export function validateRpcUrl(chain: SupportedChain, url: string): void {
   }
 }
 
-function isPrivateOrLoopbackHost(host: string): boolean {
-  if (host === "localhost" || host.endsWith(".local") || host.endsWith(".localhost")) return true;
-  if (host === "::1" || host === "[::1]") return true;
-  // IPv4 literals.
-  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (v4) {
-    const [, a, b] = v4.map((x) => Number(x));
-    if (a === 10) return true;
-    if (a === 127) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 169 && b === 254) return true; // link-local
-    if (a === 0) return true;
+export function isPrivateOrLoopbackHost(host: string): boolean {
+  // Strip IPv6 bracket form. The URL parser can return hostnames like "[::1]"
+  // or "[fe80::1]"; normalise to the bare address for matching.
+  let h = host;
+  if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1);
+  h = h.toLowerCase();
+
+  if (h === "localhost" || h.endsWith(".local") || h.endsWith(".localhost")) return true;
+
+  // IPv4 literal.
+  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4 && isPrivateOrLoopbackIPv4(Number(v4[1]), Number(v4[2]))) {
+    return true;
   }
+
+  // IPv4-mapped IPv6, e.g. ::ffff:10.0.0.1 or ::ffff:c0a8:0001.
+  const mapped = h.match(/^::ffff:(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (mapped && isPrivateOrLoopbackIPv4(Number(mapped[1]), Number(mapped[2]))) {
+    return true;
+  }
+
+  // IPv6 literals. We match on prefix rather than fully parsing the address
+  // because the forms we care about all have a fixed high-order signature:
+  //   ::1             loopback
+  //   fc00::/7        ULA (matches fc.. and fd.. as first hex pair)
+  //   fe80::/10       link-local (fe8., fe9., fea., feb.)
+  //   ::              unspecified
+  if (h === "::1" || h === "::") return true;
+  // Hex-pair prefix — first group before ':' or string end.
+  const firstGroup = h.split(":")[0];
+  if (/^fc[0-9a-f]{0,2}$/.test(firstGroup) || /^fd[0-9a-f]{0,2}$/.test(firstGroup)) {
+    return true;
+  }
+  if (/^fe[89ab][0-9a-f]?$/.test(firstGroup)) {
+    return true;
+  }
+
+  return false;
+}
+
+function isPrivateOrLoopbackIPv4(a: number, b: number): boolean {
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 169 && b === 254) return true; // link-local
+  if (a === 0) return true;
   return false;
 }
 

@@ -79,7 +79,21 @@ export async function getContractInfo(
   if (!res.ok) {
     throw new Error(`Etherscan request failed: ${res.status} ${res.statusText}`);
   }
-  const body = (await res.json()) as EtherscanResponse<EtherscanSourceCodeItem[]>;
+
+  // Bound the response before JSON-parsing. Etherscan has been well-behaved,
+  // but the response is cached 24h in memory — an unbounded blob is both a
+  // memory-pressure vector and gives a MITM with a broken TLS setup room to
+  // inject a huge payload. 2MB covers the largest verified contracts we've
+  // seen (fully-resolved imports of flattened DeFi protocols top out ~1MB)
+  // with a comfortable margin.
+  const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+  const text = await res.text();
+  if (text.length > MAX_RESPONSE_BYTES) {
+    throw new Error(
+      `Etherscan response for ${address} on ${chain} exceeds ${MAX_RESPONSE_BYTES} bytes (got ${text.length}). Refusing to parse.`
+    );
+  }
+  const body = JSON.parse(text) as EtherscanResponse<EtherscanSourceCodeItem[]>;
 
   if (body.status !== "1" || !body.result?.[0]) {
     // Unverified contracts still return a valid response with empty SourceCode.
@@ -98,7 +112,16 @@ export async function getContractInfo(
   let abi: unknown[] | undefined;
   if (isVerified && item.ABI && item.ABI !== "Contract source code not verified") {
     try {
-      abi = JSON.parse(item.ABI);
+      const parsed = JSON.parse(item.ABI);
+      // Cap ABI length. 5000 items is ~10× the largest proxy ABIs we've seen
+      // (LiFi Diamond is ~1000 entries); anything bigger is either a pathological
+      // contract or a hostile response trying to blow up memory on scan paths.
+      const MAX_ABI_ITEMS = 5000;
+      if (Array.isArray(parsed) && parsed.length <= MAX_ABI_ITEMS) {
+        abi = parsed;
+      } else {
+        abi = undefined;
+      }
     } catch {
       abi = undefined;
     }

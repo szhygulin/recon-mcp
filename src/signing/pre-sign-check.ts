@@ -7,8 +7,18 @@ import { cometAbi } from "../abis/compound-comet.js";
 import { morphoBlueAbi } from "../abis/morpho-blue.js";
 import { uniswapPositionManagerAbi } from "../abis/uniswap-position-manager.js";
 import { CONTRACTS } from "../config/contracts.js";
-import { getAavePoolAddress } from "../modules/positions/aave.js";
 import type { SupportedChain, UnsignedTx } from "../types/index.js";
+
+/**
+ * Returns the pinned Aave V3 Pool address for `chain`. We deliberately DO NOT
+ * resolve this via PoolAddressesProvider.getPool() at sign time: the pre-sign
+ * check is our defense against a hostile RPC, so it must not delegate a trust-
+ * root lookup to that same RPC. Pool addresses are frozen per chain since
+ * Aave V3 launched and have not rotated; see contracts.ts for the source.
+ */
+function pinnedAavePool(chain: SupportedChain): `0x${string}` {
+  return CONTRACTS[chain].aave.pool as `0x${string}`;
+}
 
 /**
  * Independent pre-sign safety check. Runs in send_transaction AFTER the handle
@@ -80,8 +90,8 @@ async function classifyDestination(
 ): Promise<RecognizedDestination | null> {
   const lo = to.toLowerCase();
 
-  // Aave V3 Pool — resolved live from PoolAddressesProvider to tolerate pool upgrades.
-  const aavePool = (await getAavePoolAddress(chain)).toLowerCase();
+  // Aave V3 Pool — pinned from a hardcoded address, NOT a live RPC read.
+  const aavePool = pinnedAavePool(chain).toLowerCase();
   if (lo === aavePool) return { kind: "aave-v3-pool", allowedAbi: aavePoolAbi };
 
   // Compound V3 Comet markets.
@@ -133,9 +143,9 @@ async function classifyDestination(
 }
 
 /** Spenders allowed for approve(spender, _). */
-async function buildSpenderAllowlist(chain: SupportedChain): Promise<Set<string>> {
+function buildSpenderAllowlist(chain: SupportedChain): Set<string> {
   const out = new Set<string>();
-  out.add((await getAavePoolAddress(chain)).toLowerCase());
+  out.add(pinnedAavePool(chain).toLowerCase());
   const compound = CONTRACTS[chain].compound as Record<string, string> | undefined;
   if (compound) for (const a of Object.values(compound)) out.add(a.toLowerCase());
   if (chain === "ethereum") {
@@ -200,7 +210,7 @@ export async function assertTransactionSafe(tx: UnsignedTx): Promise<void> {
         `Pre-sign check: could not decode approve() calldata on ${tx.to}. Refusing to sign.`
       );
     }
-    const allowlist = await buildSpenderAllowlist(tx.chain);
+    const allowlist = buildSpenderAllowlist(tx.chain);
     if (!allowlist.has(spender)) {
       throw new Error(
         `Pre-sign check: refusing approve(spender=${spender}, ...) on ${tx.chain} — spender is ` +

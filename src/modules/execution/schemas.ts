@@ -23,12 +23,16 @@ const baseAaveAction = z.object({
     ),
 });
 
-export const prepareAaveSupplyInput = baseAaveAction;
+export const prepareAaveSupplyInput = baseAaveAction.extend({
+  approvalCap: approvalCapSchema,
+});
 export const prepareAaveWithdrawInput = baseAaveAction;
 // Aave V3 stable-rate borrowing is disabled on all production markets — we only
 // build variable-rate borrow/repay txs. No `interestRateMode` arg on purpose.
 export const prepareAaveBorrowInput = baseAaveAction;
-export const prepareAaveRepayInput = baseAaveAction;
+export const prepareAaveRepayInput = baseAaveAction.extend({
+  approvalCap: approvalCapSchema,
+});
 
 export const prepareLidoStakeInput = z.object({
   wallet: walletSchema,
@@ -91,7 +95,14 @@ export const sendTransactionInput = z.object({
         "Raw calldata is NOT accepted — the handle is the only way to name a tx for signing, " +
         "so the tx the user previewed is exactly the tx sent to Ledger. If the tx chain has a " +
         "`next` step (e.g. approve → swap), each step has its own handle; call send_transaction " +
-        "once per handle in order. Handles expire 15 minutes after prepare."
+        "once per handle in order. Handles expire 15 minutes after prepare and are single-use."
+    ),
+  confirmed: z
+    .literal(true)
+    .describe(
+      "Must be literally `true`. The agent is affirming that the user has seen and acknowledged " +
+        "the decoded preview returned by the preceding prepare_* call. This is a schema-enforced " +
+        "contract — omitting it fails validation before any tx is submitted."
     ),
 });
 

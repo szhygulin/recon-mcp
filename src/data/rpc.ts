@@ -1,10 +1,19 @@
 import { createPublicClient, http, type PublicClient } from "viem";
 import { resolveRpcUrl, VIEM_CHAINS } from "../config/chains.js";
-import { readUserConfig } from "../config/user-config.js";
+import { readUserConfig, onRpcConfigChange } from "../config/user-config.js";
 import { CHAIN_IDS, type SupportedChain } from "../types/index.js";
 
 const clients = new Map<SupportedChain, PublicClient>();
 const verifiedChains = new Set<SupportedChain>();
+
+// Invalidate cached clients + the verified-chains memo whenever the user
+// rewrites their rpc config, so the next call re-resolves URLs and re-runs
+// chain-id verification. `onRpcConfigChange` accepts a single hook; rpc.ts
+// owns it because it owns the cache.
+onRpcConfigChange(() => {
+  clients.clear();
+  verifiedChains.clear();
+});
 
 /**
  * Get (or lazily create) a viem PublicClient for the given chain.

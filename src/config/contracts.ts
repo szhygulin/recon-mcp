@@ -9,6 +9,11 @@ export const CONTRACTS = {
     aave: {
       poolAddressProvider: "0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e",
       uiPoolDataProvider: "0x3F78BBD206e4D3c504Eb854232EdA7e47E9Fd8FC",
+      // Pinned Pool address used by the pre-sign safety check. Derived from
+      // PoolAddressesProvider.getPool() at deploy time and stable since Aave
+      // V3 launch on this chain. Used in place of a live getPool() read so a
+      // compromised RPC cannot forge a malicious pool into our allowlist.
+      pool: "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
     },
     uniswap: {
       positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
@@ -52,6 +57,7 @@ export const CONTRACTS = {
     aave: {
       poolAddressProvider: "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb",
       uiPoolDataProvider: "0x5c5228aC8BC1528482514aF3e27E692495148717",
+      pool: "0x794a61358D6845594F94dc1DB02A252b5b4814aD",
     },
     uniswap: {
       positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
@@ -83,6 +89,7 @@ export const CONTRACTS = {
       // (deterministic deploy); UiPoolDataProviderV3 is chain-specific.
       poolAddressProvider: "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb",
       uiPoolDataProvider: "0xC69728f11E9E6127733751c8410432913123acf1",
+      pool: "0x794a61358D6845594F94dc1DB02A252b5b4814aD",
     },
     uniswap: {
       positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",

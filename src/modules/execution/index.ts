@@ -3,9 +3,10 @@ import qrcodeTerminal from "qrcode-terminal";
 import {
   initiatePairing,
   requestSendTransaction,
+  getConnectedAccounts,
 } from "../../signing/walletconnect.js";
 import { getSessionStatus } from "../../signing/session.js";
-import { consumeHandle } from "../../signing/tx-store.js";
+import { consumeHandle, retireHandle } from "../../signing/tx-store.js";
 import { assertTransactionSafe } from "../../signing/pre-sign-check.js";
 import { getClient, verifyChainId } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
@@ -124,6 +125,7 @@ export async function prepareAaveSupply(args: PrepareAaveSupplyArgs): Promise<Un
       amount: args.amount,
       decimals: meta.decimals,
       symbol: meta.symbol,
+      approvalCap: args.approvalCap,
     })
   );
 }
@@ -166,6 +168,7 @@ export async function prepareAaveRepay(args: PrepareAaveRepayArgs): Promise<Unsi
       amount: args.amount,
       decimals: meta.decimals,
       symbol: meta.symbol,
+      approvalCap: args.approvalCap,
     })
   );
 }
@@ -274,7 +277,28 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
   // (for approve) spender allowlist. A compromised agent can't slip an
   // "approve(attacker, MAX)" past this, even if the handle system were bypassed.
   await assertTransactionSafe(tx);
+  // Assert that tx.from is actually an account the paired wallet holds keys
+  // for. Without this check, a prepare_* call with a user-supplied `wallet`
+  // arg referencing an address the wallet doesn't control would be forwarded
+  // to Ledger Live and rejected deep in the sign flow with a confusing error.
+  // Worse: a prompt-injected agent could get us to request signing for an
+  // address the user didn't intend to use in this session.
+  if (tx.from) {
+    const accounts = (await getConnectedAccounts()).map((a) => a.toLowerCase());
+    const from = tx.from.toLowerCase();
+    if (accounts.length > 0 && !accounts.includes(from)) {
+      throw new Error(
+        `Pre-sign check: tx.from (${tx.from}) is not one of the accounts exposed by the paired ` +
+          `WalletConnect session (${accounts.join(", ")}). Refusing to submit. If this is a ` +
+          `different Ledger account, re-pair with that account unlocked.`
+      );
+    }
+  }
   const hash = await requestSendTransaction(tx);
+  // Only retire the handle after successful submission. If requestSendTransaction
+  // throws (device disconnect, user rejection, relay timeout), the handle stays
+  // valid and the caller can retry until the 15-minute TTL expires.
+  retireHandle(args.handle);
   return {
     txHash: hash,
     chain: tx.chain,
