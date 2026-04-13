@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.szhygulin/recon-crypto-mcp",
   "title": "Recon Crypto MCP",
-  "description": "MCP server for AI agents (Claude, Cursor) to manage a self-custodial crypto portfolio on Ethereum/Arbitrum/Polygon via Ledger + WalletConnect. Reads on-chain DeFi positions (Aave V3, Compound V3, Morpho Blue, Uniswap V3 LP, Lido, EigenLayer), surfaces liquidation/health-factor alerts, and prepares unsigned EVM transactions (supply, borrow, repay, withdraw, stake, unstake, native/ERC-20 send, LiFi-routed swaps and bridges) that the user signs on their Ledger device. Private keys never leave the hardware wallet.",
-  "version": "0.2.1",
+  "description": "Self-custodial crypto portfolio: read EVM DeFi, sign on Ledger via WalletConnect.",
+  "version": "0.2.2",
   "websiteUrl": "https://github.com/szhygulin/recon-crypto-mcp",
   "repository": {
     "url": "https://github.com/szhygulin/recon-crypto-mcp",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "recon-crypto-mcp",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {
