@@ -118,12 +118,23 @@ export interface LPPosition {
   currentTick: number;
   inRange: boolean;
   liquidity: string;
-  /** Already-accrued fees available to collect. Lower bound — in-flight fees not counted in MVP. */
-  unclaimedFees0: TokenAmount;
-  unclaimedFees1: TokenAmount;
+  /**
+   * Fees that have been checkpointed into NonfungiblePositionManager.tokensOwed
+   * (e.g. by a prior collect/burn touch). Fees accrued since the last
+   * checkpoint are NOT included — to see the full collectable amount, the
+   * caller would need to simulate collect() against fork state. Treat this as
+   * a LOWER BOUND on what a collect would return.
+   */
+  tokensOwedCached0: TokenAmount;
+  tokensOwedCached1: TokenAmount;
+  /**
+   * USD value derived from token amounts computed at the current tick. This
+   * is an approximation: withdrawing the position at a different price would
+   * yield different amounts. Flagged as `valueUsdIsApproximate: true` so
+   * callers don't display this as a precise number.
+   */
   totalValueUsd: number;
-  /** Approximate impermanent loss vs. holding — expressed as a fraction (e.g. -0.02 = -2%). */
-  impermanentLossEstimate?: number;
+  valueUsdIsApproximate: true;
 }
 
 export interface StakingPosition {

@@ -66,15 +66,12 @@ function computeAmountsFromLiquidity(
   return { amount0, amount1 };
 }
 
-/** Approximate IL vs. HODL, using the geometric mean of the tick range as entry price proxy. */
-function estimateIL(tickLower: number, tickUpper: number, currentTick: number): number {
-  const entryPrice = tickToPrice((tickLower + tickUpper) / 2);
-  const currentPrice = tickToPrice(currentTick);
-  const ratio = currentPrice / entryPrice;
-  // Standard full-range IL formula.
-  const il = (2 * Math.sqrt(ratio)) / (1 + ratio) - 1;
-  return round(il, 6);
-}
+// NOTE: the previous build exported an impermanent-loss estimator that used
+// the geometric midpoint of the LP's tick range as a stand-in for the user's
+// entry price. That proxy is wrong in every realistic case (users don't open
+// LPs at the exact middle of their chosen range) and the resulting number
+// misled rather than informed. Removed outright — the correct calculation
+// needs the mint-time price, which has to come from event logs or a subgraph.
 
 interface PositionRaw {
   tokenId: bigint;
@@ -238,10 +235,10 @@ async function readUniswapPositions(
       currentTick,
       inRange: p.tickLower <= currentTick && currentTick < p.tickUpper,
       liquidity: p.liquidity.toString(),
-      unclaimedFees0: fees0,
-      unclaimedFees1: fees1,
+      tokensOwedCached0: fees0,
+      tokensOwedCached1: fees1,
       totalValueUsd,
-      impermanentLossEstimate: estimateIL(p.tickLower, p.tickUpper, currentTick),
+      valueUsdIsApproximate: true,
     });
   }
 
