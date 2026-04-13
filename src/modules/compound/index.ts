@@ -86,6 +86,19 @@ async function readMarketPosition(
     })),
   ];
   const metaResults = await client.multicall({ contracts: metaCalls, allowFailure: true });
+  const baseSuppliedWei = supplied as bigint;
+  const baseBorrowedWei = borrowed as bigint;
+  // If either base balance is nonzero we MUST know the base token's decimals to
+  // format correctly. Previously this silently fell back to 18, which rendered a
+  // 184k USDC (6-decimal) supply as ~0.0000002 USDC — showed up as dust in the
+  // portfolio summary while the direct get_compound_positions call succeeded.
+  // Skip the market rather than emit a wrong-scale amount.
+  if (
+    metaResults[0].status !== "success" &&
+    (baseSuppliedWei > 0n || baseBorrowedWei > 0n)
+  ) {
+    return null;
+  }
   const baseDecimals =
     metaResults[0].status === "success" ? Number(metaResults[0].result) : 18;
   const baseSymbol =
@@ -116,9 +129,6 @@ async function readMarketPosition(
           ]),
           allowFailure: true,
         });
-
-  const baseSuppliedWei = supplied as bigint;
-  const baseBorrowedWei = borrowed as bigint;
 
   const collateral: TokenAmount[] = [];
   for (let i = 0; i < collateralAddrs.length; i++) {

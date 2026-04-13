@@ -490,6 +490,64 @@ describe("Bug 8: Compound V3 reader surfaces base balance even when a getAssetIn
     expect(ethMarket!.baseSupplied?.symbol).toBe("USDC");
     expect(ethMarket!.baseSupplied?.formatted).toBe("184874.39434");
   });
+
+  it("skips a market with a nonzero base balance when the base token's decimals read fails", async () => {
+    // Live-session bug: wallet C0f5...4075 held 184377 USDC in cUSDCv3, but
+    // get_portfolio_summary rendered it as ~0.0000002 USDC because the base
+    // token's decimals() multicall entry transiently failed and the code fell
+    // back to decimals=18. A 6-decimal USDC supply formatted as 18 decimals
+    // looks like dust. Fix: skip the market rather than emit wrong-scale
+    // numbers; the direct get_compound_positions retry will typically succeed.
+    let callIdx = 0;
+    const mockClient = {
+      multicall: vi.fn(async ({ contracts }: { contracts: unknown[] }) => {
+        callIdx++;
+        if (contracts.length === 4) {
+          if (callIdx === 1) {
+            return [
+              { status: "success", result: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" },
+              { status: "success", result: 0 },
+              { status: "success", result: 184_377_830_000n },
+              { status: "success", result: 0n },
+            ];
+          }
+          return [
+            { status: "success", result: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" },
+            { status: "success", result: 0 },
+            { status: "success", result: 0n },
+            { status: "success", result: 0n },
+          ];
+        }
+        if ((contracts[0] as { functionName: string }).functionName === "decimals") {
+          // decimals() fails; symbol() also flaky. This is the transient condition.
+          return [
+            { status: "failure", error: new Error('returned no data ("0x")') },
+            { status: "failure", error: new Error('returned no data ("0x")') },
+          ];
+        }
+        return [];
+      }),
+    };
+
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => mockClient,
+      resetClients: () => {},
+    }));
+    vi.doMock("../src/data/format.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/data/format.js")>(
+        "../src/data/format.js"
+      );
+      return { ...actual, priceTokenAmounts: async () => {} };
+    });
+
+    const { getCompoundPositions } = await import("../src/modules/compound/index.js");
+    const { positions } = await getCompoundPositions({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      chains: ["ethereum"],
+    });
+    const ethMarket = positions.find((p) => p.chain === "ethereum");
+    expect(ethMarket).toBeUndefined();
+  });
 });
 
 describe("Bug 9: Portfolio summary aggregates Compound alongside Aave", () => {

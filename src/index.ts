@@ -117,6 +117,9 @@ import {
 
 import { getTokenPriceInput, getTokenPriceTool } from "./modules/prices/index.js";
 
+import { simulateTransaction } from "./modules/simulation/index.js";
+import { simulateTransactionInput } from "./modules/simulation/schemas.js";
+
 import { requestCapability, requestCapabilityInput } from "./modules/feedback/index.js";
 
 import { issueHandles } from "./signing/tx-store.js";
@@ -498,6 +501,21 @@ async function main() {
       inputSchema: getTransactionStatusInput.shape,
     },
     handler(getTransactionStatus)
+  );
+
+  server.registerTool(
+    "simulate_transaction",
+    {
+      description:
+        "Run an eth_call against the chain's RPC to simulate a transaction without signing or broadcasting it. " +
+        "Returns `{ ok, returnData?, revertReason? }`. Use this BEFORE prepare_*/send_transaction to verify " +
+        "a contract call does what you expect — e.g. does wrapping ETH by sending to WETH9's fallback succeed, " +
+        "does a custom calldata revert, what selector gets hit. For state-dependent calls (WETH deposit credits " +
+        "msg.sender, ERC-20 transfer debits msg.sender), pass the user's wallet as `from`. Prepared transactions " +
+        "are also re-simulated automatically at send_transaction time — this tool lets the agent check ahead.",
+      inputSchema: simulateTransactionInput.shape,
+    },
+    handler(simulateTransaction)
   );
 
   // ---- Module 7: Balances & ENS ----

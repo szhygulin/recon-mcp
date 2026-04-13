@@ -222,6 +222,16 @@ export interface UnsignedTx {
   gasEstimate?: string;
   /** Estimated gas cost in USD. */
   gasCostUsd?: number;
+  /**
+   * Result of an eth_call simulation against the current chain state. `ok:false`
+   * with a revertReason is expected on the follow-up tx of an approve→action
+   * pair at prepare time (the approve hasn't been mined yet). At sign time, the
+   * same simulation is re-run and a revert aborts the signing path.
+   */
+  simulation?: {
+    ok: boolean;
+    revertReason?: string;
+  };
   /** If this tx is a prerequisite (e.g. ERC-20 approve), the follow-up tx is in `next`. */
   next?: UnsignedTx;
   /**

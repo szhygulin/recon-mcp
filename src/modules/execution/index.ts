@@ -10,6 +10,7 @@ import { consumeHandle, retireHandle } from "../../signing/tx-store.js";
 import { assertTransactionSafe } from "../../signing/pre-sign-check.js";
 import { getClient, verifyChainId } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
+import { simulateTx } from "../simulation/index.js";
 import {
   buildAaveSupply,
   buildAaveWithdraw,
@@ -86,10 +87,21 @@ async function resolveAssetMeta(
   return { decimals: Number(decimals), symbol: symbol as string };
 }
 
-/** Attach gas estimate + USD cost + eth_call simulation result. */
+/** Attach eth_call simulation result, gas estimate, and USD cost. */
 async function enrichTx(tx: UnsignedTx): Promise<UnsignedTx> {
   const client = getClient(tx.chain);
   const from = tx.from;
+  // Always simulate — even when gas estimation would succeed — so the caller
+  // can see the decoded revert reason alongside the preview. A failed sim on
+  // a standalone tx is a red flag; a failed sim on `tx.next` of an
+  // approve→action pair is expected until the approve mines.
+  tx.simulation = await simulateTx({
+    chain: tx.chain,
+    from,
+    to: tx.to,
+    data: tx.data,
+    value: tx.value,
+  });
   try {
     const gas = await client.estimateGas({
       account: from ?? "0x0000000000000000000000000000000000000001",
@@ -107,7 +119,9 @@ async function enrichTx(tx: UnsignedTx): Promise<UnsignedTx> {
       tx.gasCostUsd = round(gasEth * ethPrice, 2);
     }
   } catch {
-    // Simulation fails for many legitimate reasons (insufficient allowance, etc.) — we surface the tx anyway.
+    // Gas estimation fails for many legitimate reasons (insufficient allowance on
+    // a follow-up step, etc.) — we surface the tx anyway. The simulation field
+    // above has already captured any revert reason.
   }
   if (tx.next) tx.next = await enrichTx(tx.next);
   return tx;
@@ -277,6 +291,26 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
   // (for approve) spender allowlist. A compromised agent can't slip an
   // "approve(attacker, MAX)" past this, even if the handle system were bypassed.
   await assertTransactionSafe(tx);
+  // Re-simulate against current chain state before asking the user to sign.
+  // At prepare time, step 2 of an approve→action pair legitimately reverts
+  // because the approve isn't mined yet. By send time, the approve is on-chain
+  // and the simulation should pass. A revert here means signing would waste gas
+  // on a guaranteed failure — refuse rather than forward.
+  const sim = await simulateTx({
+    chain: tx.chain,
+    from: tx.from,
+    to: tx.to,
+    data: tx.data,
+    value: tx.value,
+  });
+  if (!sim.ok) {
+    throw new Error(
+      `Pre-sign simulation failed: ${sim.revertReason ?? "execution reverted"}. ` +
+        `Refusing to forward to Ledger — signing this tx would burn gas on a revert. ` +
+        `If a prerequisite step (e.g. an ERC-20 approve) must be mined first, send it ` +
+        `and wait for confirmation before retrying. Use simulate_transaction to debug.`
+    );
+  }
   // Assert that tx.from is actually an account the paired wallet holds keys
   // for. Without this check, a prepare_* call with a user-supplied `wallet`
   // arg referencing an address the wallet doesn't control would be forwarded
