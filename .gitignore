@@ -6,3 +6,6 @@ dist/
 .DS_Store
 coverage/
 .vitest-cache/
+
+# Internal planning doc — not published to git.
+recon-mcp-requirements.md
