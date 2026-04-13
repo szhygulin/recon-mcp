@@ -192,6 +192,8 @@ export interface UserConfig {
     customUrls?: Partial<Record<SupportedChain, string>>;
   };
   etherscanApiKey?: string;
+  /** Optional 1inch Developer Portal API key for intra-chain swap-quote comparison. */
+  oneInchApiKey?: string;
   walletConnect?: {
     projectId?: string;
     /** Topic of the active WC session (so we can resume after restart). */

@@ -53,6 +53,11 @@ export function resolveEtherscanApiKey(userConfig: UserConfig | null): string | 
   return process.env.ETHERSCAN_API_KEY || userConfig?.etherscanApiKey;
 }
 
+/** Pull the 1inch Developer Portal API key from env or user config; undefined if none set. */
+export function resolveOneInchApiKey(userConfig: UserConfig | null): string | undefined {
+  return process.env.ONEINCH_API_KEY || userConfig?.oneInchApiKey;
+}
+
 /** Pull the WalletConnect project ID from env or user config; undefined if none set. */
 export function resolveWalletConnectProjectId(userConfig: UserConfig | null): string | undefined {
   return process.env.WALLETCONNECT_PROJECT_ID || userConfig?.walletConnect?.projectId;

@@ -1,8 +1,10 @@
 import { parseUnits, formatUnits } from "viem";
 import { fetchQuote, fetchStatus } from "./lifi.js";
+import { fetchOneInchQuote } from "./oneinch.js";
 import type { GetSwapQuoteArgs, PrepareSwapArgs } from "./schemas.js";
 import { getClient } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
+import { readUserConfig, resolveOneInchApiKey } from "../../config/user-config.js";
 import type { SupportedChain, UnsignedTx } from "../../types/index.js";
 
 /**
@@ -77,18 +79,35 @@ async function resolveDecimals(
 
 export async function getSwapQuote(args: GetSwapQuoteArgs) {
   const chain = args.fromChain as SupportedChain;
+  const toChain = args.toChain as SupportedChain;
   const fromDecimals = await resolveDecimals(chain, args.fromToken as `0x${string}` | "native", args.fromTokenDecimals);
   const fromAmountWei = parseUnits(args.amount, fromDecimals).toString();
 
-  const quote = await fetchQuote({
-    fromChain: chain,
-    toChain: args.toChain as SupportedChain,
-    fromToken: args.fromToken as `0x${string}` | "native",
-    toToken: args.toToken as `0x${string}` | "native",
-    fromAmount: fromAmountWei,
-    fromAddress: args.wallet as `0x${string}`,
-    slippage: args.slippageBps !== undefined ? args.slippageBps / 10_000 : undefined,
-  });
+  // Intra-chain only: 1inch has no cross-chain aggregator. Skip silently when no
+  // API key is configured so users without a 1inch portal account still get LiFi.
+  const intraChain = args.fromChain === args.toChain;
+  const oneInchApiKey = intraChain ? resolveOneInchApiKey(readUserConfig()) : undefined;
+
+  const [quote, oneInchRaw] = await Promise.all([
+    fetchQuote({
+      fromChain: chain,
+      toChain,
+      fromToken: args.fromToken as `0x${string}` | "native",
+      toToken: args.toToken as `0x${string}` | "native",
+      fromAmount: fromAmountWei,
+      fromAddress: args.wallet as `0x${string}`,
+      slippage: args.slippageBps !== undefined ? args.slippageBps / 10_000 : undefined,
+    }),
+    oneInchApiKey
+      ? fetchOneInchQuote({
+          chain,
+          fromToken: args.fromToken as `0x${string}` | "native",
+          toToken: args.toToken as `0x${string}` | "native",
+          fromAmount: fromAmountWei,
+          apiKey: oneInchApiKey,
+        }).catch((err: unknown) => ({ __error: (err as Error).message }) as const)
+      : Promise.resolve(undefined),
+  ]);
 
   const fromTokenDecimals = quote.action.fromToken.decimals;
   const toTokenDecimals = quote.action.toToken.decimals;
@@ -136,6 +155,51 @@ export async function getSwapQuote(args: GetSwapQuoteArgs) {
       `token prices. Do NOT sign a prepared tx using this quote — fetch a fresh one.`;
   }
 
+  // Intra-chain comparison against 1inch. Quote in the same token, so a direct
+  // numeric comparison of output amounts is meaningful. USD is derived from the
+  // LiFi-provided toToken price (1inch doesn't return priceUSD) so both sides
+  // use the same reference price and only the route differs.
+  let alternatives: Array<
+    | { source: "1inch"; toAmountExpected: string; toAmountUsd?: number; gasEstimate?: number }
+    | { source: "1inch"; error: string }
+  > | undefined;
+  let bestSource: "lifi" | "1inch" | "tie" | undefined;
+  let savingsVsLifi: { source: "1inch"; outputDeltaPct: number; outputDeltaUsd?: number } | undefined;
+
+  if (intraChain && oneInchRaw) {
+    if ("__error" in oneInchRaw) {
+      alternatives = [{ source: "1inch", error: oneInchRaw.__error }];
+    } else {
+      const oiDecimals = oneInchRaw.dstToken?.decimals ?? toTokenDecimals;
+      const oiFormatted = formatUnits(BigInt(oneInchRaw.dstAmount), oiDecimals);
+      const oiOut = Number(oiFormatted);
+      const oiUsd = Number.isFinite(toPriceUsd) ? oiOut * toPriceUsd : undefined;
+      alternatives = [
+        {
+          source: "1inch",
+          toAmountExpected: oiFormatted,
+          toAmountUsd: oiUsd,
+          gasEstimate: oneInchRaw.gas,
+        },
+      ];
+
+      // Compare against the *raw* LiFi toAmount (not the re-derived one). If LiFi's
+      // quote was flagged by the >10× sanity check, the raw number is the one the
+      // aggregator actually advertised — that's what we're comparing route quality on.
+      const lifiOut = Number(rawToAmount);
+      if (lifiOut > 0 && oiOut > 0) {
+        const delta = (oiOut - lifiOut) / lifiOut;
+        if (Math.abs(delta) < 0.0005) bestSource = "tie";
+        else bestSource = delta > 0 ? "1inch" : "lifi";
+        savingsVsLifi = {
+          source: "1inch",
+          outputDeltaPct: delta * 100,
+          outputDeltaUsd: Number.isFinite(toPriceUsd) ? (oiOut - lifiOut) * toPriceUsd : undefined,
+        };
+      }
+    }
+  }
+
   return {
     fromChain: args.fromChain,
     toChain: args.toChain,
@@ -151,6 +215,9 @@ export async function getSwapQuote(args: GetSwapQuoteArgs) {
     feeCostsUsd: sumLifiCostsUsd(quote.estimate.feeCosts),
     gasCostsUsd: sumLifiCostsUsd(quote.estimate.gasCosts),
     crossChain: args.fromChain !== args.toChain,
+    ...(alternatives ? { alternatives } : {}),
+    ...(bestSource ? { bestSource } : {}),
+    ...(savingsVsLifi ? { savingsVsLifi } : {}),
     ...(warning ? { warning } : {}),
   };
 }

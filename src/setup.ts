@@ -154,6 +154,19 @@ async function configureEtherscan(p: Prompt): Promise<string | undefined> {
   return answer || undefined;
 }
 
+async function configureOneInch(p: Prompt): Promise<string | undefined> {
+  console.log("\n--- 1inch (optional — enables swap-quote comparison vs LiFi) ---");
+  console.log("Create a free key at https://portal.1inch.dev. Skip with empty input.");
+  const existing = readUserConfig()?.oneInchApiKey;
+  const answer = await p.ask(
+    existing
+      ? "1inch API key [press enter to keep existing]: "
+      : "1inch API key (or blank to skip): "
+  );
+  if (!answer && existing) return existing;
+  return answer || undefined;
+}
+
 async function configureWalletConnect(p: Prompt): Promise<string | undefined> {
   console.log("\n--- WalletConnect (optional — required for Ledger Live signing) ---");
   console.log("Create a free project at https://cloud.walletconnect.com.");
@@ -241,6 +254,11 @@ async function main() {
     const etherscanApiKey = await configureEtherscan(p);
     if (etherscanApiKey !== undefined) {
       patchUserConfig({ etherscanApiKey });
+    }
+
+    const oneInchApiKey = await configureOneInch(p);
+    if (oneInchApiKey !== undefined) {
+      patchUserConfig({ oneInchApiKey });
     }
 
     const wcProjectId = await configureWalletConnect(p);

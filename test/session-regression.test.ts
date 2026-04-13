@@ -581,7 +581,14 @@ describe("Bug 10: LiFi fee cost aggregation ignores amountUSD when it contradict
   // token price and amount said the real fee was ~$0.25. Reading amountUSD verbatim
   // inflated the number by 6 orders of magnitude. Fix: derive USD from amount + priceUSD
   // when both are available and clamp stated amountUSD that disagrees by more than 10×.
-  beforeEach(() => vi.resetModules());
+  beforeEach(() => {
+    vi.resetModules();
+    // Isolate from a dev-machine 1inch key so these tests don't hit the network.
+    vi.doMock("../src/config/user-config.js", () => ({
+      readUserConfig: () => null,
+      resolveOneInchApiKey: () => undefined,
+    }));
+  });
   afterEach(() => vi.restoreAllMocks());
 
   it("prefers amount*priceUSD over amountUSD when amountUSD is raw-units-shaped", async () => {
@@ -698,6 +705,10 @@ describe("Bug 11: LiFi toAmount scale check — re-derive displayed output when 
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../src/modules/compound/index.js");
+    vi.doMock("../src/config/user-config.js", () => ({
+      readUserConfig: () => null,
+      resolveOneInchApiKey: () => undefined,
+    }));
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -788,5 +799,219 @@ describe("Bug 11: LiFi toAmount scale check — re-derive displayed output when 
 
     expect(Number(quote.toAmountExpected)).toBeCloseTo(0.001416, 6);
     expect(quote.warning).toBeUndefined();
+  });
+});
+
+describe("Feature: intra-chain swap quote compares LiFi against 1inch", () => {
+  // Users often ask "is this the best price?" — for intra-chain swaps we can answer
+  // by also quoting 1inch and returning a side-by-side comparison. The aggregator
+  // with the higher output amount is flagged as `bestSource`; cross-chain swaps
+  // skip 1inch entirely (it has no bridge support).
+  beforeEach(() => vi.resetModules());
+  afterEach(() => vi.restoreAllMocks());
+
+  const lifiQuoteBody = {
+    tool: "uniswap",
+    action: {
+      fromToken: { symbol: "USDC", decimals: 6, priceUSD: "1" },
+      toToken: { symbol: "WETH", decimals: 18, priceUSD: "3500" },
+      fromAmount: "1000000000", // 1000 USDC
+    },
+    estimate: {
+      fromAmount: "1000000000",
+      // 1000 USDC at $3500/ETH = 0.2857 WETH. LiFi returns 0.2850 WETH.
+      toAmount: "285000000000000000",
+      toAmountMin: "284000000000000000",
+      executionDuration: 30,
+      feeCosts: [],
+      gasCosts: [],
+    },
+  };
+
+  it("flags 1inch as bestSource when its output exceeds LiFi's", async () => {
+    vi.doMock("../src/config/user-config.js", () => ({
+      readUserConfig: () => null,
+      resolveOneInchApiKey: () => "test-key",
+    }));
+    vi.doMock("../src/modules/swap/lifi.js", () => ({
+      fetchQuote: async () => lifiQuoteBody,
+      fetchStatus: async () => ({}),
+    }));
+    vi.doMock("../src/modules/swap/oneinch.js", () => ({
+      fetchOneInchQuote: async () => ({
+        // 1inch returns 0.2865 WETH — slightly better than LiFi.
+        dstAmount: "286500000000000000",
+        dstToken: { address: "0x0", symbol: "WETH", decimals: 18 },
+        gas: 180000,
+      }),
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({ readContract: async () => 6 }),
+      resetClients: () => {},
+    }));
+
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    const quote = await getSwapQuote({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      toToken: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      amount: "1000",
+    });
+
+    expect(quote.alternatives).toBeDefined();
+    expect(quote.alternatives).toHaveLength(1);
+    const alt = quote.alternatives![0] as { source: string; toAmountExpected: string; toAmountUsd?: number; gasEstimate?: number };
+    expect(alt.source).toBe("1inch");
+    expect(Number(alt.toAmountExpected)).toBeCloseTo(0.2865, 4);
+    expect(alt.toAmountUsd).toBeCloseTo(0.2865 * 3500, 1);
+    expect(alt.gasEstimate).toBe(180000);
+    expect(quote.bestSource).toBe("1inch");
+    // (0.2865 - 0.285) / 0.285 ≈ 0.526% better.
+    expect(quote.savingsVsLifi!.outputDeltaPct).toBeCloseTo(0.526, 2);
+    expect(quote.savingsVsLifi!.outputDeltaUsd).toBeCloseTo((0.2865 - 0.285) * 3500, 2);
+  });
+
+  it("flags LiFi as bestSource when 1inch's output is worse", async () => {
+    vi.doMock("../src/config/user-config.js", () => ({
+      readUserConfig: () => null,
+      resolveOneInchApiKey: () => "test-key",
+    }));
+    vi.doMock("../src/modules/swap/lifi.js", () => ({
+      fetchQuote: async () => lifiQuoteBody,
+      fetchStatus: async () => ({}),
+    }));
+    vi.doMock("../src/modules/swap/oneinch.js", () => ({
+      fetchOneInchQuote: async () => ({
+        // 1inch returns 0.2800 WETH — worse than LiFi's 0.285.
+        dstAmount: "280000000000000000",
+        dstToken: { address: "0x0", symbol: "WETH", decimals: 18 },
+      }),
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({ readContract: async () => 6 }),
+      resetClients: () => {},
+    }));
+
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    const quote = await getSwapQuote({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      toToken: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      amount: "1000",
+    });
+
+    expect(quote.bestSource).toBe("lifi");
+    expect(quote.savingsVsLifi!.outputDeltaPct).toBeLessThan(0);
+  });
+
+  it("skips 1inch entirely for cross-chain swaps", async () => {
+    vi.doMock("../src/config/user-config.js", () => ({
+      readUserConfig: () => null,
+      // Even with a key configured, cross-chain must not call 1inch.
+      resolveOneInchApiKey: () => "test-key",
+    }));
+    vi.doMock("../src/modules/swap/lifi.js", () => ({
+      fetchQuote: async () => lifiQuoteBody,
+      fetchStatus: async () => ({}),
+    }));
+    const oneInchSpy = vi.fn();
+    vi.doMock("../src/modules/swap/oneinch.js", () => ({
+      fetchOneInchQuote: oneInchSpy,
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({ readContract: async () => 6 }),
+      resetClients: () => {},
+    }));
+
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    const quote = await getSwapQuote({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      fromChain: "ethereum",
+      toChain: "polygon",
+      fromToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      toToken: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+      amount: "1000",
+    });
+
+    expect(oneInchSpy).not.toHaveBeenCalled();
+    expect(quote.alternatives).toBeUndefined();
+    expect(quote.bestSource).toBeUndefined();
+    expect(quote.crossChain).toBe(true);
+  });
+
+  it("skips 1inch when no API key is configured", async () => {
+    vi.doMock("../src/config/user-config.js", () => ({
+      readUserConfig: () => null,
+      resolveOneInchApiKey: () => undefined,
+    }));
+    vi.doMock("../src/modules/swap/lifi.js", () => ({
+      fetchQuote: async () => lifiQuoteBody,
+      fetchStatus: async () => ({}),
+    }));
+    const oneInchSpy = vi.fn();
+    vi.doMock("../src/modules/swap/oneinch.js", () => ({
+      fetchOneInchQuote: oneInchSpy,
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({ readContract: async () => 6 }),
+      resetClients: () => {},
+    }));
+
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    const quote = await getSwapQuote({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      toToken: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      amount: "1000",
+    });
+
+    expect(oneInchSpy).not.toHaveBeenCalled();
+    expect(quote.alternatives).toBeUndefined();
+    expect(quote.bestSource).toBeUndefined();
+  });
+
+  it("surfaces a 1inch error as an alternatives entry without failing the whole quote", async () => {
+    vi.doMock("../src/config/user-config.js", () => ({
+      readUserConfig: () => null,
+      resolveOneInchApiKey: () => "test-key",
+    }));
+    vi.doMock("../src/modules/swap/lifi.js", () => ({
+      fetchQuote: async () => lifiQuoteBody,
+      fetchStatus: async () => ({}),
+    }));
+    vi.doMock("../src/modules/swap/oneinch.js", () => ({
+      fetchOneInchQuote: async () => {
+        throw new Error("1inch quote 401: Unauthorized");
+      },
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({ readContract: async () => 6 }),
+      resetClients: () => {},
+    }));
+
+    const { getSwapQuote } = await import("../src/modules/swap/index.js");
+    const quote = await getSwapQuote({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      toToken: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      amount: "1000",
+    });
+
+    // LiFi result still present.
+    expect(Number(quote.toAmountExpected)).toBeCloseTo(0.285, 3);
+    expect(quote.alternatives).toHaveLength(1);
+    const alt = quote.alternatives![0] as { source: string; error?: string };
+    expect(alt.source).toBe("1inch");
+    expect(alt.error).toMatch(/401/);
+    // No bestSource when the comparison couldn't run.
+    expect(quote.bestSource).toBeUndefined();
   });
 });
