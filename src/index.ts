@@ -495,7 +495,7 @@ async function main() {
     "prepare_bitcoin_send",
     {
       description:
-        "Prepare a Bitcoin send by selecting UTXOs that minimize the transaction fee (greedy largest-first). Returns the selection plan — inputs, outputs (recipient + optional change), estimated vsize, fee in sats/BTC, and fee rate used. No PSBT or signed transaction is produced; sign externally (Sparrow, Electrum, hardware wallet) and broadcast via broadcast_bitcoin_tx. Dust-sized change is absorbed into the fee rather than creating uneconomical outputs.",
+        "Prepare a Bitcoin send using a consolidation strategy: spends every spendable UTXO at the source address so the wallet is left with 0 (change absorbed as fee) or 1 (change output) UTXOs after confirmation. Returns the selection plan — inputs, outputs (recipient + optional change), estimated vsize, fee in sats/BTC, and fee rate used. No PSBT or signed transaction is produced; sign externally (Sparrow, Electrum, hardware wallet) and broadcast via broadcast_bitcoin_tx. Tradeoff: fee scales with input count, but consolidating now saves the cost of spending many small UTXOs later.",
       inputSchema: prepareBitcoinSendInput.shape,
     },
     handler(prepareBitcoinSend)

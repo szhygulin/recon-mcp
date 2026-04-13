@@ -9,7 +9,7 @@ import {
 } from "../src/modules/bitcoin/utxo.js";
 import { prepareBitcoinSendInput } from "../src/modules/bitcoin/schemas.js";
 
-describe("Bitcoin UTXO selection: fee-minimizing (greedy largest-first)", () => {
+describe("Bitcoin UTXO selection: consolidation (spend every spendable UTXO)", () => {
   const base = {
     feeRateSatVb: 10,
     inputVbytes: VBYTES.p2wpkh.input, // 68
@@ -23,46 +23,43 @@ describe("Bitcoin UTXO selection: fee-minimizing (greedy largest-first)", () => 
     return { txid: `mock-${value}`, vout: 0, value, confirmed };
   }
 
-  it("picks the single smallest sufficient UTXO when possible (fewest inputs = smallest fee)", () => {
+  it("spends every spendable UTXO even when a subset would suffice", () => {
     const result = selectUtxos({
       ...base,
-      // Both UTXOs could fund 50k sats. Largest-first picks the 200k one.
-      // That's fine — it's still 1 input. We're minimizing *input count*, not
-      // leftover-in-wallet. 1 input beats 2 inputs on fee regardless of size.
+      // A single 200k UTXO would cover 50k + fee, but the consolidation
+      // strategy pulls in the 100k too so the wallet is left with at most 1
+      // change UTXO instead of the ignored 100k plus change.
       utxos: [u(200_000), u(100_000)],
       targetSats: 50_000n,
     });
-    expect(result.chosen).toHaveLength(1);
-    expect(result.chosen[0].value).toBe(200_000);
-    // vsize = 11 + 68 + 31 + 31 = 141 (with change output)
-    expect(result.vbytes).toBe(141);
-    // fee = ceil(141 * 10) = 1410 sats
-    expect(result.feeSats).toBe(1410n);
-    // change = 200_000 − 50_000 − 1410 = 148_590
-    expect(result.changeSats).toBe(148_590n);
-  });
-
-  it("adds UTXOs in descending order until the target is covered", () => {
-    const result = selectUtxos({
-      ...base,
-      utxos: [u(30_000), u(20_000), u(15_000), u(5_000)],
-      // Target + fee > 30k, forces adding a second UTXO
-      targetSats: 35_000n,
-    });
     expect(result.chosen).toHaveLength(2);
-    expect(result.chosen[0].value).toBe(30_000);
-    expect(result.chosen[1].value).toBe(20_000);
-    expect(result.totalInSats).toBe(50_000n);
-    // vsize with 2 inputs + change = 11 + 2*68 + 31 + 31 = 209; fee = 2090
+    expect(result.chosen.map((c) => c.value)).toEqual([200_000, 100_000]);
+    // vsize = 11 + 2*68 + 31 + 31 = 209
     expect(result.vbytes).toBe(209);
     expect(result.feeSats).toBe(2090n);
-    expect(result.changeSats).toBe(50_000n - 35_000n - 2090n);
+    // change = 300_000 − 50_000 − 2090 = 247_910
+    expect(result.changeSats).toBe(247_910n);
+  });
+
+  it("returns the entire pool in descending-value order for readability", () => {
+    const result = selectUtxos({
+      ...base,
+      utxos: [u(5_000), u(30_000), u(15_000), u(20_000)],
+      targetSats: 35_000n,
+    });
+    expect(result.chosen).toHaveLength(4);
+    expect(result.chosen.map((c) => c.value)).toEqual([
+      30_000, 20_000, 15_000, 5_000,
+    ]);
+    expect(result.totalInSats).toBe(70_000n);
+    // vsize = 11 + 4*68 + 31 + 31 = 345; fee = 3450
+    expect(result.vbytes).toBe(345);
+    expect(result.feeSats).toBe(3450n);
+    expect(result.changeSats).toBe(70_000n - 35_000n - 3450n);
   });
 
   it("absorbs dust-sized change into fee (no output below threshold)", () => {
-    // Contrive values so that change after fee is well below the 294-sat dust limit.
-    // Target 29_500, single UTXO 30_000. With change: vsize=141, fee=1410 → change=−910 (insufficient).
-    // Single UTXO 31_000. With change: fee=1410, change=31_000 − 29_500 − 1410 = 90. 90 < 294 → absorb.
+    // Single UTXO of 31_000 to 29_500 target. With change: fee=1410 → change=90 < 294 dust → absorb.
     const result = selectUtxos({
       ...base,
       utxos: [u(31_000)],
@@ -78,7 +75,7 @@ describe("Bitcoin UTXO selection: fee-minimizing (greedy largest-first)", () => 
     expect(result.effectiveFeeRateSatVb).toBeGreaterThan(base.feeRateSatVb);
   });
 
-  it("throws when total UTXO value cannot cover target + fee", () => {
+  it("throws when the total pool cannot cover target + fee", () => {
     expect(() =>
       selectUtxos({
         ...base,
@@ -98,15 +95,15 @@ describe("Bitcoin UTXO selection: fee-minimizing (greedy largest-first)", () => 
     expect(result.chosen[0].value).toBe(60_000);
   });
 
-  it("includes unconfirmed UTXOs when the caller opts in", () => {
+  it("consolidates both confirmed and unconfirmed UTXOs when the caller opts in", () => {
     const result = selectUtxos({
       ...base,
       utxos: [u(100_000, false), u(60_000, true)],
       targetSats: 40_000n,
       includeUnconfirmed: true,
     });
-    expect(result.chosen).toHaveLength(1);
-    expect(result.chosen[0].value).toBe(100_000);
+    expect(result.chosen).toHaveLength(2);
+    expect(result.chosen.map((c) => c.value)).toEqual([100_000, 60_000]);
   });
 
   it("throws on an empty UTXO pool", () => {
@@ -219,9 +216,12 @@ describe("prepareBitcoinSend end-to-end (fetch mocked)", () => {
 
     expect(plan.chain).toBe("bitcoin");
     expect(plan.sourceScriptType).toBe("p2wpkh");
-    expect(plan.inputs).toHaveLength(1);
+    // Consolidation: both UTXOs are consumed even though the 500k alone would suffice.
+    expect(plan.inputs).toHaveLength(2);
     expect(plan.inputs[0].txid).toBe("a".repeat(64));
     expect(plan.inputs[0].valueSats).toBe("500000");
+    expect(plan.inputs[1].txid).toBe("b".repeat(64));
+    expect(plan.inputs[1].valueSats).toBe("200000");
     // Recipient first, then change.
     expect(plan.outputs[0].role).toBe("recipient");
     expect(plan.outputs[0].valueSats).toBe("100000");
@@ -230,13 +230,13 @@ describe("prepareBitcoinSend end-to-end (fetch mocked)", () => {
     expect(plan.fee.rateSatVb).toBe(15);
     expect(plan.fee.rateSource).toMatch(/hour/);
     // Recipient is P2TR (43 vB output), source is P2WPKH (68 vB input, 31 vB change).
-    // vsize with change = 11 + 68 + 43 + 31 = 153
-    expect(plan.fee.vsize).toBe(153);
-    expect(plan.fee.sats).toBe("2295"); // 153 * 15
-    // change = 500_000 − 100_000 − 2295
-    expect(plan.outputs[1]?.valueSats).toBe("397705");
+    // vsize with change = 11 + 2*68 + 43 + 31 = 221
+    expect(plan.fee.vsize).toBe(221);
+    expect(plan.fee.sats).toBe("3315"); // 221 * 15
+    // change = 700_000 − 100_000 − 3315
+    expect(plan.outputs[1]?.valueSats).toBe("596685");
     expect(plan.description).toContain("Send");
-    expect(plan.description).toContain("2295 sats");
+    expect(plan.description).toContain("3315 sats");
   });
 
   it("rejects a zero amount", async () => {

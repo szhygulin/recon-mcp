@@ -14,7 +14,7 @@ import type {
 } from "./schemas.js";
 
 /**
- * Prepare an unsigned Bitcoin send: fetch UTXOs, pick a fee-minimizing subset,
+ * Prepare an unsigned Bitcoin send: fetch UTXOs, run consolidation selection,
  * and return a structured plan (not a PSBT, not a serialized tx). The caller
  * signs it with their preferred tool (Sparrow, Electrum, hardware wallet) and
  * broadcasts the resulting hex via `broadcast_bitcoin_tx`.
@@ -25,7 +25,8 @@ import type {
  *   - Returning a pure selection plan + vsize + fee lets any wallet build the
  *     actual tx. It's the data contract that matters, not the binary layout.
  *
- * Fee-minimization strategy lives in ./utxo.ts — greedy largest-first.
+ * Selection strategy lives in ./utxo.ts — spend every spendable UTXO to
+ * minimize the post-confirmation UTXO count in the source wallet.
  */
 
 const MEMPOOL_API = "https://mempool.space/api";

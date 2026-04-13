@@ -2,16 +2,23 @@
  * Pure UTXO-selection logic, independent of any network I/O. Kept here so the
  * coin-selection algorithm can be unit-tested without mocking the HTTP client.
  *
- * Strategy: greedy largest-first. This minimizes the number of inputs in the
- * resulting transaction, which directly minimizes its vsize and therefore its
- * fee at any given feerate. More sophisticated strategies (Branch-and-Bound,
- * knapsack) can reduce change-output waste but not base fee — the user asked
- * for fee minimization, so largest-first is the right baseline.
+ * Objective: minimize the number of UTXOs remaining in the wallet *after* the
+ * transaction confirms — i.e., consolidate. Post-tx UTXO count equals (pool −
+ * chosen) + (1 if change else 0), so this is minimized by spending every
+ * spendable UTXO and, when possible, absorbing the residue into fee so no
+ * change output is created.
  *
- * Dust handling: if the change amount is below the dust threshold, we absorb
- * change into fee rather than create an uneconomical output (which would cost
- * more to later spend than it's worth). That slightly over-pays miners — the
- * tradeoff is a smaller, valid transaction vs a spammy dust output.
+ * Strategy: always spend the entire spendable pool. Then:
+ *   - If totalIn < target + fee(no-change): insufficient funds.
+ *   - Else if change (= totalIn − target − fee-with-change) ≥ dust: emit a
+ *     change output. Post-tx wallet has 1 UTXO (the change).
+ *   - Else: absorb the residue into fee and emit no change output. Post-tx
+ *     wallet has 0 UTXOs.
+ *
+ * Tradeoff: consolidation increases the fee on *this* transaction roughly
+ * linearly in input count, but eliminates the ongoing cost of carrying — and
+ * eventually spending — every small UTXO. The user asked explicitly for this
+ * objective, so we take the one-time fee hit.
  */
 
 export interface Utxo {
@@ -56,50 +63,38 @@ export interface SelectionResult {
 }
 
 export function selectUtxos(input: SelectionInput): SelectionResult {
-  const pool = input.utxos
+  const chosen = input.utxos
     .filter((u) => input.includeUnconfirmed || u.confirmed)
-    // Largest-first — fewest inputs for a given target.
     .slice()
+    // Descending by value — cosmetic; it makes the input list readable but the
+    // algorithm spends all of them regardless of order.
     .sort((a, b) => b.value - a.value);
 
-  if (pool.length === 0) {
+  if (chosen.length === 0) {
     throw new Error("No spendable UTXOs available.");
   }
 
-  const chosen: Utxo[] = [];
-  let totalIn = 0n;
+  const totalIn = chosen.reduce((s, u) => s + BigInt(u.value), 0n);
+  const k = chosen.length;
 
-  for (const u of pool) {
-    chosen.push(u);
-    totalIn += BigInt(u.value);
+  const vbytesNoChange =
+    input.overheadVbytes + k * input.inputVbytes + input.outputVbytesRecipient;
+  const feeNoChange = BigInt(Math.ceil(vbytesNoChange * input.feeRateSatVb));
 
-    const vbytesWithChange =
-      input.overheadVbytes +
-      chosen.length * input.inputVbytes +
-      input.outputVbytesRecipient +
-      input.outputVbytesChange;
-    const feeWithChange = BigInt(
-      Math.ceil(vbytesWithChange * input.feeRateSatVb)
+  if (totalIn < input.targetSats + feeNoChange) {
+    throw new Error(
+      `Insufficient funds: have ${totalIn} sats across ${k} UTXOs, need at least ${input.targetSats + feeNoChange} (target + fee).`
     );
+  }
 
-    if (totalIn >= input.targetSats + feeWithChange) {
-      const change = totalIn - input.targetSats - feeWithChange;
-      if (change < BigInt(input.dustSats)) {
-        // Absorb change into fee — drop the change output entirely.
-        const vbytesNoChange =
-          input.overheadVbytes +
-          chosen.length * input.inputVbytes +
-          input.outputVbytesRecipient;
-        const actualFee = totalIn - input.targetSats;
-        return {
-          chosen,
-          totalInSats: totalIn,
-          feeSats: actualFee,
-          changeSats: 0n,
-          vbytes: vbytesNoChange,
-          effectiveFeeRateSatVb: Number(actualFee) / vbytesNoChange,
-        };
-      }
+  const vbytesWithChange = vbytesNoChange + input.outputVbytesChange;
+  const feeWithChange = BigInt(Math.ceil(vbytesWithChange * input.feeRateSatVb));
+
+  // Prefer a change output when feasible and above dust: keeps the fee at the
+  // requested rate rather than over-paying miners. Post-tx wallet has 1 UTXO.
+  if (totalIn >= input.targetSats + feeWithChange) {
+    const change = totalIn - input.targetSats - feeWithChange;
+    if (change >= BigInt(input.dustSats)) {
       return {
         chosen,
         totalInSats: totalIn,
@@ -111,9 +106,17 @@ export function selectUtxos(input: SelectionInput): SelectionResult {
     }
   }
 
-  throw new Error(
-    `Insufficient funds: have ${totalIn} sats across ${chosen.length} UTXOs, need at least ${input.targetSats} + fee.`
-  );
+  // Change would be dust (or negative after the change-output overhead) —
+  // absorb the residue into fee. Post-tx wallet has 0 UTXOs.
+  const actualFee = totalIn - input.targetSats;
+  return {
+    chosen,
+    totalInSats: totalIn,
+    feeSats: actualFee,
+    changeSats: 0n,
+    vbytes: vbytesNoChange,
+    effectiveFeeRateSatVb: Number(actualFee) / vbytesNoChange,
+  };
 }
 
 /**
