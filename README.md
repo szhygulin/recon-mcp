@@ -1,18 +1,21 @@
 # Recon MCP
 
-**Manage your crypto portfolio with AI agents — through your Ledger hardware wallet.**
+**Self-custodial crypto portfolio and DeFi, managed by AI agents — signed on your Ledger hardware wallet.**
 
-Recon MCP is a Model Context Protocol server that lets AI agents (Claude Code, Claude Desktop, Cursor) read your on-chain positions and prepare transactions that you sign on your Ledger device via WalletConnect. Your private keys never leave the hardware wallet, and every transaction is previewed in human-readable form before you approve it on the device.
+Recon MCP is a Model Context Protocol server that lets AI agents — **Claude Code, Claude Desktop, Cursor**, and any MCP-compatible client — read your on-chain positions across **Ethereum, Arbitrum, and Polygon** and prepare EVM transactions that you sign on your **Ledger device via WalletConnect**. Your private keys never leave the hardware wallet, and every transaction is previewed in human-readable form before you approve it on the device.
+
+Supported protocols: **Aave V3, Compound V3 (Comet), Morpho Blue, Uniswap V3 LP, Lido (stETH/wstETH), EigenLayer**, plus **LiFi** for swap/bridge aggregation and **1inch** for optional intra-chain quote comparison.
 
 Use it when you want to:
 
-- Ask an agent "what are my DeFi positions across Ethereum, Arbitrum, and Polygon?" and get a unified portfolio view (wallet balances + Aave/Compound/Morpho lending + Uniswap V3 LP + Lido/EigenLayer staking).
-- Get liquidation-risk alerts ("any position below health factor 1.5?") without manually checking dashboards.
+- Ask an agent *"what are my DeFi positions across Ethereum, Arbitrum, and Polygon?"* and get a unified portfolio view (wallet balances + Aave/Compound/Morpho lending + Uniswap V3 LP + Lido/EigenLayer staking) with USD totals.
+- Get liquidation-risk alerts (*"any position below health factor 1.5?"*) without manually checking dashboards.
 - Swap or bridge tokens — the agent prepares the route via LiFi, you sign on Ledger.
-- Supply/borrow/repay on lending protocols, stake ETH on Lido, deposit into EigenLayer strategies, send tokens — all through Ledger-signed transactions.
-- Assess protocol security (contract verification, proxy admin keys, privileged roles) before interacting with it.
+- Supply, borrow, repay, withdraw on lending protocols; stake ETH on Lido; deposit into EigenLayer strategies; send ETH or ERC-20 tokens — all through Ledger-signed transactions.
+- Assess protocol security before interacting with it: contract verification, EIP-1967 proxy/admin keys, privileged roles (Ownable, AccessControl, Gnosis Safe multisig, Timelock), and a DefiLlama-backed 0–100 risk score.
+- Look up token prices, resolve ENS names, and poll transaction status.
 
-This is an **agent-driven portfolio management** tool, not a wallet replacement. The MCP never holds keys or broadcasts anything you haven't approved on your device.
+This is an **agent-driven portfolio management** tool, not a wallet replacement. The MCP never holds keys or broadcasts anything you haven't approved on your Ledger device.
 
 ## Features
 
@@ -27,6 +30,40 @@ This is an **agent-driven portfolio management** tool, not a wallet replacement.
 ## Supported chains
 
 EVM: Ethereum, Arbitrum, Polygon.
+
+## Tools exposed to the agent
+
+Read-only (no Ledger pairing required):
+
+- `get_portfolio_summary` — cross-chain portfolio aggregation with USD totals
+- `get_lending_positions` — Aave V3 collateral/debt/health-factor per wallet
+- `get_compound_positions` — Compound V3 (Comet) base + collateral positions
+- `get_morpho_positions` — Morpho Blue positions across specified markets
+- `get_lp_positions` — Uniswap V3 LP positions, fee tier, in-range, IL estimate
+- `get_staking_positions`, `get_staking_rewards`, `estimate_staking_yield` — Lido + EigenLayer
+- `get_health_alerts` — Aave positions near liquidation
+- `simulate_position_change` — projected Aave health factor for a hypothetical action
+- `get_token_balance`, `get_token_price` — balances and DefiLlama prices
+- `resolve_ens_name`, `reverse_resolve_ens` — ENS forward/reverse
+- `get_swap_quote` — LiFi quote (optionally cross-checked against 1inch)
+- `check_contract_security`, `check_permission_risks`, `get_protocol_risk_score` — risk tooling
+- `get_transaction_status` — poll inclusion by hash
+
+Meta:
+
+- `request_capability` — agent-facing escape hatch: files a GitHub issue on this repo when the user asks for something recon-mcp can't do (new protocol, new chain, missing tool). Default mode returns a pre-filled issue URL (zero spam risk — user must click to submit). Operators can set `RECON_FEEDBACK_ENDPOINT` to a proxy that posts directly. Rate-limited: 30s between calls, 3/hour, 10/day, 7-day dedupe on identical summaries.
+
+Execution (Ledger-signed via WalletConnect):
+
+- `pair_ledger_live`, `get_ledger_status` — session management and account discovery
+- `prepare_aave_supply` / `_withdraw` / `_borrow` / `_repay`
+- `prepare_compound_supply` / `_withdraw` / `_borrow` / `_repay`
+- `prepare_morpho_supply` / `_withdraw` / `_borrow` / `_repay` / `_supply_collateral` / `_withdraw_collateral`
+- `prepare_lido_stake`, `prepare_lido_unstake`
+- `prepare_eigenlayer_deposit`
+- `prepare_swap` — LiFi-routed intra- or cross-chain swap/bridge
+- `prepare_native_send`, `prepare_token_send`
+- `send_transaction` — forwards a prepared tx to Ledger Live for user approval
 
 ## Requirements
 
@@ -78,6 +115,7 @@ All are optional if the matching field is in `~/.recon-mcp/config.json`; env var
 - `ONEINCH_API_KEY` — enables 1inch quote comparison in `get_swap_quote`
 - `WALLETCONNECT_PROJECT_ID` — required for Ledger Live signing
 - `RPC_BATCH=1` — opt into JSON-RPC batching (off by default; many public endpoints mishandle batched POSTs)
+- `RECON_FEEDBACK_ENDPOINT` — optional https URL for `request_capability` to POST directly (e.g. a maintainer-operated proxy that creates GitHub issues with a bot token). When unset (the default), `request_capability` returns a pre-filled GitHub issue URL for the user to click through; nothing is transmitted automatically. **Operator responsibility:** the recon-mcp client does not sign or authenticate POST requests. If you set this endpoint, the proxy MUST enforce its own auth (IP allowlist, Cloudflare Access, HMAC header validation, etc.) — otherwise any caller who learns the URL can submit to it. The on-process rate limiter (3/hour, 10/day) is a courtesy, not a security control.
 
 ## Development
 

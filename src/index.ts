@@ -117,6 +117,8 @@ import {
 
 import { getTokenPriceInput, getTokenPriceTool } from "./modules/prices/index.js";
 
+import { requestCapability, requestCapabilityInput } from "./modules/feedback/index.js";
+
 import { issueHandles } from "./signing/tx-store.js";
 import type { UnsignedTx } from "./types/index.js";
 
@@ -177,7 +179,71 @@ async function main() {
     );
   }
 
-  const server = new McpServer({ name: "recon-mcp", version: "0.1.0" });
+  const server = new McpServer(
+    {
+      name: "recon-mcp",
+      title: "Recon — Ledger-Signed Crypto Portfolio & DeFi",
+      version: "0.1.0",
+      websiteUrl: "https://github.com/szhygulin/recon-mcp",
+    },
+    {
+      instructions: [
+        "Recon is a self-custodial crypto-portfolio and DeFi tooling server for AI agents.",
+        "The user's private keys live on a Ledger hardware wallet; this server never holds or",
+        "broadcasts keys. Every state-changing transaction is prepared here (read-only) and",
+        "then forwarded to Ledger Live via WalletConnect so the user can review and approve it",
+        "on the physical device.",
+        "",
+        "USE THIS SERVER WHEN the user asks about:",
+        "- their crypto wallet, balances, tokens, ETH, ERC-20 holdings, or ENS name",
+        "- their DeFi positions on Ethereum, Arbitrum, or Polygon — Aave V3 lending/borrowing,",
+        "  Compound V3 (Comet), Morpho Blue, Uniswap V3 LP, Lido staking, EigenLayer restaking",
+        "- portfolio value, cross-chain aggregation, health-factor / liquidation risk",
+        "- executing on-chain actions: supply, borrow, repay, withdraw, stake, unstake,",
+        "  send ETH/tokens, swap, bridge",
+        "- token prices, ENS forward/reverse resolution",
+        "- assessing the security of a smart contract or DeFi protocol (verification, proxy",
+        "  upgradeability, privileged roles, TVL/audit-based risk score)",
+        "",
+        "TYPICAL WORKFLOW for a transaction:",
+        "1. Call `get_ledger_status` first to discover the user's connected wallet address(es)",
+        "   — resolve phrases like \"my wallet\" or \"account 2\" to a concrete 0x… address before",
+        "   calling any other tool that takes a `wallet` argument.",
+        "2. If not paired yet, call `pair_ledger_live` and show the returned QR/URI.",
+        "3. Call a `prepare_*` tool to build the unsigned transaction (this returns a handle",
+        "   plus a human-readable decoded preview; no calldata is exposed to the agent).",
+        "4. Show the decoded preview to the user and get explicit confirmation.",
+        "5. Call `send_transaction` with the handle and `confirmed: true` — Ledger Live will",
+        "   prompt the user to review and physically sign on the device.",
+        "6. Optionally poll `get_transaction_status` for inclusion.",
+        "",
+        "READ-ONLY TOOLS need no pairing and can be called freely: get_lending_positions,",
+        "get_lp_positions, get_compound_positions, get_morpho_positions, get_staking_positions,",
+        "get_staking_rewards, estimate_staking_yield, get_portfolio_summary, get_swap_quote,",
+        "get_token_balance, get_token_price, resolve_ens_name, reverse_resolve_ens,",
+        "get_health_alerts, simulate_position_change, check_contract_security,",
+        "check_permission_risks, get_protocol_risk_score, get_transaction_status.",
+        "",
+        "SWAP/BRIDGE ROUTING: prefer `prepare_swap` (LiFi aggregator) over building DEX",
+        "router calls directly — LiFi handles route selection, approvals, and cross-chain",
+        "bridging uniformly.",
+        "",
+        "CAPABILITY GAPS: if the user asks for something this server cannot do (unsupported",
+        "protocol, chain, token, or a workflow none of the existing tools cover), call",
+        "`request_capability` to file a GitHub issue on the recon-mcp repo. By default it",
+        "returns a prefilled URL for the user to click — nothing is sent automatically. Use",
+        "this only after confirming no existing tool fits; it is rate-limited (3/hour,",
+        "10/day, dedup'd for 7 days). Never substitute this for completing the task.",
+        "",
+        "SECURITY: the `wallet` / `peerUrl` returned by `get_ledger_status` is self-reported",
+        "by the paired WalletConnect peer. Before the FIRST `send_transaction` of a session,",
+        "state the paired wallet name + URL back to the user and have them confirm it matches",
+        "their real Ledger Live install. The Ledger device's on-screen confirmation is the",
+        "ultimate authority — tell the user to verify the recipient, amount, and chain on",
+        "the device, not just in chat.",
+      ].join("\n"),
+    }
+  );
 
   // ---- Module 1: Positions ----
   server.registerTool(
@@ -615,6 +681,23 @@ async function main() {
       inputSchema: prepareMorphoWithdrawCollateralInput.shape,
     },
     txHandler(buildMorphoWithdrawCollateral)
+  );
+
+  // ---- Module 10: Capability requests (agent → maintainers) ----
+  server.registerTool(
+    "request_capability",
+    {
+      description:
+        "File a capability request against the recon-mcp GitHub repository when the user asks for something this server cannot do " +
+        "(e.g. an unsupported protocol, chain, token, or missing tool). " +
+        "USE ONLY AFTER confirming no existing tool can accomplish the task. " +
+        "By default this returns a pre-filled GitHub issue URL — NO data is transmitted; the user must click through to submit. " +
+        "If the operator has configured RECON_FEEDBACK_ENDPOINT, it posts directly to that proxy instead. " +
+        "Rate-limited per install (30s between calls, 3/hour, 10/day, 7-day dedupe on identical summaries). " +
+        "Write clear, actionable summaries — this lands in a real issue tracker read by humans.",
+      inputSchema: requestCapabilityInput.shape,
+    },
+    handler(requestCapability)
   );
 
   const transport = new StdioServerTransport();
