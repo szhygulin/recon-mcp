@@ -178,7 +178,11 @@ export async function prepareLidoStake(args: PrepareLidoStakeArgs): Promise<Unsi
 
 export async function prepareLidoUnstake(args: PrepareLidoUnstakeArgs): Promise<UnsignedTx> {
   return enrichTx(
-    await buildLidoUnstake({ wallet: args.wallet as `0x${string}`, amountStETH: args.amountStETH })
+    await buildLidoUnstake({
+      wallet: args.wallet as `0x${string}`,
+      amountStETH: args.amountStETH,
+      approvalCap: args.approvalCap,
+    })
   );
 }
 
@@ -192,6 +196,7 @@ export async function prepareEigenLayerDeposit(args: PrepareEigenLayerDepositArg
       amount: args.amount,
       decimals: meta.decimals,
       symbol: meta.symbol,
+      approvalCap: args.approvalCap,
     })
   );
 }

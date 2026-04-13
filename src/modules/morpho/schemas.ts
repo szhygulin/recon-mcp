@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
+import { approvalCapSchema } from "../shared/approval.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
 const walletSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/);
@@ -24,11 +25,17 @@ const baseMarketAction = z.object({
     ),
 });
 
-export const prepareMorphoSupplyInput = baseMarketAction;
+export const prepareMorphoSupplyInput = baseMarketAction.extend({
+  approvalCap: approvalCapSchema,
+});
 export const prepareMorphoWithdrawInput = baseMarketAction;
 export const prepareMorphoBorrowInput = baseMarketAction;
-export const prepareMorphoRepayInput = baseMarketAction;
-export const prepareMorphoSupplyCollateralInput = baseMarketAction;
+export const prepareMorphoRepayInput = baseMarketAction.extend({
+  approvalCap: approvalCapSchema,
+});
+export const prepareMorphoSupplyCollateralInput = baseMarketAction.extend({
+  approvalCap: approvalCapSchema,
+});
 export const prepareMorphoWithdrawCollateralInput = baseMarketAction;
 
 export type GetMorphoPositionsArgs = z.infer<typeof getMorphoPositionsInput>;

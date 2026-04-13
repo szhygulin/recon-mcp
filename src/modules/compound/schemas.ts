@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
+import { approvalCapSchema } from "../shared/approval.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
 const walletSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/);
@@ -25,7 +26,9 @@ const baseCometAction = z.object({
     ),
 });
 
-export const prepareCompoundSupplyInput = baseCometAction;
+export const prepareCompoundSupplyInput = baseCometAction.extend({
+  approvalCap: approvalCapSchema,
+});
 export const prepareCompoundWithdrawInput = baseCometAction;
 
 /** Convenience wrappers — borrow = withdraw(baseToken); repay = supply(baseToken). */
@@ -39,7 +42,9 @@ export const prepareCompoundBorrowInput = z.object({
       'Human-readable decimal amount of the market base token, NOT raw wei/base units. Example: "100" for 100 USDC.'
     ),
 });
-export const prepareCompoundRepayInput = prepareCompoundBorrowInput;
+export const prepareCompoundRepayInput = prepareCompoundBorrowInput.extend({
+  approvalCap: approvalCapSchema,
+});
 
 export type GetCompoundPositionsArgs = z.infer<typeof getCompoundPositionsInput>;
 export type PrepareCompoundSupplyArgs = z.infer<typeof prepareCompoundSupplyInput>;

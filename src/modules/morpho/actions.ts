@@ -1,8 +1,9 @@
-import { encodeFunctionData, parseUnits, maxUint256 } from "viem";
+import { encodeFunctionData, parseUnits } from "viem";
 import { morphoBlueAbi, type MorphoMarketParams } from "../../abis/morpho-blue.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { getClient } from "../../data/rpc.js";
 import { CONTRACTS } from "../../config/contracts.js";
+import { buildApprovalTx, resolveApprovalCap } from "../shared/approval.js";
 import type {
   PrepareMorphoSupplyArgs,
   PrepareMorphoWithdrawArgs,
@@ -54,56 +55,6 @@ async function tokenMeta(
   return { decimals: Number(decimals), symbol: symbol as string };
 }
 
-async function ensureApprovalTx(
-  chain: SupportedChain,
-  wallet: `0x${string}`,
-  asset: `0x${string}`,
-  spender: `0x${string}`,
-  amountWei: bigint,
-  symbol: string
-): Promise<UnsignedTx | null> {
-  const client = getClient(chain);
-  const allowance = (await client.readContract({
-    address: asset,
-    abi: erc20Abi,
-    functionName: "allowance",
-    args: [wallet, spender],
-  })) as bigint;
-  if (allowance >= amountWei) return null;
-  const approveTx: UnsignedTx = {
-    chain,
-    to: asset,
-    data: encodeFunctionData({
-      abi: erc20Abi,
-      functionName: "approve",
-      args: [spender, maxUint256],
-    }),
-    value: "0",
-    from: wallet,
-    description: `Approve ${symbol} for Morpho Blue (unlimited)`,
-    decoded: { functionName: "approve", args: { spender, amount: "max" } },
-  };
-  if (allowance > 0n) {
-    // USDT-style reset: approve(0) before approve(nonzero) to work around tokens
-    // that revert on nonzero→nonzero approvals.
-    return {
-      chain,
-      to: asset,
-      data: encodeFunctionData({
-        abi: erc20Abi,
-        functionName: "approve",
-        args: [spender, 0n],
-      }),
-      value: "0",
-      from: wallet,
-      description: `Reset ${symbol} allowance to 0 (required by USDT-style tokens before re-approval)`,
-      decoded: { functionName: "approve", args: { spender, amount: "0" } },
-      next: approveTx,
-    };
-  }
-  return approveTx;
-}
-
 function paramsTuple(p: MorphoMarketParams) {
   return {
     loanToken: p.loanToken,
@@ -121,14 +72,22 @@ export async function buildMorphoSupply(p: PrepareMorphoSupplyArgs): Promise<Uns
   const params = await resolveMarketParams(chain, p.marketId as `0x${string}`);
   const meta = await tokenMeta(chain, params.loanToken);
   const amountWei = parseUnits(p.amount, meta.decimals);
-  const approval = await ensureApprovalTx(
+  const { approvalAmount, display } = resolveApprovalCap(
+    p.approvalCap,
+    amountWei,
+    meta.decimals
+  );
+  const approval = await buildApprovalTx({
     chain,
     wallet,
-    params.loanToken,
-    morpho,
+    asset: params.loanToken,
+    spender: morpho,
     amountWei,
-    meta.symbol
-  );
+    approvalAmount,
+    approvalDisplay: display,
+    symbol: meta.symbol,
+    spenderLabel: "Morpho Blue",
+  });
   const supplyTx: UnsignedTx = {
     chain,
     to: morpho,
@@ -224,14 +183,22 @@ export async function buildMorphoRepay(p: PrepareMorphoRepayArgs): Promise<Unsig
     );
   }
   const amountWei = parseUnits(p.amount, meta.decimals);
-  const approval = await ensureApprovalTx(
+  const { approvalAmount, display } = resolveApprovalCap(
+    p.approvalCap,
+    amountWei,
+    meta.decimals
+  );
+  const approval = await buildApprovalTx({
     chain,
     wallet,
-    params.loanToken,
-    morpho,
+    asset: params.loanToken,
+    spender: morpho,
     amountWei,
-    meta.symbol
-  );
+    approvalAmount,
+    approvalDisplay: display,
+    symbol: meta.symbol,
+    spenderLabel: "Morpho Blue",
+  });
   const repayTx: UnsignedTx = {
     chain,
     to: morpho,
@@ -266,14 +233,22 @@ export async function buildMorphoSupplyCollateral(
   const params = await resolveMarketParams(chain, p.marketId as `0x${string}`);
   const meta = await tokenMeta(chain, params.collateralToken);
   const amountWei = parseUnits(p.amount, meta.decimals);
-  const approval = await ensureApprovalTx(
+  const { approvalAmount, display } = resolveApprovalCap(
+    p.approvalCap,
+    amountWei,
+    meta.decimals
+  );
+  const approval = await buildApprovalTx({
     chain,
     wallet,
-    params.collateralToken,
-    morpho,
+    asset: params.collateralToken,
+    spender: morpho,
     amountWei,
-    meta.symbol
-  );
+    approvalAmount,
+    approvalDisplay: display,
+    symbol: meta.symbol,
+    spenderLabel: "Morpho Blue",
+  });
   const tx: UnsignedTx = {
     chain,
     to: morpho,

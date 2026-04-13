@@ -1,9 +1,8 @@
-import { encodeFunctionData, parseEther, parseUnits, maxUint256, zeroAddress } from "viem";
+import { encodeFunctionData, parseEther, parseUnits, zeroAddress } from "viem";
 import { stETHAbi, lidoWithdrawalQueueAbi } from "../../abis/lido.js";
-import { erc20Abi } from "../../abis/erc20.js";
 import { eigenStrategyManagerAbi } from "../../abis/eigenlayer-strategy-manager.js";
 import { CONTRACTS } from "../../config/contracts.js";
-import { getClient } from "../../data/rpc.js";
+import { buildApprovalTx, resolveApprovalCap } from "../shared/approval.js";
 import type { UnsignedTx } from "../../types/index.js";
 
 export interface LidoStakeParams {
@@ -31,6 +30,7 @@ export function buildLidoStake(p: LidoStakeParams): UnsignedTx {
 export interface LidoUnstakeParams {
   wallet: `0x${string}`;
   amountStETH: string;
+  approvalCap?: string;
 }
 
 export async function buildLidoUnstake(p: LidoUnstakeParams): Promise<UnsignedTx> {
@@ -38,13 +38,18 @@ export async function buildLidoUnstake(p: LidoUnstakeParams): Promise<UnsignedTx
   const queue = CONTRACTS.ethereum.lido.withdrawalQueue as `0x${string}`;
   const stETH = CONTRACTS.ethereum.lido.stETH as `0x${string}`;
 
-  const client = getClient("ethereum");
-  const allowance = (await client.readContract({
-    address: stETH,
-    abi: erc20Abi,
-    functionName: "allowance",
-    args: [p.wallet, queue],
-  })) as bigint;
+  const { approvalAmount, display } = resolveApprovalCap(p.approvalCap, amountWei, 18);
+  const approve = await buildApprovalTx({
+    chain: "ethereum",
+    wallet: p.wallet,
+    asset: stETH,
+    spender: queue,
+    amountWei,
+    approvalAmount,
+    approvalDisplay: display,
+    symbol: "stETH",
+    spenderLabel: "Lido Withdrawal Queue",
+  });
 
   const unstakeTx: UnsignedTx = {
     chain: "ethereum",
@@ -60,17 +65,10 @@ export async function buildLidoUnstake(p: LidoUnstakeParams): Promise<UnsignedTx
     decoded: { functionName: "requestWithdrawals", args: { amount: p.amountStETH, owner: p.wallet } },
   };
 
-  if (allowance < amountWei) {
-    const approve: UnsignedTx = {
-      chain: "ethereum",
-      to: stETH,
-      data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [queue, maxUint256] }),
-      value: "0",
-      from: p.wallet,
-      description: "Approve stETH for Lido Withdrawal Queue (unlimited)",
-      decoded: { functionName: "approve", args: { spender: queue, amount: "max" } },
-      next: unstakeTx,
-    };
+  if (approve) {
+    let tail = approve;
+    while (tail.next) tail = tail.next;
+    tail.next = unstakeTx;
     return approve;
   }
 
@@ -84,19 +82,25 @@ export interface EigenDepositParams {
   amount: string;
   decimals: number;
   symbol: string;
+  approvalCap?: string;
 }
 
 export async function buildEigenLayerDeposit(p: EigenDepositParams): Promise<UnsignedTx> {
   const sm = CONTRACTS.ethereum.eigenlayer.strategyManager as `0x${string}`;
   const amountWei = parseUnits(p.amount, p.decimals);
-  const client = getClient("ethereum");
 
-  const allowance = (await client.readContract({
-    address: p.token,
-    abi: erc20Abi,
-    functionName: "allowance",
-    args: [p.wallet, sm],
-  })) as bigint;
+  const { approvalAmount, display } = resolveApprovalCap(p.approvalCap, amountWei, p.decimals);
+  const approve = await buildApprovalTx({
+    chain: "ethereum",
+    wallet: p.wallet,
+    asset: p.token,
+    spender: sm,
+    amountWei,
+    approvalAmount,
+    approvalDisplay: display,
+    symbol: p.symbol,
+    spenderLabel: "EigenLayer StrategyManager",
+  });
 
   const depositTx: UnsignedTx = {
     chain: "ethereum",
@@ -115,17 +119,10 @@ export async function buildEigenLayerDeposit(p: EigenDepositParams): Promise<Uns
     },
   };
 
-  if (allowance < amountWei) {
-    const approve: UnsignedTx = {
-      chain: "ethereum",
-      to: p.token,
-      data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [sm, maxUint256] }),
-      value: "0",
-      from: p.wallet,
-      description: `Approve ${p.symbol} for EigenLayer StrategyManager (unlimited)`,
-      decoded: { functionName: "approve", args: { spender: sm, amount: "max" } },
-      next: depositTx,
-    };
+  if (approve) {
+    let tail = approve;
+    while (tail.next) tail = tail.next;
+    tail.next = depositTx;
     return approve;
   }
 

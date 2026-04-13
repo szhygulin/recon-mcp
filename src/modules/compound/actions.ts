@@ -2,6 +2,7 @@ import { encodeFunctionData, parseUnits, maxUint256 } from "viem";
 import { cometAbi } from "../../abis/compound-comet.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { getClient } from "../../data/rpc.js";
+import { buildApprovalTx, resolveApprovalCap } from "../shared/approval.js";
 import type {
   PrepareCompoundSupplyArgs,
   PrepareCompoundWithdrawArgs,
@@ -37,56 +38,6 @@ async function resolveBaseToken(
   })) as `0x${string}`;
 }
 
-async function ensureApprovalTx(
-  chain: SupportedChain,
-  wallet: `0x${string}`,
-  asset: `0x${string}`,
-  spender: `0x${string}`,
-  amountWei: bigint,
-  symbol: string
-): Promise<UnsignedTx | null> {
-  const client = getClient(chain);
-  const allowance = (await client.readContract({
-    address: asset,
-    abi: erc20Abi,
-    functionName: "allowance",
-    args: [wallet, spender],
-  })) as bigint;
-  if (allowance >= amountWei) return null;
-  const approveTx: UnsignedTx = {
-    chain,
-    to: asset,
-    data: encodeFunctionData({
-      abi: erc20Abi,
-      functionName: "approve",
-      args: [spender, maxUint256],
-    }),
-    value: "0",
-    from: wallet,
-    description: `Approve ${symbol} for Compound V3 market (unlimited)`,
-    decoded: { functionName: "approve", args: { spender, amount: "max" } },
-  };
-  if (allowance > 0n) {
-    // USDT-style reset: some ERC-20s (notably USDT) revert on
-    // approve(nonzero→nonzero). Zero first, then set new amount.
-    return {
-      chain,
-      to: asset,
-      data: encodeFunctionData({
-        abi: erc20Abi,
-        functionName: "approve",
-        args: [spender, 0n],
-      }),
-      value: "0",
-      from: wallet,
-      description: `Reset ${symbol} allowance to 0 (required by USDT-style tokens before re-approval)`,
-      decoded: { functionName: "approve", args: { spender, amount: "0" } },
-      next: approveTx,
-    };
-  }
-  return approveTx;
-}
-
 export async function buildCompoundSupply(p: PrepareCompoundSupplyArgs): Promise<UnsignedTx> {
   const chain = p.chain as SupportedChain;
   const market = p.market as `0x${string}`;
@@ -94,7 +45,22 @@ export async function buildCompoundSupply(p: PrepareCompoundSupplyArgs): Promise
   const wallet = p.wallet as `0x${string}`;
   const meta = await resolveMeta(chain, asset);
   const amountWei = parseUnits(p.amount, meta.decimals);
-  const approval = await ensureApprovalTx(chain, wallet, asset, market, amountWei, meta.symbol);
+  const { approvalAmount, display } = resolveApprovalCap(
+    p.approvalCap,
+    amountWei,
+    meta.decimals
+  );
+  const approval = await buildApprovalTx({
+    chain,
+    wallet,
+    asset,
+    spender: market,
+    amountWei,
+    approvalAmount,
+    approvalDisplay: display,
+    symbol: meta.symbol,
+    spenderLabel: `Compound V3 market ${market}`,
+  });
   const supplyTx: UnsignedTx = {
     chain,
     to: market,
@@ -170,10 +136,25 @@ export async function buildCompoundRepay(p: PrepareCompoundRepayArgs): Promise<U
   const baseToken = await resolveBaseToken(chain, market);
   const meta = await resolveMeta(chain, baseToken);
   const amountWei = p.amount === "max" ? maxUint256 : parseUnits(p.amount, meta.decimals);
-  const approval =
-    amountWei === maxUint256
-      ? null
-      : await ensureApprovalTx(chain, wallet, baseToken, market, amountWei, meta.symbol);
+  let approval: UnsignedTx | null = null;
+  if (amountWei !== maxUint256) {
+    const { approvalAmount, display } = resolveApprovalCap(
+      p.approvalCap,
+      amountWei,
+      meta.decimals
+    );
+    approval = await buildApprovalTx({
+      chain,
+      wallet,
+      asset: baseToken,
+      spender: market,
+      amountWei,
+      approvalAmount,
+      approvalDisplay: display,
+      symbol: meta.symbol,
+      spenderLabel: `Compound V3 market ${market}`,
+    });
+  }
   const repayTx: UnsignedTx = {
     chain,
     to: market,

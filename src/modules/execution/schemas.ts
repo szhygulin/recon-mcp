@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
+import { approvalCapSchema } from "../shared/approval.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
 const walletSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/);
@@ -42,6 +43,7 @@ export const prepareLidoUnstakeInput = z.object({
     .describe(
       'Human-readable stETH amount, NOT raw wei. Example: "0.5" for 0.5 stETH (18 decimals).'
     ),
+  approvalCap: approvalCapSchema,
 });
 
 export const prepareEigenLayerDepositInput = z.object({
@@ -53,6 +55,7 @@ export const prepareEigenLayerDepositInput = z.object({
     .describe(
       'Human-readable decimal amount of `token`, NOT raw wei/base units. Example: "0.5" for 0.5 stETH.'
     ),
+  approvalCap: approvalCapSchema,
 });
 
 export const prepareNativeSendInput = z.object({
