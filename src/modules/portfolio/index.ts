@@ -5,8 +5,10 @@ import { makeTokenAmount, priceTokenAmounts, round } from "../../data/format.js"
 import { getTokenPrice } from "../../data/prices.js";
 import { getLendingPositions, getLpPositions } from "../positions/index.js";
 import { getStakingPositions } from "../staking/index.js";
+import { getCompoundPositions } from "../compound/index.js";
 import type { GetPortfolioSummaryArgs } from "./schemas.js";
 import type {
+  LendingPositionUnion,
   MultiWalletPortfolioSummary,
   PortfolioSummary,
   SupportedChain,
@@ -121,8 +123,11 @@ async function buildWalletSummary(
   // Each subquery is independent — one failing shouldn't kill the summary. We swap
   // Promise.all for per-task catchers that return empty payloads on error, so a flaky
   // Aave read (say, "returned no data") still lets us report native + ERC-20 + LP totals.
+  // Morpho Blue is deliberately NOT included here: it requires caller-supplied marketIds
+  // (Blue has no on-chain enumeration of a user's markets). Surface Morpho via the
+  // dedicated get_morpho_positions tool instead.
   const emptyPositions = { wallet, positions: [] as never[] };
-  const [nativeAmounts, erc20Amounts, lending, lp, staking] = await Promise.all([
+  const [nativeAmounts, erc20Amounts, aave, compound, lp, staking] = await Promise.all([
     Promise.all(
       chains.map((c) =>
         fetchNativeBalance(wallet, c).catch(() => zeroNative(wallet, c))
@@ -130,6 +135,7 @@ async function buildWalletSummary(
     ),
     Promise.all(chains.map((c) => fetchTopErc20Balances(wallet, c).catch(() => []))),
     getLendingPositions({ wallet, chains }).catch(() => emptyPositions as never),
+    getCompoundPositions({ wallet, chains }).catch(() => emptyPositions as never),
     getLpPositions({ wallet, chains }).catch(() => emptyPositions as never),
     getStakingPositions({ wallet, chains }).catch(() => emptyPositions as never),
   ]);
@@ -138,12 +144,19 @@ async function buildWalletSummary(
   const native = nativeAmounts.filter((a) => a.amount !== "0");
   const erc20 = erc20Amounts.flat();
 
+  // Merge Aave + Compound into a single lending bucket — they both carry `chain` and
+  // `netValueUsd`, which is all the summary math needs.
+  const lendingPositions: LendingPositionUnion[] = [
+    ...aave.positions,
+    ...compound.positions,
+  ];
+
   const walletBalancesUsd = round(
     [...native, ...erc20].reduce((sum, t) => sum + (t.valueUsd ?? 0), 0),
     2
   );
   const lendingNetUsd = round(
-    lending.positions.reduce((sum, p) => sum + p.netValueUsd, 0),
+    lendingPositions.reduce((sum, p) => sum + p.netValueUsd, 0),
     2
   );
   const lpUsd = round(lp.positions.reduce((sum, p) => sum + p.totalValueUsd, 0), 2);
@@ -161,7 +174,7 @@ async function buildWalletSummary(
   chains.forEach((c, i) => {
     const chainNative = nativeAmounts[i]?.valueUsd ?? 0;
     const chainErc20 = erc20Amounts[i].reduce((s, t) => s + (t.valueUsd ?? 0), 0);
-    const chainLending = lending.positions.filter((p) => p.chain === c).reduce((s, p) => s + p.netValueUsd, 0);
+    const chainLending = lendingPositions.filter((p) => p.chain === c).reduce((s, p) => s + p.netValueUsd, 0);
     const chainLp = lp.positions.filter((p) => p.chain === c).reduce((s, p) => s + p.totalValueUsd, 0);
     const chainStaking = staking.positions.filter((p) => p.chain === c).reduce((s, p) => s + (p.stakedAmount.valueUsd ?? 0), 0);
     perChain[c] = round(chainNative + chainErc20 + chainLending + chainLp + chainStaking, 2);
@@ -179,7 +192,7 @@ async function buildWalletSummary(
     breakdown: {
       native,
       erc20,
-      lending: lending.positions,
+      lending: lendingPositions,
       lp: lp.positions,
       staking: staking.positions,
     },

@@ -46,6 +46,28 @@ export interface LendingPosition {
   ltv: number;
 }
 
+/**
+ * A Compound V3 (Comet) position, flattened enough to slot alongside Aave in a unified
+ * lending bucket. Kept as a thin projection of modules/compound/index.ts#CompoundPosition
+ * so the types module doesn't need to pull in compound internals.
+ */
+export interface CompoundLendingPosition {
+  protocol: "compound-v3";
+  chain: SupportedChain;
+  market: string;
+  marketAddress: `0x${string}`;
+  baseSupplied: TokenAmount | null;
+  baseBorrowed: TokenAmount | null;
+  collateral: TokenAmount[];
+  totalCollateralUsd: number;
+  totalDebtUsd: number;
+  totalSuppliedUsd: number;
+  netValueUsd: number;
+}
+
+/** Any lending/borrowing position reported by the portfolio aggregator. */
+export type LendingPositionUnion = LendingPosition | CompoundLendingPosition;
+
 export interface LPPosition {
   protocol: "uniswap-v3";
   chain: SupportedChain;
@@ -112,7 +134,7 @@ export interface PortfolioSummary {
   breakdown: {
     native: TokenAmount[];
     erc20: TokenAmount[];
-    lending: LendingPosition[];
+    lending: LendingPositionUnion[];
     lp: LPPosition[];
     staking: StakingPosition[];
   };

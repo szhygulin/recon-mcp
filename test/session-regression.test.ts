@@ -382,6 +382,11 @@ describe("Bug 7: Portfolio summary degrades gracefully when subqueries fail", ()
         throw new Error('returned no data ("0x")');
       },
     }));
+    vi.doMock("../src/modules/compound/index.js", () => ({
+      getCompoundPositions: async () => {
+        throw new Error('returned no data ("0x")');
+      },
+    }));
 
     const { getPortfolioSummary } = await import("../src/modules/portfolio/index.js");
     const summary = (await getPortfolioSummary({
@@ -404,7 +409,11 @@ describe("Bug 8: Compound V3 reader surfaces base balance even when a getAssetIn
   // downstream metaCalls multicall used allowFailure:false, so one flaky getAssetInfo
   // (out of ~8 collateral assets) threw → outer .catch(() => null) swallowed → the
   // whole healthy position disappeared. Fix: allowFailure:true everywhere downstream.
-  beforeEach(() => vi.resetModules());
+  beforeEach(() => {
+    vi.resetModules();
+    // Bug 7 above mocks the compound module; clear that so we exercise the real reader.
+    vi.doUnmock("../src/modules/compound/index.js");
+  });
   afterEach(() => vi.restoreAllMocks());
 
   it("returns the supplied base balance when one collateral's getAssetInfo reverts", async () => {
@@ -480,5 +489,88 @@ describe("Bug 8: Compound V3 reader surfaces base balance even when a getAssetIn
     expect(ethMarket).toBeDefined();
     expect(ethMarket!.baseSupplied?.symbol).toBe("USDC");
     expect(ethMarket!.baseSupplied?.formatted).toBe("184874.39434");
+  });
+});
+
+describe("Bug 9: Portfolio summary aggregates Compound alongside Aave", () => {
+  // Live bug: user held 184874 cUSDCv3 but get_portfolio_summary showed $0 lending because
+  // only Aave was wired into the aggregator. Fix wires getCompoundPositions in parallel
+  // and merges into the `lending` bucket.
+  beforeEach(() => vi.resetModules());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("includes Compound netValueUsd in lendingNetUsd and per-chain totals", async () => {
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({
+        getBalance: async () => 0n,
+        multicall: async () => [],
+        readContract: async () => {
+          throw new Error("no data");
+        },
+      }),
+      resetClients: () => {},
+    }));
+    vi.doMock("../src/data/prices.js", () => ({
+      getTokenPrice: async () => 0,
+      getTokenPrices: async () => new Map(),
+    }));
+    vi.doMock("../src/data/format.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/data/format.js")>(
+        "../src/data/format.js"
+      );
+      return { ...actual, priceTokenAmounts: async () => {} };
+    });
+    // Aave returns nothing; Compound returns one ethereum position worth $184874.
+    vi.doMock("../src/modules/positions/index.js", () => ({
+      getLendingPositions: async ({ wallet }: { wallet: string }) => ({
+        wallet,
+        positions: [],
+      }),
+      getLpPositions: async ({ wallet }: { wallet: string }) => ({
+        wallet,
+        positions: [],
+      }),
+    }));
+    vi.doMock("../src/modules/staking/index.js", () => ({
+      getStakingPositions: async ({ wallet }: { wallet: string }) => ({
+        wallet,
+        positions: [],
+      }),
+    }));
+    vi.doMock("../src/modules/compound/index.js", () => ({
+      getCompoundPositions: async ({ wallet }: { wallet: string }) => ({
+        wallet,
+        positions: [
+          {
+            protocol: "compound-v3" as const,
+            chain: "ethereum" as const,
+            market: "cUSDCv3",
+            marketAddress: "0xc3d688B66703497DAA19211EEdff47f25384cdc3" as `0x${string}`,
+            baseSupplied: null,
+            baseBorrowed: null,
+            collateral: [],
+            totalCollateralUsd: 0,
+            totalDebtUsd: 0,
+            totalSuppliedUsd: 184874,
+            netValueUsd: 184874,
+          },
+        ],
+      }),
+    }));
+
+    const { getPortfolioSummary } = await import("../src/modules/portfolio/index.js");
+    const summary = (await getPortfolioSummary({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      chains: ["ethereum", "arbitrum"],
+    })) as Awaited<ReturnType<typeof getPortfolioSummary>>;
+
+    // Single-wallet summary → has a breakdown.
+    const single = summary as Extract<typeof summary, { breakdown: unknown }>;
+    expect(single.lendingNetUsd).toBe(184874);
+    expect(single.perChain.ethereum).toBe(184874);
+    expect(single.perChain.arbitrum).toBe(0);
+    expect(single.totalUsd).toBe(184874);
+    expect(single.breakdown.lending).toHaveLength(1);
+    expect(single.breakdown.lending[0].protocol).toBe("compound-v3");
   });
 });
