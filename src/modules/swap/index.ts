@@ -1,4 +1,4 @@
-import { parseUnits, formatUnits } from "viem";
+import { parseUnits, formatUnits, encodeFunctionData } from "viem";
 import { fetchQuote, fetchStatus } from "./lifi.js";
 import { fetchOneInchQuote } from "./oneinch.js";
 import type { GetSwapQuoteArgs, PrepareSwapArgs } from "./schemas.js";
@@ -335,7 +335,7 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
     ? `Bridge ${args.amount} ${fromSym} from ${args.fromChain} to ${toSym} on ${args.toChain} via ${quote.tool}`
     : `Swap ${args.amount} ${fromSym} → ${toSym} on ${args.fromChain} via ${quote.tool}`;
 
-  return {
+  const swapTx: UnsignedTx = {
     chain,
     to: txRequest.to as `0x${string}`,
     data: txRequest.data as `0x${string}`,
@@ -353,6 +353,46 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
     },
     gasEstimate: txRequest.gasLimit ? BigInt(txRequest.gasLimit).toString() : undefined,
   };
+
+  // ERC-20 inputs require an allowance on `approvalAddress` (LiFi Diamond for most
+  // routes, but some tools use a different executor). Without this, the swap reverts
+  // on the Diamond's transferFrom — Ledger Live shows "Continue" disabled with $0
+  // estimated cost because eth_estimateGas fails. Native inputs skip this step.
+  if (fromToken !== "native") {
+    const approvalAddress = (quote.estimate.approvalAddress ??
+      (txRequest.to as `0x${string}`)) as `0x${string}`;
+    const client = getClient(chain);
+    const allowance = (await client.readContract({
+      address: fromToken,
+      abi: erc20Abi,
+      functionName: "allowance",
+      args: [args.wallet as `0x${string}`, approvalAddress],
+    })) as bigint;
+
+    const amountWeiBig = BigInt(fromAmountWei);
+    if (allowance < amountWeiBig) {
+      const approveTx: UnsignedTx = {
+        chain,
+        to: fromToken,
+        data: encodeFunctionData({
+          abi: erc20Abi,
+          functionName: "approve",
+          args: [approvalAddress, amountWeiBig],
+        }),
+        value: "0",
+        from: args.wallet as `0x${string}`,
+        description: `Approve ${args.amount} ${fromSym} for ${quote.tool} via LiFi (exact amount)`,
+        decoded: {
+          functionName: "approve",
+          args: { spender: approvalAddress, amount: `${args.amount} ${fromSym}` },
+        },
+        next: swapTx,
+      };
+      return approveTx;
+    }
+  }
+
+  return swapTx;
 }
 
 export async function getSwapStatus(args: { txHash: string; fromChain: SupportedChain; toChain: SupportedChain }) {
