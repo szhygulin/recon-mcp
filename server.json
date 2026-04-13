@@ -1,0 +1,71 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.szhygulin/recon-crypto-mcp",
+  "title": "Recon Crypto MCP",
+  "description": "MCP server for AI agents (Claude, Cursor) to manage a self-custodial crypto portfolio on Ethereum/Arbitrum/Polygon via Ledger + WalletConnect. Reads on-chain DeFi positions (Aave V3, Compound V3, Morpho Blue, Uniswap V3 LP, Lido, EigenLayer), surfaces liquidation/health-factor alerts, and prepares unsigned EVM transactions (supply, borrow, repay, withdraw, stake, unstake, native/ERC-20 send, LiFi-routed swaps and bridges) that the user signs on their Ledger device. Private keys never leave the hardware wallet.",
+  "version": "0.2.1",
+  "websiteUrl": "https://github.com/szhygulin/recon-crypto-mcp",
+  "repository": {
+    "url": "https://github.com/szhygulin/recon-crypto-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "recon-crypto-mcp",
+      "version": "0.2.1",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "ETHEREUM_RPC_URL",
+          "description": "Custom Ethereum RPC endpoint (alternative to RPC_PROVIDER + RPC_API_KEY).",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "ARBITRUM_RPC_URL",
+          "description": "Custom Arbitrum RPC endpoint.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "POLYGON_RPC_URL",
+          "description": "Custom Polygon RPC endpoint.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "RPC_PROVIDER",
+          "description": "RPC provider name: 'infura' or 'alchemy'. Used together with RPC_API_KEY.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "RPC_API_KEY",
+          "description": "API key for the chosen RPC_PROVIDER.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "ETHERSCAN_API_KEY",
+          "description": "Etherscan API key for contract verification lookups.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "ONEINCH_API_KEY",
+          "description": "1inch Developer Portal API key. Enables 1inch quote comparison in get_swap_quote.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "WALLETCONNECT_PROJECT_ID",
+          "description": "WalletConnect Cloud project ID. Required for Ledger Live signing via WalletConnect.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

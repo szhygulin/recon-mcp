@@ -38,7 +38,17 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Publish
+      - name: Publish to npm
         # Node 22 ships npm 10.x; Trusted Publisher OIDC token exchange
         # needs npm >= 11.5.1, so invoke latest npm via npx just for this step.
         run: npx --yes npm@latest publish --provenance --access public
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to MCP Registry (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish
