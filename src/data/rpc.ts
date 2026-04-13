@@ -1,9 +1,10 @@
 import { createPublicClient, http, type PublicClient } from "viem";
 import { resolveRpcUrl, VIEM_CHAINS } from "../config/chains.js";
 import { readUserConfig } from "../config/user-config.js";
-import type { SupportedChain } from "../types/index.js";
+import { CHAIN_IDS, type SupportedChain } from "../types/index.js";
 
 const clients = new Map<SupportedChain, PublicClient>();
+const verifiedChains = new Set<SupportedChain>();
 
 /**
  * Get (or lazily create) a viem PublicClient for the given chain.
@@ -34,7 +35,30 @@ export function getClient(chain: SupportedChain): PublicClient {
   return client;
 }
 
+/**
+ * Verify the RPC endpoint actually speaks the chain we think it does. A wrong-
+ * chain RPC would happily sign "ETH" txs against (say) a fork or BSC — values
+ * and addresses overlap but token semantics don't, and the user would end up
+ * sending real ETH against what they thought was a testnet. We do this on the
+ * first live call per chain, memoize it, and throw loud if it mismatches.
+ */
+export async function verifyChainId(chain: SupportedChain): Promise<void> {
+  if (verifiedChains.has(chain)) return;
+  const client = getClient(chain);
+  const actual = await client.getChainId();
+  const expected = CHAIN_IDS[chain];
+  if (actual !== expected) {
+    throw new Error(
+      `RPC for ${chain} returned chainId ${actual}, expected ${expected}. ` +
+        `The configured endpoint does NOT point at ${chain} — refusing to proceed. ` +
+        `Fix via \`recon-mcp-setup\` or the relevant env var.`
+    );
+  }
+  verifiedChains.add(chain);
+}
+
 /** Invalidate the cached clients — useful after the user re-runs setup. */
 export function resetClients(): void {
   clients.clear();
+  verifiedChains.clear();
 }
