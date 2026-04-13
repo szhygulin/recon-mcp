@@ -180,6 +180,13 @@ export interface UnsignedTx {
   gasCostUsd?: number;
   /** If this tx is a prerequisite (e.g. ERC-20 approve), the follow-up tx is in `next`. */
   next?: UnsignedTx;
+  /**
+   * Opaque handle issued by the tx-store when the prepared tx is returned to
+   * the caller. `send_transaction` accepts ONLY this handle — raw calldata is
+   * not acceptable, which binds the signed tx to the previewed one and closes
+   * the prompt-injection → arbitrary-signing path.
+   */
+  handle?: string;
 }
 
 /** Shape of ~/.recon-mcp/config.json. */

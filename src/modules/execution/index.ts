@@ -5,6 +5,7 @@ import {
   requestSendTransaction,
 } from "../../signing/walletconnect.js";
 import { getSessionStatus } from "../../signing/session.js";
+import { consumeHandle } from "../../signing/tx-store.js";
 import { getClient } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import {
@@ -256,17 +257,18 @@ export async function prepareTokenSend(args: PrepareTokenSendArgs): Promise<Unsi
 
 // ----- Send + status -----
 
-export async function sendTransaction(args: SendTransactionArgs): Promise<{ txHash: `0x${string}`; chain: SupportedChain }> {
-  const tx: UnsignedTx = {
-    chain: args.chain as SupportedChain,
-    to: args.to as `0x${string}`,
-    data: args.data as `0x${string}`,
-    value: args.value,
-    from: args.from as `0x${string}` | undefined,
-    description: `Send transaction on ${args.chain}`,
-  };
+export async function sendTransaction(args: SendTransactionArgs): Promise<{
+  txHash: `0x${string}`;
+  chain: SupportedChain;
+  nextHandle?: string;
+}> {
+  const tx = consumeHandle(args.handle);
   const hash = await requestSendTransaction(tx);
-  return { txHash: hash, chain: args.chain as SupportedChain };
+  return {
+    txHash: hash,
+    chain: tx.chain,
+    ...(tx.next?.handle ? { nextHandle: tx.next.handle } : {}),
+  };
 }
 
 export async function getTransactionStatus(args: GetTransactionStatusArgs) {

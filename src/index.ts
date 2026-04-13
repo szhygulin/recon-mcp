@@ -117,6 +117,9 @@ import {
 
 import { getTokenPriceInput, getTokenPriceTool } from "./modules/prices/index.js";
 
+import { issueHandles } from "./signing/tx-store.js";
+import type { UnsignedTx } from "./types/index.js";
+
 import { readUserConfig } from "./config/user-config.js";
 
 /**
@@ -144,6 +147,17 @@ function handler<T, R>(fn: (args: T) => Promise<R> | R) {
       };
     }
   };
+}
+
+/**
+ * Handler wrapper for prepare_* tools that return UnsignedTx. Runs the function,
+ * then issues opaque handles across the tx and every `.next` node so
+ * `send_transaction` can re-hydrate the exact tx from server state. The agent
+ * never passes raw calldata to the signing path — it calls send_transaction
+ * with a handle, which closes the prompt-injection → arbitrary-calldata window.
+ */
+function txHandler<T>(fn: (args: T) => Promise<UnsignedTx> | UnsignedTx) {
+  return handler(async (args: T) => issueHandles(await fn(args)));
 }
 
 /** JSON.stringify replacer that converts bigint to decimal string. */
@@ -297,7 +311,7 @@ async function main() {
         "Prepare an unsigned swap or bridge transaction via LiFi aggregator. Same-chain swaps use the best DEX route; cross-chain swaps use a bridge + DEX combo. The returned tx can be sent via `send_transaction`.",
       inputSchema: prepareSwapInput.shape,
     },
-    handler(prepareSwap)
+    txHandler(prepareSwap)
   );
 
   // ---- Module 6: Execution (Ledger Live) ----
@@ -315,7 +329,12 @@ async function main() {
     "get_ledger_status",
     {
       description:
-        "Report whether a WalletConnect session with Ledger Live is active, which wallet it's connected to, and which accounts are exposed.",
+        "Report whether a WalletConnect session with Ledger Live is active, which wallet it's connected to, and which accounts are exposed. " +
+        "Returns `accounts: 0x…[]` — the list of wallet addresses the user has connected. " +
+        "Call this FIRST whenever the user refers to their wallet(s) by position or nickname instead of by address — e.g. " +
+        '\"my wallet\", \"the first address\", \"account 2\", \"second wallet\" — so you can resolve the reference to a concrete 0x… ' +
+        "before invoking any prepare_* / swap / send / portfolio tool that takes a `wallet` argument. Do NOT ask the user to paste an " +
+        "address if it's already in `accounts` here.",
       inputSchema: getLedgerStatusInput.shape,
     },
     handler(getLedgerStatus)
@@ -328,7 +347,7 @@ async function main() {
         "Build an unsigned Aave V3 supply transaction. If an ERC-20 approve() is required first, it is returned as the outer tx and the supply tx is embedded in `.next`. Both must be signed for the supply to succeed.",
       inputSchema: prepareAaveSupplyInput.shape,
     },
-    handler(prepareAaveSupply)
+    txHandler(prepareAaveSupply)
   );
 
   server.registerTool(
@@ -338,7 +357,7 @@ async function main() {
         "Build an unsigned Aave V3 withdraw transaction. Pass `amount: \"max\"` to withdraw the entire aToken balance.",
       inputSchema: prepareAaveWithdrawInput.shape,
     },
-    handler(prepareAaveWithdraw)
+    txHandler(prepareAaveWithdraw)
   );
 
   server.registerTool(
@@ -348,7 +367,7 @@ async function main() {
         "Build an unsigned Aave V3 borrow transaction (stable or variable rate). The borrower must already have sufficient collateral supplied.",
       inputSchema: prepareAaveBorrowInput.shape,
     },
-    handler(prepareAaveBorrow)
+    txHandler(prepareAaveBorrow)
   );
 
   server.registerTool(
@@ -358,7 +377,7 @@ async function main() {
         "Build an unsigned Aave V3 repay transaction. If an ERC-20 approve() is required first, it is returned as the outer tx and repay is in `.next`. Pass `amount: \"max\"` to repay the full debt.",
       inputSchema: prepareAaveRepayInput.shape,
     },
-    handler(prepareAaveRepay)
+    txHandler(prepareAaveRepay)
   );
 
   server.registerTool(
@@ -368,7 +387,7 @@ async function main() {
         "Build an unsigned Lido stake transaction (wraps ETH into stETH via stETH.submit). The tx's value field is the ETH amount to stake.",
       inputSchema: prepareLidoStakeInput.shape,
     },
-    handler(prepareLidoStake)
+    txHandler(prepareLidoStake)
   );
 
   server.registerTool(
@@ -378,7 +397,7 @@ async function main() {
         "Build an unsigned Lido withdrawal request transaction. Wraps `requestWithdrawals` on the Lido Withdrawal Queue and includes an approve step if needed.",
       inputSchema: prepareLidoUnstakeInput.shape,
     },
-    handler(prepareLidoUnstake)
+    txHandler(prepareLidoUnstake)
   );
 
   server.registerTool(
@@ -388,7 +407,7 @@ async function main() {
         "Build an unsigned EigenLayer StrategyManager.depositIntoStrategy transaction. Includes an ERC-20 approve step if needed.",
       inputSchema: prepareEigenLayerDepositInput.shape,
     },
-    handler(prepareEigenLayerDeposit)
+    txHandler(prepareEigenLayerDeposit)
   );
 
   server.registerTool(
@@ -460,7 +479,7 @@ async function main() {
         "Build an unsigned native-coin send transaction (ETH on Ethereum/Arbitrum). Pass a human-readable amount like \"0.5\".",
       inputSchema: prepareNativeSendInput.shape,
     },
-    handler(prepareNativeSend)
+    txHandler(prepareNativeSend)
   );
 
   server.registerTool(
@@ -470,7 +489,7 @@ async function main() {
         "Build an unsigned ERC-20 transfer transaction. Pass `amount: \"max\"` to send the full balance (resolved at build time).",
       inputSchema: prepareTokenSendInput.shape,
     },
-    handler(prepareTokenSend)
+    txHandler(prepareTokenSend)
   );
 
   // ---- Module 8: Compound V3 ----
@@ -491,7 +510,7 @@ async function main() {
         "Build an unsigned Compound V3 supply transaction (base token or collateral). If an ERC-20 approve() is required first, it is returned as the outer tx with supply in `.next`.",
       inputSchema: prepareCompoundSupplyInput.shape,
     },
-    handler(buildCompoundSupply)
+    txHandler(buildCompoundSupply)
   );
 
   server.registerTool(
@@ -501,7 +520,7 @@ async function main() {
         "Build an unsigned Compound V3 withdraw transaction. Pass `amount: \"max\"` to withdraw the full supplied balance.",
       inputSchema: prepareCompoundWithdrawInput.shape,
     },
-    handler(buildCompoundWithdraw)
+    txHandler(buildCompoundWithdraw)
   );
 
   server.registerTool(
@@ -511,7 +530,7 @@ async function main() {
         "Build an unsigned Compound V3 borrow transaction — encoded as withdraw(baseToken) beyond the user's supplied balance. Base token is resolved on-chain from the Comet.",
       inputSchema: prepareCompoundBorrowInput.shape,
     },
-    handler(buildCompoundBorrow)
+    txHandler(buildCompoundBorrow)
   );
 
   server.registerTool(
@@ -521,7 +540,7 @@ async function main() {
         "Build an unsigned Compound V3 repay transaction — encoded as supply(baseToken) against an outstanding borrow. Includes an approve step if needed. Pass `amount: \"max\"` for a full repay.",
       inputSchema: prepareCompoundRepayInput.shape,
     },
-    handler(buildCompoundRepay)
+    txHandler(buildCompoundRepay)
   );
 
   // ---- Module 9: Morpho Blue ----
@@ -542,7 +561,7 @@ async function main() {
         "Build an unsigned Morpho Blue supply transaction (deposits loan token for yield). Market params are resolved on-chain from the market id. Includes an approve step if needed.",
       inputSchema: prepareMorphoSupplyInput.shape,
     },
-    handler(buildMorphoSupply)
+    txHandler(buildMorphoSupply)
   );
 
   server.registerTool(
@@ -552,7 +571,7 @@ async function main() {
         "Build an unsigned Morpho Blue withdraw transaction (withdraws supplied loan token). Explicit amount only — \"max\" is not supported; query your position first.",
       inputSchema: prepareMorphoWithdrawInput.shape,
     },
-    handler(buildMorphoWithdraw)
+    txHandler(buildMorphoWithdraw)
   );
 
   server.registerTool(
@@ -562,7 +581,7 @@ async function main() {
         "Build an unsigned Morpho Blue borrow transaction. Requires pre-existing collateral in the market.",
       inputSchema: prepareMorphoBorrowInput.shape,
     },
-    handler(buildMorphoBorrow)
+    txHandler(buildMorphoBorrow)
   );
 
   server.registerTool(
@@ -572,7 +591,7 @@ async function main() {
         "Build an unsigned Morpho Blue repay transaction. Includes an approve step if needed. Explicit amount only — \"max\" is not supported.",
       inputSchema: prepareMorphoRepayInput.shape,
     },
-    handler(buildMorphoRepay)
+    txHandler(buildMorphoRepay)
   );
 
   server.registerTool(
@@ -582,7 +601,7 @@ async function main() {
         "Build an unsigned Morpho Blue supplyCollateral transaction — adds collateral to a market. Includes an approve step if needed.",
       inputSchema: prepareMorphoSupplyCollateralInput.shape,
     },
-    handler(buildMorphoSupplyCollateral)
+    txHandler(buildMorphoSupplyCollateral)
   );
 
   server.registerTool(
@@ -592,7 +611,7 @@ async function main() {
         "Build an unsigned Morpho Blue withdrawCollateral transaction — removes collateral from a market. Explicit amount only.",
       inputSchema: prepareMorphoWithdrawCollateralInput.shape,
     },
-    handler(buildMorphoWithdrawCollateral)
+    txHandler(buildMorphoWithdrawCollateral)
   );
 
   const transport = new StdioServerTransport();

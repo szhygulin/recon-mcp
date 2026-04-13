@@ -82,19 +82,16 @@ export const prepareTokenSendInput = z.object({
 });
 
 export const sendTransactionInput = z.object({
-  chain: chainEnum,
-  to: addressSchema,
-  data: dataSchema,
-  value: z
+  handle: z
     .string()
-    .default("0")
+    .min(1)
     .describe(
-      'Native-asset value attached to the call, in raw wei as a decimal string (e.g. "1000000000000000000" = 1 ETH). ' +
-        "This is the raw calldata `value` field — not human-readable. Usually comes from a prepare_* tool verbatim."
+      "Opaque handle returned by a prepare_* tool in the `handle` field of the UnsignedTx. " +
+        "Raw calldata is NOT accepted — the handle is the only way to name a tx for signing, " +
+        "so the tx the user previewed is exactly the tx sent to Ledger. If the tx chain has a " +
+        "`next` step (e.g. approve → swap), each step has its own handle; call send_transaction " +
+        "once per handle in order. Handles expire 15 minutes after prepare."
     ),
-  from: walletSchema.optional(),
-  /** Gate: the model must explicitly confirm on the user's behalf that the preview was acknowledged. */
-  confirmed: z.literal(true),
 });
 
 export const getTransactionStatusInput = z.object({

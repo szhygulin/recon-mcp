@@ -1,0 +1,77 @@
+import { randomUUID } from "node:crypto";
+import type { UnsignedTx } from "../types/index.js";
+
+/**
+ * In-memory registry of prepared transactions keyed by an opaque handle.
+ *
+ * Purpose: bind `send_transaction` to the exact tx built by a `prepare_*` tool.
+ * Without this, `send_transaction` accepts raw calldata — a prompt-injected
+ * agent (e.g. via a malicious Etherscan source comment or ENS reverse record)
+ * could convince the model to sign arbitrary bytes while the user thinks they
+ * approved the previewed tx.
+ *
+ * Each prepared tx and every node in its `.next` chain gets its own handle.
+ * The signing path looks up by handle and refuses anything not in the store.
+ *
+ * Lifetime: 15 minutes from issue, enough for a user to review and approve on
+ * their Ledger. Expired entries are lazily pruned on every access.
+ */
+const TX_TTL_MS = 15 * 60_000;
+
+interface StoredTx {
+  tx: UnsignedTx;
+  expiresAt: number;
+}
+
+const store = new Map<string, StoredTx>();
+
+function prune(now = Date.now()): void {
+  for (const [handle, entry] of store) {
+    if (entry.expiresAt < now) store.delete(handle);
+  }
+}
+
+/**
+ * Recursively assign handles to `tx` and every node in its `.next` chain.
+ * Returns a new tx tree with `handle` populated on each node.
+ *
+ * Each handle stores ONLY the one tx node it names — not the full chain.
+ * The agent must call `send_transaction` once per handle, walking the chain
+ * explicitly. This makes every signature an independent, auditable event.
+ */
+export function issueHandles(tx: UnsignedTx): UnsignedTx {
+  prune();
+  const now = Date.now();
+  const expiresAt = now + TX_TTL_MS;
+
+  const nextWithHandles = tx.next ? issueHandles(tx.next) : undefined;
+  const handle = randomUUID();
+  const withHandle: UnsignedTx = {
+    ...tx,
+    handle,
+    ...(nextWithHandles ? { next: nextWithHandles } : {}),
+  };
+  // Store a copy without `handle` on the stored value itself (not needed at
+  // lookup time) to avoid the tautology of storing the key inside the value.
+  const { handle: _h, next: _n, ...stored } = withHandle;
+  store.set(handle, {
+    tx: { ...stored, ...(nextWithHandles ? { next: nextWithHandles } : {}) },
+    expiresAt,
+  });
+  return withHandle;
+}
+
+/** Retrieve the tx named by `handle`, or throw if unknown/expired. */
+export function consumeHandle(handle: string): UnsignedTx {
+  prune();
+  const entry = store.get(handle);
+  if (!entry) {
+    throw new Error(
+      `Unknown or expired tx handle. Prepared transactions expire after 15 minutes. ` +
+        `Re-run the prepare_* tool to get a fresh handle.`
+    );
+  }
+  // Handle remains valid — user may legitimately retry signing (e.g. device
+  // disconnect, WalletConnect timeout) before it expires.
+  return entry.tx;
+}
