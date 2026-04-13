@@ -334,7 +334,10 @@ async function main() {
         "Call this FIRST whenever the user refers to their wallet(s) by position or nickname instead of by address — e.g. " +
         '\"my wallet\", \"the first address\", \"account 2\", \"second wallet\" — so you can resolve the reference to a concrete 0x… ' +
         "before invoking any prepare_* / swap / send / portfolio tool that takes a `wallet` argument. Do NOT ask the user to paste an " +
-        "address if it's already in `accounts` here.",
+        "address if it's already in `accounts` here. " +
+        "SECURITY: the returned `wallet`/`peerUrl` are self-reported by the paired app. Before the FIRST send_transaction of a session, " +
+        "state the paired wallet name + URL back to the user and ask them to confirm it matches their Ledger Live install — " +
+        "any WalletConnect peer can claim to be 'Ledger Live'. The physical Ledger device's on-screen confirmation is the final check.",
       inputSchema: getLedgerStatusInput.shape,
     },
     handler(getLedgerStatus)
