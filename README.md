@@ -5,22 +5,24 @@ An MCP server that gives AI agents (Claude Code, Claude Desktop, Cursor) real-ti
 ## Features
 
 - **Positions** — lending/borrowing (Aave, Compound, Morpho), LP positions, and health-factor alerts
-- **Portfolio** — cross-chain balances, DeFi position aggregation, USD-denominated summaries
+- **Portfolio** — cross-chain balances, DeFi position aggregation, USD-denominated summaries; optionally folds Bitcoin holdings in alongside EVM
 - **Staking** — Lido, EigenLayer, reward aggregation, yield estimation
 - **Security** — contract verification, upgradeability checks, privileged-role enumeration, protocol risk scoring
-- **Swaps** — LiFi-routed intra-chain and cross-chain quotes, with a 1inch cross-check
-- **Execution** — tx preparation for Aave, Compound, Morpho, Lido, EigenLayer, native/token sends, swaps; signing via Ledger Live (WalletConnect)
+- **Swaps** — LiFi-routed intra-chain and cross-chain quotes; intra-chain routes are also cross-checked against 1inch (when an API key is configured) with a `bestSource` hint and output-delta savings
+- **Bitcoin** — read-only balances via mempool.space, plus unsigned-send preparation with fee-minimizing UTXO selection (greedy largest-first, dust-aware) and raw-tx broadcast. No PSBT — the returned plan is signed externally (Sparrow, Electrum, hardware wallet)
+- **Execution** — tx preparation for Aave, Compound, Morpho, Lido, EigenLayer, native/token sends, swaps; signing via Ledger Live (WalletConnect) for EVM chains
 - **Utilities** — ENS forward/reverse resolution, token balances, transaction status
 
 ## Supported chains
 
-Ethereum, Polygon, Arbitrum, Base, Optimism.
+EVM: Ethereum, Arbitrum, Polygon. Bitcoin mainnet (read + send preparation, no on-device signing yet).
 
 ## Requirements
 
 - Node.js >= 18.17
-- An RPC provider (Infura, Alchemy, or custom)
-- Optional: Etherscan API key, WalletConnect Cloud project ID (required for Ledger signing)
+- An RPC provider (Infura, Alchemy, or custom) for the EVM chains
+- Optional: Etherscan API key, 1inch Developer Portal API key (enables swap-quote comparison), WalletConnect Cloud project ID (required for Ledger signing)
+- No API key required for Bitcoin — mempool.space is used directly
 
 ## Install
 
@@ -55,6 +57,17 @@ Add to `claude_desktop_config.json`:
 ```
 
 The setup script prints a ready-to-paste snippet.
+
+## Environment variables
+
+All are optional if the matching field is in `~/.recon-mcp/config.json`; env vars take precedence when both are set.
+
+- `ETHEREUM_RPC_URL`, `ARBITRUM_RPC_URL`, `POLYGON_RPC_URL` — custom RPC endpoints
+- `RPC_PROVIDER` (`infura` | `alchemy`) + `RPC_API_KEY` — alternative to custom URLs
+- `ETHERSCAN_API_KEY` — contract verification lookups
+- `ONEINCH_API_KEY` — enables 1inch quote comparison in `get_swap_quote`
+- `WALLETCONNECT_PROJECT_ID` — required for Ledger Live signing
+- `RPC_BATCH=1` — opt into JSON-RPC batching (off by default; many public endpoints mishandle batched POSTs)
 
 ## Development
 
