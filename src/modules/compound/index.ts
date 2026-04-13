@@ -57,15 +57,24 @@ async function readMarketPosition(
     ],
     allowFailure: true,
   });
-  if (results.some((r) => r.status === "failure")) return null;
+  // Need baseToken + balanceOf + borrowBalanceOf to say anything meaningful. numAssets
+  // failing is survivable — we just skip the collateral breakdown.
+  if (
+    results[0].status !== "success" ||
+    results[2].status !== "success" ||
+    results[3].status !== "success"
+  ) {
+    return null;
+  }
   const baseToken = results[0].result;
-  const numAssets = results[1].result;
   const supplied = results[2].result;
   const borrowed = results[3].result;
   const baseAddr = baseToken as `0x${string}`;
-  const n = Number(numAssets);
+  const n = results[1].status === "success" ? Number(results[1].result) : 0;
 
-  // Fetch base token metadata + enumerate collateral asset addresses.
+  // Fetch base token metadata + enumerate collateral asset addresses. allowFailure:true
+  // so one weird collateral (non-standard decimals/symbol, rate-limit) doesn't nuke the
+  // whole position. We fall back to sane defaults for base token metadata if needed.
   const metaCalls = [
     { address: baseAddr, abi: erc20Abi, functionName: "decimals" as const },
     { address: baseAddr, abi: erc20Abi, functionName: "symbol" as const },
@@ -76,15 +85,21 @@ async function readMarketPosition(
       args: [i] as const,
     })),
   ];
-  const metaResults = await client.multicall({ contracts: metaCalls, allowFailure: false });
-  const baseDecimals = Number(metaResults[0]);
-  const baseSymbol = metaResults[1] as string;
-  const assetInfos = metaResults.slice(2) as unknown as Array<{
-    asset: `0x${string}`;
-  }>;
+  const metaResults = await client.multicall({ contracts: metaCalls, allowFailure: true });
+  const baseDecimals =
+    metaResults[0].status === "success" ? Number(metaResults[0].result) : 18;
+  const baseSymbol =
+    metaResults[1].status === "success" ? (metaResults[1].result as string) : "?";
+  const collateralAddrs: `0x${string}`[] = [];
+  for (let i = 0; i < n; i++) {
+    const r = metaResults[2 + i];
+    if (r.status !== "success") continue;
+    const info = r.result as unknown as { asset: `0x${string}` };
+    collateralAddrs.push(info.asset);
+  }
 
-  // Collateral balances (parallel).
-  const collateralAddrs = assetInfos.map((a) => a.asset);
+  // Collateral balances (parallel). Per-slot allowFailure so one broken ERC-20 read
+  // doesn't hide the (healthy) base supply/borrow numbers.
   const collatResults =
     collateralAddrs.length === 0
       ? []
@@ -99,13 +114,26 @@ async function readMarketPosition(
             { address: addr, abi: erc20Abi, functionName: "decimals" as const },
             { address: addr, abi: erc20Abi, functionName: "symbol" as const },
           ]),
-          allowFailure: false,
+          allowFailure: true,
         });
 
   const baseSuppliedWei = supplied as bigint;
   const baseBorrowedWei = borrowed as bigint;
 
-  if (baseSuppliedWei === 0n && baseBorrowedWei === 0n && collateralAddrs.every((_, i) => (collatResults[i * 3] as bigint) === 0n)) {
+  const collateral: TokenAmount[] = [];
+  for (let i = 0; i < collateralAddrs.length; i++) {
+    const balRes = collatResults[i * 3];
+    if (balRes?.status !== "success") continue;
+    const bal = balRes.result as bigint;
+    if (bal === 0n) continue;
+    const decRes = collatResults[i * 3 + 1];
+    const symRes = collatResults[i * 3 + 2];
+    const decimals = decRes?.status === "success" ? Number(decRes.result) : 18;
+    const symbol = symRes?.status === "success" ? (symRes.result as string) : "?";
+    collateral.push(makeTokenAmount(chain, collateralAddrs[i], bal, decimals, symbol));
+  }
+
+  if (baseSuppliedWei === 0n && baseBorrowedWei === 0n && collateral.length === 0) {
     return null;
   }
 
@@ -117,15 +145,6 @@ async function readMarketPosition(
     baseBorrowedWei > 0n
       ? makeTokenAmount(chain, baseAddr, baseBorrowedWei, baseDecimals, baseSymbol)
       : null;
-
-  const collateral: TokenAmount[] = [];
-  for (let i = 0; i < collateralAddrs.length; i++) {
-    const bal = collatResults[i * 3] as bigint;
-    if (bal === 0n) continue;
-    const decimals = Number(collatResults[i * 3 + 1]);
-    const symbol = collatResults[i * 3 + 2] as string;
-    collateral.push(makeTokenAmount(chain, collateralAddrs[i], bal, decimals, symbol));
-  }
 
   // Batch price everything (base + collaterals).
   const toPrice = [baseSupplied, baseBorrowed, ...collateral].filter(

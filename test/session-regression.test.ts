@@ -229,7 +229,10 @@ describe("Bug 3: Compound positions skip individual markets that revert", () => 
           ];
         }
         // Metadata call: decimals, symbol for the base token (no collateral assets here).
-        return [6, "USDC"];
+        return [
+          { status: "success", result: 6 },
+          { status: "success", result: "USDC" },
+        ];
       }),
     };
 
@@ -392,5 +395,90 @@ describe("Bug 7: Portfolio summary degrades gracefully when subqueries fail", ()
     expect(summary.lpUsd).toBe(0);
     expect(summary.stakingUsd).toBe(0);
     expect(summary.totalUsd).toBe(2000);
+  });
+});
+
+describe("Bug 8: Compound V3 reader surfaces base balance even when a getAssetInfo call fails", () => {
+  // Reproduces the live-session bug where wallet C0f5...4075 had 184874 cUSDCv3
+  // supplied but get_compound_positions returned an empty array. Root cause: the
+  // downstream metaCalls multicall used allowFailure:false, so one flaky getAssetInfo
+  // (out of ~8 collateral assets) threw → outer .catch(() => null) swallowed → the
+  // whole healthy position disappeared. Fix: allowFailure:true everywhere downstream.
+  beforeEach(() => vi.resetModules());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("returns the supplied base balance when one collateral's getAssetInfo reverts", async () => {
+    let callIdx = 0;
+    const mockClient = {
+      multicall: vi.fn(async ({ contracts }: { contracts: unknown[] }) => {
+        callIdx++;
+        // Only simulate ONE market (ethereum cUSDCv3); ignore additional ones.
+        if (contracts.length === 4) {
+          if (callIdx === 1) {
+            // Baseline reads: healthy base supply, 3 collateral assets declared.
+            return [
+              { status: "success", result: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" },
+              { status: "success", result: 3 },
+              { status: "success", result: 184_874_394_340n },
+              { status: "success", result: 0n },
+            ];
+          }
+          // Any further market reads: empty so the outer loop filters them out.
+          return [
+            { status: "success", result: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" },
+            { status: "success", result: 0 },
+            { status: "success", result: 0n },
+            { status: "success", result: 0n },
+          ];
+        }
+        // Meta multicall: decimals + symbol for base, then 3 getAssetInfo calls.
+        // Simulate that the MIDDLE getAssetInfo reverts (the bug's trigger).
+        if ((contracts[0] as { functionName: string }).functionName === "decimals") {
+          return [
+            { status: "success", result: 6 },
+            { status: "success", result: "USDC" },
+            {
+              status: "success",
+              result: { asset: "0xbe9895146f7AF43049ca1c1AE358B0541Ea49704" as const },
+            },
+            { status: "failure", error: new Error('returned no data ("0x")') },
+            {
+              status: "success",
+              result: { asset: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599" as const },
+            },
+          ];
+        }
+        // Collateral balances multicall: 2 surviving assets * 3 calls each.
+        // Both have zero balance → we just want to confirm base survives.
+        return Array.from({ length: contracts.length }, (_, i) => {
+          const mod = i % 3;
+          if (mod === 0) return { status: "success", result: 0n };
+          if (mod === 1) return { status: "success", result: 18 };
+          return { status: "success", result: "COL" };
+        });
+      }),
+    };
+
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => mockClient,
+      resetClients: () => {},
+    }));
+    vi.doMock("../src/data/format.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/data/format.js")>(
+        "../src/data/format.js"
+      );
+      return { ...actual, priceTokenAmounts: async () => {} };
+    });
+
+    const { getCompoundPositions } = await import("../src/modules/compound/index.js");
+    const { positions } = await getCompoundPositions({
+      wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
+      chains: ["ethereum"],
+    });
+    expect(positions.length).toBeGreaterThanOrEqual(1);
+    const ethMarket = positions.find((p) => p.chain === "ethereum");
+    expect(ethMarket).toBeDefined();
+    expect(ethMarket!.baseSupplied?.symbol).toBe("USDC");
+    expect(ethMarket!.baseSupplied?.formatted).toBe("184874.39434");
   });
 });
