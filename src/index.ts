@@ -220,6 +220,13 @@ async function main() {
         "   prompt the user to review and physically sign on the device.",
         "6. Optionally poll `get_transaction_status` for inclusion.",
         "",
+        "TWO-STEP ALLOWANCE FLOWS: when a `prepare_*` tool returns an approval tx alongside",
+        "the main tx (supply, repay, swap, etc.), submit the approval via `send_transaction`",
+        "FIRST, then POLL `get_transaction_status` until the approval is included (status",
+        "`confirmed`). Only AFTER that, simulate or send the main tx. Simulating the main tx",
+        "against pre-approval state fails with \"insufficient allowance\" / ERC20 reverts and",
+        "looks like a builder bug — it is not, the allowance just isn't on-chain yet.",
+        "",
         "READ-ONLY TOOLS need no pairing and can be called freely: get_lending_positions,",
         "get_lp_positions, get_compound_positions, get_morpho_positions, get_staking_positions,",
         "get_staking_rewards, estimate_staking_yield, get_portfolio_summary, get_swap_quote,",
@@ -512,7 +519,10 @@ async function main() {
         "a contract call does what you expect — e.g. does wrapping ETH by sending to WETH9's fallback succeed, " +
         "does a custom calldata revert, what selector gets hit. For state-dependent calls (WETH deposit credits " +
         "msg.sender, ERC-20 transfer debits msg.sender), pass the user's wallet as `from`. Prepared transactions " +
-        "are also re-simulated automatically at send_transaction time — this tool lets the agent check ahead.",
+        "are also re-simulated automatically at send_transaction time — this tool lets the agent check ahead. " +
+        "NEVER call this on a tx that depends on an approval you just submitted but haven't yet waited on: " +
+        "the approval must be included on-chain (poll get_transaction_status until confirmed) before the " +
+        "dependent tx will simulate correctly — otherwise you get a misleading 'insufficient allowance' revert.",
       inputSchema: simulateTransactionInput.shape,
     },
     handler(simulateTransaction)
