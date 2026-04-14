@@ -448,9 +448,9 @@ export interface MultiWalletPortfolioSummary {
  * (eth_call re-simulation, chain-id check, spender allowlist) can't be
  * silently shortcut by a TRON handle masquerading as an EVM one.
  *
- * Phase 2 ships preparation only — there is no send_tron_transaction yet.
- * Handles are issued so the Phase 3 signer (USB HID via @ledgerhq/hw-app-trx)
- * can consume them exactly the way send_transaction consumes EVM handles.
+ * Phase 3 (this release) routes TRON handles through `send_transaction`:
+ * the USB HID signer (@ledgerhq/hw-app-trx) verifies the device address
+ * matches `from`, signs `rawDataHex`, and broadcasts via TronGrid.
  */
 export interface UnsignedTronTx {
   chain: "tron";

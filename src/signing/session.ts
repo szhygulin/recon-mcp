@@ -4,6 +4,7 @@ import {
   getSignClient,
   isPeerUnreachable,
 } from "./walletconnect.js";
+import { getPairedTronAddress } from "./tron-usb-signer.js";
 import type { SupportedChain } from "../types/index.js";
 
 export interface SessionAccount {
@@ -45,6 +46,18 @@ export interface SessionStatus {
    * peer comes back online or the user re-pairs.
    */
   peerUnreachable?: boolean;
+  /**
+   * Present when the user has run `pair_ledger_tron`. TRON doesn't share
+   * WalletConnect with EVM — signing goes over USB HID — so this section is
+   * independent of the `paired`/`accounts` fields above (which describe the
+   * WC session for EVM chains only). Unset means the agent should ask the
+   * user to run `pair_ledger_tron` before preparing a TRON tx.
+   */
+  tron?: {
+    address: string;
+    path: string;
+    appVersion: string;
+  };
 }
 
 export const PEER_TRUST_WARNING =
@@ -56,12 +69,23 @@ export const PEER_TRUST_WARNING =
 export async function getSessionStatus(): Promise<SessionStatus> {
   await getSignClient(); // triggers restore + liveness check
   const session = getCurrentSession();
+  const tronPaired = getPairedTronAddress();
+  const tronSection = tronPaired
+    ? {
+        tron: {
+          address: tronPaired.address,
+          path: tronPaired.path,
+          appVersion: tronPaired.appVersion,
+        },
+      }
+    : {};
   if (!session)
     return {
       paired: false,
       accounts: [],
       accountDetails: [],
       peerTrustWarning: PEER_TRUST_WARNING,
+      ...tronSection,
     };
   const accountDetails = await getConnectedAccountsDetailed();
   const accounts = accountDetails.map((a) => a.address);
@@ -78,5 +102,6 @@ export async function getSessionStatus(): Promise<SessionStatus> {
     ...(meta?.description ? { peerDescription: meta.description } : {}),
     peerTrustWarning: PEER_TRUST_WARNING,
     ...(unreachable ? { peerUnreachable: true } : {}),
+    ...tronSection,
   };
 }

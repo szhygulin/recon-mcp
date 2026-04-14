@@ -9,6 +9,8 @@ const dataSchema = z.string().regex(/^0x[a-fA-F0-9]*$/);
 
 export const pairLedgerLiveInput = z.object({});
 
+export const pairLedgerTronInput = z.object({});
+
 export const getLedgerStatusInput = z.object({});
 
 const baseAaveAction = z.object({
