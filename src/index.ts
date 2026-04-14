@@ -439,7 +439,7 @@ async function main() {
     "pair_ledger_tron",
     {
       description:
-        "Pair the host's directly-connected Ledger device for TRON signing. REQUIREMENTS: Ledger plugged into the machine running this MCP (USB, not WalletConnect), device unlocked, and the 'Tron' app open on-screen. Ledger Live's WalletConnect relay does not currently honor the `tron:` CAIP namespace, so TRON signing goes over USB HID via @ledgerhq/hw-app-trx. Reads the device address at m/44'/195'/0'/0/0 and caches it so `get_ledger_status` can report it. Call this once per session before calling any `prepare_tron_*` tool or `send_transaction` with a TRON handle. If the TRON app isn't open, or the device is locked, returns an actionable error describing what to fix.",
+        "Pair the host's directly-connected Ledger device for TRON signing. REQUIREMENTS: Ledger plugged into the machine running this MCP (USB, not WalletConnect), device unlocked, and the 'Tron' app open on-screen. Ledger Live's WalletConnect relay does not currently honor the `tron:` CAIP namespace, so TRON signing goes over USB HID via @ledgerhq/hw-app-trx. Reads the device address at m/44'/195'/<accountIndex>'/0/0 (default accountIndex=0) and caches it so `get_ledger_status` can report it. Call multiple times with different `accountIndex` values (0, 1, 2, …) to pair additional TRON accounts — each call adds to the cache; subsequent calls for the same index refresh in place. Call this once per session (per account) before calling any `prepare_tron_*` tool or `send_transaction` with a TRON handle. If the TRON app isn't open, or the device is locked, returns an actionable error describing what to fix.",
       inputSchema: pairLedgerTronInput.shape,
     },
     handler(pairLedgerTron)
@@ -449,16 +449,16 @@ async function main() {
     "get_ledger_status",
     {
       description:
-        "Report whether a WalletConnect session with Ledger Live is active (EVM chains) AND whether a TRON Ledger pairing is cached (USB HID — see `pair_ledger_tron`). " +
-        "Returns `accounts: 0x…[]` — the list of EVM wallet addresses the user has connected — and optionally `tron: { address, path, appVersion }` if `pair_ledger_tron` has run. " +
+        "Report whether a WalletConnect session with Ledger Live is active (EVM chains) AND whether any TRON Ledger pairings are cached (USB HID — see `pair_ledger_tron`). " +
+        "Returns `accounts: 0x…[]` — the list of EVM wallet addresses the user has connected — and optionally `tron: [{ address, path, appVersion, accountIndex }, …]` (one entry per paired TRON account, ordered by accountIndex) if `pair_ledger_tron` has been run at least once. " +
         "Call this FIRST whenever the user refers to their wallet(s) by position or nickname instead of by address — e.g. " +
-        '\"my wallet\", \"my TRON wallet\", \"the first address\", \"account 2\", \"second wallet\" — so you can resolve the reference to a concrete 0x… / T… ' +
+        '\"my wallet\", \"my TRON wallet\", \"the first address\", \"account 2\", \"second wallet\", \"second TRON account\" — so you can resolve the reference to a concrete 0x… / T… ' +
         "before invoking any prepare_* / swap / send / portfolio tool that takes a `wallet` / `tronAddress` argument. Do NOT ask the user to paste an " +
-        "address if it's already in `accounts` or `tron.address` here. " +
+        "address if it's already in `accounts` or a `tron[*].address` here. " +
         "SECURITY: the returned `wallet`/`peerUrl` (EVM) are self-reported by the paired WC app. Before the FIRST send_transaction of a session, " +
         "state the paired wallet name + URL back to the user and ask them to confirm it matches their Ledger Live install — " +
         "any WalletConnect peer can claim to be 'Ledger Live'. The physical Ledger device's on-screen confirmation is the final check. " +
-        "The `tron` section is read from the cache populated by `pair_ledger_tron`; `send_transaction` re-probes USB on every TRON sign, so the cache cannot be spoofed into approving a tx for the wrong account.",
+        "The `tron` array is read from the cache populated by `pair_ledger_tron`; `send_transaction` re-probes USB on every TRON sign, so the cache cannot be spoofed into approving a tx for the wrong account.",
       inputSchema: getLedgerStatusInput.shape,
     },
     handler(getLedgerStatus)

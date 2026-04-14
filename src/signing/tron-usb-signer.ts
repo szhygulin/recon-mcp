@@ -2,29 +2,87 @@ import { isTronAddress } from "../config/tron.js";
 import { openLedger } from "./tron-usb-loader.js";
 
 /**
- * TRON signing path. BIP-44 coin type 195 (SLIP-44). Single path only in this
- * release — multi-account TRON discovery can come later if users ask.
+ * TRON signing path. BIP-44 coin type 195 (SLIP-44). The hardened account
+ * segment is the Ledger Live account index — 0 is the first TRON account,
+ * 1 the second, etc. Matches the layout Ledger Live uses internally.
  */
 export const DEFAULT_TRON_PATH = "44'/195'/0'/0/0";
 
-/**
- * Last-known Ledger TRON pairing. Populated by `pair_ledger_tron` and read
- * back by `get_ledger_status` so the agent can resolve "my TRON wallet"
- * without re-probing USB on every read. `send_transaction` does NOT trust
- * this cache — it always re-opens the device and verifies the address
- * matches `from` before signing.
- */
-let pairedTronAddress: { address: string; publicKey: string; path: string; appVersion: string } | null =
-  null;
+/** Arbitrary cap to keep pathological inputs from producing absurd paths. */
+const MAX_TRON_ACCOUNT_INDEX = 100;
 
-export function getPairedTronAddress() {
-  return pairedTronAddress;
+/**
+ * Build the standard Ledger Live TRON BIP-44 path for `accountIndex`.
+ * Hardened account segment (matches Ledger Live's own derivation).
+ */
+export function tronPathForAccountIndex(accountIndex: number): string {
+  if (!Number.isInteger(accountIndex) || accountIndex < 0 || accountIndex > MAX_TRON_ACCOUNT_INDEX) {
+    throw new Error(
+      `Invalid TRON accountIndex ${accountIndex} — must be an integer in [0, ${MAX_TRON_ACCOUNT_INDEX}].`
+    );
+  }
+  return `44'/195'/${accountIndex}'/0/0`;
 }
 
-export function setPairedTronAddress(
-  entry: { address: string; publicKey: string; path: string; appVersion: string } | null
-): void {
-  pairedTronAddress = entry;
+/**
+ * Extract the Ledger Live account index from a standard TRON path. Returns
+ * `null` if the path doesn't match the `44'/195'/<n>'/0/0` shape — callers
+ * treat missing indices as "custom path, no account-slot mapping".
+ */
+export function parseTronAccountIndex(path: string): number | null {
+  const m = /^44'\/195'\/(\d+)'\/0\/0$/.exec(path);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isInteger(n) ? n : null;
+}
+
+export interface PairedTronEntry {
+  address: string;
+  publicKey: string;
+  path: string;
+  appVersion: string;
+  /** Null when the path is not in the standard `44'/195'/<n>'/0/0` layout. */
+  accountIndex: number | null;
+}
+
+/**
+ * Ledger TRON pairings. Populated by `pair_ledger_tron` and read back by
+ * `get_ledger_status` so the agent can resolve "my TRON wallet" / "my second
+ * TRON account" without re-probing USB on every read. Keyed by BIP-44 path
+ * so users can pair multiple account slots in parallel (e.g. index 0 and
+ * index 1). `send_transaction` does NOT trust this cache — it always
+ * re-opens the device and verifies the derived address matches `from`
+ * before signing.
+ */
+const pairedTronByPath = new Map<string, PairedTronEntry>();
+
+/** All paired TRON accounts, sorted by `accountIndex` (standard paths first). */
+export function getPairedTronAddresses(): PairedTronEntry[] {
+  return Array.from(pairedTronByPath.values()).sort((a, b) => {
+    if (a.accountIndex === null && b.accountIndex === null) return 0;
+    if (a.accountIndex === null) return 1;
+    if (b.accountIndex === null) return -1;
+    return a.accountIndex - b.accountIndex;
+  });
+}
+
+/** Look up a paired entry by its derived base58 address. */
+export function getPairedTronByAddress(address: string): PairedTronEntry | null {
+  for (const entry of pairedTronByPath.values()) {
+    if (entry.address === address) return entry;
+  }
+  return null;
+}
+
+export function setPairedTronAddress(entry: Omit<PairedTronEntry, "accountIndex">): PairedTronEntry {
+  const full: PairedTronEntry = { ...entry, accountIndex: parseTronAccountIndex(entry.path) };
+  pairedTronByPath.set(entry.path, full);
+  return full;
+}
+
+/** Test-only hook — lets us reset state between suites without juggling module caches. */
+export function clearPairedTronAddresses(): void {
+  pairedTronByPath.clear();
 }
 
 /**

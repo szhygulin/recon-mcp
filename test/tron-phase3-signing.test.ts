@@ -274,9 +274,15 @@ describe("sendTransaction — TRON handle routing", () => {
 });
 
 describe("pair_ledger_tron + get_ledger_status", () => {
-  beforeEach(() => installStubs());
+  beforeEach(async () => {
+    installStubs();
+    // Clear pairings between tests — the module-level cache otherwise leaks
+    // across cases in the describe block.
+    const { clearPairedTronAddresses } = await import("../src/signing/tron-usb-signer.js");
+    clearPairedTronAddresses();
+  });
 
-  it("populates the tron section of getSessionStatus after pairing", async () => {
+  it("populates the tron section of getSessionStatus after pairing (default accountIndex)", async () => {
     // Reset the module cache so `session.ts`'s transitive import of
     // `walletconnect.js` (already resolved by earlier tests via execution/index)
     // is re-evaluated and picks up the doMock below.
@@ -293,12 +299,117 @@ describe("pair_ledger_tron + get_ledger_status", () => {
     const pair = await pairLedgerTron();
     expect(pair.address).toBe(DEVICE_ADDRESS);
     expect(pair.path).toBe("44'/195'/0'/0/0");
+    expect(pair.accountIndex).toBe(0);
 
     const status = await getSessionStatus();
-    expect(status.tron).toEqual({
-      address: DEVICE_ADDRESS,
-      path: "44'/195'/0'/0/0",
-      appVersion: "0.5.0",
+    expect(status.tron).toEqual([
+      {
+        address: DEVICE_ADDRESS,
+        path: "44'/195'/0'/0/0",
+        appVersion: "0.5.0",
+        accountIndex: 0,
+      },
+    ]);
+  });
+
+  it("pairs a second TRON account via accountIndex=1 and lists both in getSessionStatus", async () => {
+    vi.resetModules();
+    vi.doMock("../src/signing/walletconnect.js", () => ({
+      getSignClient: async () => ({}),
+      getCurrentSession: () => null,
+      getConnectedAccountsDetailed: async () => [],
+      isPeerUnreachable: () => false,
+    }));
+    // First pair returns DEVICE_ADDRESS (account 0); second returns OTHER_ADDRESS (account 1).
+    installStubs();
+    const addressByPath: Record<string, string> = {
+      "44'/195'/0'/0/0": DEVICE_ADDRESS,
+      "44'/195'/1'/0/0": OTHER_ADDRESS,
+    };
+    trxInstance.getAddress = vi.fn(async (path: string) => {
+      const addr = addressByPath[path];
+      if (!addr) throw new Error(`unexpected path ${path}`);
+      return { publicKey: "04abcd", address: addr };
     });
+
+    const { pairLedgerTron } = await import("../src/modules/execution/index.js");
+    const { getSessionStatus } = await import("../src/signing/session.js");
+
+    const first = await pairLedgerTron({ accountIndex: 0 });
+    expect(first.address).toBe(DEVICE_ADDRESS);
+    expect(first.path).toBe("44'/195'/0'/0/0");
+    const second = await pairLedgerTron({ accountIndex: 1 });
+    expect(second.address).toBe(OTHER_ADDRESS);
+    expect(second.path).toBe("44'/195'/1'/0/0");
+    expect(second.accountIndex).toBe(1);
+
+    const status = await getSessionStatus();
+    expect(status.tron).toHaveLength(2);
+    expect(status.tron?.[0].accountIndex).toBe(0);
+    expect(status.tron?.[1].accountIndex).toBe(1);
+    expect(status.tron?.[0].address).toBe(DEVICE_ADDRESS);
+    expect(status.tron?.[1].address).toBe(OTHER_ADDRESS);
+  });
+
+  it("rejects an out-of-range accountIndex", async () => {
+    const { pairLedgerTron } = await import("../src/modules/execution/index.js");
+    await expect(pairLedgerTron({ accountIndex: 999 })).rejects.toThrow(
+      /Invalid TRON accountIndex/
+    );
+  });
+
+  it("signing for a paired non-default account routes through the paired BIP-44 path", async () => {
+    // End-to-end: pair accountIndex=1 (→ OTHER_ADDRESS), prepare+send a tx
+    // from OTHER_ADDRESS, and assert `app.signTransaction` was called with
+    // the corresponding `44'/195'/1'/0/0` path — not the default path.
+    installStubs();
+    const addressByPath: Record<string, string> = {
+      "44'/195'/0'/0/0": DEVICE_ADDRESS,
+      "44'/195'/1'/0/0": OTHER_ADDRESS,
+    };
+    trxInstance.getAddress = vi.fn(async (path: string) => {
+      const addr = addressByPath[path];
+      if (!addr) throw new Error(`unexpected path ${path}`);
+      return { publicKey: "04abcd", address: addr };
+    });
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "https://api.trongrid.io/wallet/createtransaction") {
+        return new Response(
+          JSON.stringify({
+            txID: "ef".repeat(32),
+            raw_data: { expiration: 1 },
+            raw_data_hex: RAW_HEX,
+            visible: true,
+          }),
+          { status: 200 }
+        );
+      }
+      if (url === "https://api.trongrid.io/wallet/broadcasttransaction") {
+        return new Response(JSON.stringify({ result: true, txid: "ef".repeat(32) }), {
+          status: 200,
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { pairLedgerTron, sendTransaction } = await import(
+      "../src/modules/execution/index.js"
+    );
+    const { buildTronNativeSend } = await import("../src/modules/tron/actions.js");
+
+    await pairLedgerTron({ accountIndex: 1 });
+    const tx = await buildTronNativeSend({
+      from: OTHER_ADDRESS,
+      to: DEVICE_ADDRESS,
+      amount: "1",
+    });
+    const result = await sendTransaction({ handle: tx.handle!, confirmed: true });
+    expect(result.txHash).toBe("ef".repeat(32));
+    expect(trxInstance.signTransaction).toHaveBeenCalledWith(
+      "44'/195'/1'/0/0",
+      RAW_HEX,
+      []
+    );
   });
 });

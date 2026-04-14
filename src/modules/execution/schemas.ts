@@ -9,7 +9,20 @@ const dataSchema = z.string().regex(/^0x[a-fA-F0-9]*$/);
 
 export const pairLedgerLiveInput = z.object({});
 
-export const pairLedgerTronInput = z.object({});
+export const pairLedgerTronInput = z.object({
+  accountIndex: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .optional()
+    .describe(
+      "Ledger TRON account slot (hardened BIP-44 account index). 0 = first account, " +
+        "1 = second, etc. — same convention Ledger Live uses. Omit to pair the default " +
+        "account (index 0). Call pair_ledger_tron multiple times with different " +
+        "indices to expose multiple TRON accounts in get_ledger_status."
+    ),
+});
 
 export const getLedgerStatusInput = z.object({});
 
@@ -113,6 +126,7 @@ export const getTransactionStatusInput = z.object({
   txHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/),
 });
 
+export type PairLedgerTronArgs = z.infer<typeof pairLedgerTronInput>;
 export type PrepareAaveSupplyArgs = z.infer<typeof prepareAaveSupplyInput>;
 export type PrepareAaveWithdrawArgs = z.infer<typeof prepareAaveWithdrawInput>;
 export type PrepareAaveBorrowArgs = z.infer<typeof prepareAaveBorrowInput>;

@@ -72,7 +72,7 @@ Meta:
 
 Execution (Ledger-signed):
 
-- `pair_ledger_live` (WalletConnect, EVM), `pair_ledger_tron` (USB HID, TRON), `get_ledger_status` — session management and account discovery; `get_ledger_status` returns per-chain EVM exposure (`accountDetails[]` with `address`, `chainIds`, `chains`) so duplicate-looking addresses across chains are disambiguated, and a `tron: { address, path, appVersion }` section when `pair_ledger_tron` has been called
+- `pair_ledger_live` (WalletConnect, EVM), `pair_ledger_tron` (USB HID, TRON), `get_ledger_status` — session management and account discovery; `get_ledger_status` returns per-chain EVM exposure (`accountDetails[]` with `address`, `chainIds`, `chains`) so duplicate-looking addresses across chains are disambiguated, and a `tron: [{ address, path, appVersion, accountIndex }, …]` array (one entry per paired TRON account) when `pair_ledger_tron` has been called. Pass `accountIndex: 1` (2, 3, …) to pair additional TRON accounts.
 - `prepare_aave_supply` / `_withdraw` / `_borrow` / `_repay`
 - `prepare_compound_supply` / `_withdraw` / `_borrow` / `_repay`
 - `prepare_morpho_supply` / `_withdraw` / `_borrow` / `_repay` / `_supply_collateral` / `_withdraw_collateral`

@@ -12,6 +12,8 @@ import {
   getTronLedgerAddress,
   signTronTxOnLedger,
   setPairedTronAddress,
+  getPairedTronByAddress,
+  tronPathForAccountIndex,
 } from "../../signing/tron-usb-signer.js";
 import { broadcastTronTx } from "../tron/broadcast.js";
 import { assertTransactionSafe } from "../../signing/pre-sign-check.js";
@@ -31,6 +33,7 @@ import {
 } from "../staking/actions.js";
 import { getTokenPrice } from "../../data/prices.js";
 import type {
+  PairLedgerTronArgs,
   PrepareAaveSupplyArgs,
   PrepareAaveWithdrawArgs,
   PrepareAaveBorrowArgs,
@@ -80,25 +83,32 @@ export async function pairLedgerLive(): Promise<{
  * Pair the host's directly-connected Ledger device for TRON signing. Unlike
  * `pair_ledger_live` (WalletConnect relay for EVM), TRON signs over USB HID —
  * the Ledger must be plugged into the host running this MCP, unlocked, with
- * the TRON app open. Reads + caches the device address at m/44'/195'/0'/0/0
+ * the TRON app open. Reads + caches the device address at the BIP-44 path
+ * derived from `accountIndex` (default 0 = first Ledger Live TRON account)
  * so subsequent `get_ledger_status` calls can report it without re-probing.
+ * Call with different `accountIndex` values to expose multiple TRON accounts.
  */
-export async function pairLedgerTron(): Promise<{
+export async function pairLedgerTron(args: PairLedgerTronArgs = {}): Promise<{
   address: string;
   path: string;
   appVersion: string;
+  accountIndex: number;
   instructions: string;
 }> {
-  const result = await getTronLedgerAddress();
+  const accountIndex = args.accountIndex ?? 0;
+  const path = tronPathForAccountIndex(accountIndex);
+  const result = await getTronLedgerAddress(path);
   setPairedTronAddress(result);
   return {
     address: result.address,
     path: result.path,
     appVersion: result.appVersion,
+    accountIndex,
     instructions:
       "TRON account paired. You can now call `prepare_tron_*` with this address and " +
       "forward the handle via `send_transaction`. Keep the Ledger plugged in with the " +
-      "TRON app open — each sign re-opens USB and re-verifies the device address.",
+      "TRON app open — each sign re-opens USB and re-verifies the device address. " +
+      "To pair a different slot, call `pair_ledger_tron` again with another `accountIndex`.",
   };
 }
 
@@ -338,9 +348,16 @@ async function sendTronTransaction(args: SendTransactionArgs): Promise<{
   chain: "tron";
 }> {
   const tx: UnsignedTronTx = consumeTronHandle(args.handle);
+  // If the user paired this `from` via `pair_ledger_tron`, use the path they
+  // paired on (covers non-default account slots). If we have no paired entry
+  // for `from`, fall through to the signer's default path — the device
+  // address check inside signTronTxOnLedger will then surface a clear error
+  // telling the user to pair the right slot.
+  const paired = getPairedTronByAddress(tx.from);
   const { signature } = await signTronTxOnLedger({
     rawDataHex: tx.rawDataHex,
     expectedFrom: tx.from,
+    ...(paired ? { path: paired.path } : {}),
   });
   const { txID } = await broadcastTronTx(tx, signature);
   // Only retire the handle after successful broadcast. If signing fails
