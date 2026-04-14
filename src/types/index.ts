@@ -1,5 +1,16 @@
 // Shared domain types used across all modules.
 
+/**
+ * EVM chains supported by the server. Intentionally kept narrow so every
+ * `Record<SupportedChain, …>` table in the codebase continues to represent
+ * "per-EVM-chain" configuration — viem clients, Aave/Compound/Uniswap
+ * addresses, numeric chain IDs, etc.
+ *
+ * Non-EVM chains (currently only TRON) live in `SupportedNonEvmChain`, and
+ * the `AnyChain` union below is what cross-chain entry points (tool inputs,
+ * portfolio summary) accept. This split keeps TRON strictly additive: EVM
+ * internals don't need to learn that TRON exists.
+ */
 export type SupportedChain = "ethereum" | "arbitrum" | "polygon" | "base";
 
 export const SUPPORTED_CHAINS: readonly SupportedChain[] = [
@@ -8,6 +19,23 @@ export const SUPPORTED_CHAINS: readonly SupportedChain[] = [
   "polygon",
   "base",
 ] as const;
+
+/** Non-EVM chains. Kept as its own union so EVM-only tables keep their type. */
+export type SupportedNonEvmChain = "tron";
+
+export const SUPPORTED_NON_EVM_CHAINS: readonly SupportedNonEvmChain[] = ["tron"] as const;
+
+/** Any chain the server knows about — EVM or non-EVM. */
+export type AnyChain = SupportedChain | SupportedNonEvmChain;
+
+export const ALL_CHAINS: readonly AnyChain[] = [
+  ...SUPPORTED_CHAINS,
+  ...SUPPORTED_NON_EVM_CHAINS,
+] as const;
+
+export function isEvmChain(c: AnyChain): c is SupportedChain {
+  return (SUPPORTED_CHAINS as readonly string[]).includes(c);
+}
 
 export type RpcProvider = "infura" | "alchemy" | "custom";
 
@@ -25,6 +53,13 @@ export const CHAIN_ID_TO_NAME: Record<number, SupportedChain> = {
   137: "polygon",
   8453: "base",
 };
+
+/**
+ * TRON mainnet chain id, as used by the WalletConnect `tron:` namespace and
+ * the TronGrid mainnet endpoint. The numeric value is 0x2b6653dc (728126428),
+ * the first 4 bytes of the genesis block hash.
+ */
+export const TRON_CHAIN_ID = 728126428;
 
 /** A token balance with optional USD valuation. */
 export interface TokenAmount {
@@ -66,6 +101,12 @@ export interface PortfolioCoverage {
   morpho: CoverageStatus;
   uniswapV3: CoverageStatus;
   staking: CoverageStatus;
+  /**
+   * TRON balance fetch coverage. `covered:false, errored:false` means no TRON
+   * address was queried (treated like Morpho's "not attempted"); errored:true
+   * means a TronGrid call failed and TRX/TRC-20 are missing from totals.
+   */
+  tron?: CoverageStatus;
   /** Number of token balances whose USD valuation could not be resolved. */
   unpricedAssets: number;
 }
@@ -196,6 +237,41 @@ export interface SecurityReport {
   privilegedRoles: PrivilegedRole[];
 }
 
+/**
+ * A TRON token balance. Shaped like TokenAmount but with a base58 `token`
+ * address (TRC-20 contracts are base58, starting with 'T') and a `chain`
+ * discriminator so consumers can tell TRC-20 apart from ERC-20 at runtime.
+ * Kept separate from TokenAmount so existing EVM readers don't grow a
+ * `chain: "tron"` branch they'd never exercise.
+ */
+export interface TronBalance {
+  chain: "tron";
+  /** Base58 TRC-20 contract address (prefix `T`), or "native" for TRX. */
+  token: string;
+  symbol: string;
+  decimals: number;
+  amount: string;
+  formatted: string;
+  valueUsd?: number;
+  priceUsd?: number;
+  priceMissing?: boolean;
+}
+
+/**
+ * TRON slice of a portfolio summary. Contains the TRON-specific address the
+ * balances were fetched for (base58, which can't fit into the `wallet:
+ * 0x${string}` field on PortfolioSummary), TRX native balance, and TRC-20
+ * balances. Wallet-level coverage for TRON is tracked via
+ * PortfolioCoverage.tron.
+ */
+export interface TronPortfolioSlice {
+  /** Base58 TRON address the balances were resolved for. */
+  address: string;
+  native: TronBalance[];
+  trc20: TronBalance[];
+  walletBalancesUsd: number;
+}
+
 /** Per-wallet slice of a multi-wallet portfolio, or a stand-alone single-wallet summary. */
 export interface PortfolioSummary {
   wallet: `0x${string}`;
@@ -206,12 +282,20 @@ export interface PortfolioSummary {
   stakingUsd: number;
   totalUsd: number;
   perChain: Record<SupportedChain, number>;
+  /**
+   * TRON totals folded into the same number as EVM. Present when the caller
+   * passed a `tronAddress` (or TRON is in the default chain set and an
+   * address was resolvable).
+   */
+  tronUsd?: number;
   breakdown: {
     native: TokenAmount[];
     erc20: TokenAmount[];
     lending: LendingPositionUnion[];
     lp: LPPosition[];
     staking: StakingPosition[];
+    /** TRON slice — absent when no TRON address was queried. */
+    tron?: TronPortfolioSlice;
   };
   coverage: PortfolioCoverage;
 }
@@ -282,6 +366,12 @@ export interface UserConfig {
   etherscanApiKey?: string;
   /** Optional 1inch Developer Portal API key for intra-chain swap-quote comparison. */
   oneInchApiKey?: string;
+  /**
+   * TronGrid API key (`TRON-PRO-API-KEY` header). Required to read TRX and
+   * TRC-20 balances on the `tron` chain — TronGrid rate-limits unauthenticated
+   * calls to ~15 req/min, which is too tight for portfolio fan-out.
+   */
+  tronApiKey?: string;
   walletConnect?: {
     projectId?: string;
     /** Topic of the active WC session (so we can resume after restart). */

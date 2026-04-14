@@ -7,6 +7,7 @@ import { getLendingPositions, getLpPositions } from "../positions/index.js";
 import { getStakingPositions } from "../staking/index.js";
 import { getCompoundPositions } from "../compound/index.js";
 import { getMorphoPositions } from "../morpho/index.js";
+import { getTronBalances } from "../tron/balances.js";
 import type { GetPortfolioSummaryArgs } from "./schemas.js";
 import type {
   LendingPositionUnion,
@@ -15,6 +16,7 @@ import type {
   PortfolioSummary,
   SupportedChain,
   TokenAmount,
+  TronPortfolioSlice,
 } from "../../types/index.js";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
 
@@ -88,9 +90,20 @@ export async function getPortfolioSummary(
     ? [args.wallet as `0x${string}`]
     : [];
 
+  const tronAddress = args.tronAddress;
+
   // Branch: single wallet returns the flat summary; multi-wallet aggregates.
+  // TRON is only folded into the single-wallet summary — a multi-wallet view
+  // with a single TRON address would be ambiguous (which EVM wallet does it
+  // "belong to"?), so we require the caller to use single-wallet mode when
+  // pairing with a TRON address.
   if (wallets.length === 1) {
-    return buildWalletSummary(wallets[0], chains);
+    return buildWalletSummary(wallets[0], chains, tronAddress);
+  }
+  if (tronAddress) {
+    throw new Error(
+      "`tronAddress` can only be combined with a single EVM `wallet`. For multi-wallet portfolios, call `get_portfolio_summary` once per EVM wallet."
+    );
   }
 
   const perWallet = await Promise.all(wallets.map((w) => buildWalletSummary(w, chains)));
@@ -145,7 +158,8 @@ function mergeCoverage(entries: { covered: boolean; errored?: boolean; note?: st
 
 async function buildWalletSummary(
   wallet: `0x${string}`,
-  chains: SupportedChain[]
+  chains: SupportedChain[],
+  tronAddress?: string
 ): Promise<PortfolioSummary> {
   // Each subquery is independent — one failing shouldn't kill the summary. We swap
   // Promise.all for per-task catchers that return empty payloads on error, so a flaky
@@ -157,8 +171,8 @@ async function buildWalletSummary(
   // Wrap each subquery so the portfolio can distinguish failure from empty. A
   // thrown fetch becomes errored:true so callers don't mistake "Aave down" for
   // "no Aave position".
-  const errors = { aave: false, compound: false, morpho: false, lp: false, staking: false };
-  const [nativeAmounts, erc20Amounts, aave, compound, morphoByChain, lp, staking] =
+  const errors = { aave: false, compound: false, morpho: false, lp: false, staking: false, tron: false };
+  const [nativeAmounts, erc20Amounts, aave, compound, morphoByChain, lp, staking, tronSlice] =
     await Promise.all([
       Promise.all(
         chains.map((c) =>
@@ -193,6 +207,16 @@ async function buildWalletSummary(
         errors.staking = true;
         return emptyPositions as never;
       }),
+      // TRON reads are only attempted when the caller passed a tronAddress.
+      // `null` means "not attempted" (coverage.tron left as
+      // covered:false,errored:false — same semantics as Morpho without
+      // marketIds pre-discovery).
+      tronAddress
+        ? getTronBalances(tronAddress).catch(() => {
+            errors.tron = true;
+            return null as TronPortfolioSlice | null;
+          })
+        : (Promise.resolve(null) as Promise<TronPortfolioSlice | null>),
     ]);
   const morphoPositions = morphoByChain.flatMap((r) => r.positions);
 
@@ -208,8 +232,9 @@ async function buildWalletSummary(
     ...morphoPositions,
   ];
 
+  const tronBalancesUsd = tronSlice?.walletBalancesUsd ?? 0;
   const walletBalancesUsd = round(
-    [...native, ...erc20].reduce((sum, t) => sum + (t.valueUsd ?? 0), 0),
+    [...native, ...erc20].reduce((sum, t) => sum + (t.valueUsd ?? 0), 0) + tronBalancesUsd,
     2
   );
   const lendingNetUsd = round(
@@ -237,13 +262,24 @@ async function buildWalletSummary(
     perChain[c] = round(chainNative + chainErc20 + chainLending + chainLp + chainStaking, 2);
   });
 
-  const unpricedAssets = [...native, ...erc20].filter((t) => t.priceMissing).length;
+  const tronUnpriced = tronSlice
+    ? [...tronSlice.native, ...tronSlice.trc20].filter((t) => t.priceMissing).length
+    : 0;
+  const unpricedAssets =
+    [...native, ...erc20].filter((t) => t.priceMissing).length + tronUnpriced;
   const coverage: PortfolioCoverage = {
     aave: { covered: !errors.aave, ...(errors.aave ? { errored: true, note: "Aave fetch failed — positions not included in totals." } : {}) },
     compound: { covered: !errors.compound, ...(errors.compound ? { errored: true, note: "Compound V3 fetch failed — positions not included in totals." } : {}) },
     morpho: { covered: !errors.morpho, ...(errors.morpho ? { errored: true, note: "Morpho Blue event-log discovery failed on at least one chain — some positions may be missing from totals." } : {}) },
     uniswapV3: { covered: !errors.lp, ...(errors.lp ? { errored: true, note: "Uniswap V3 LP fetch failed — positions not included." } : {}) },
     staking: { covered: !errors.staking, ...(errors.staking ? { errored: true, note: "Staking (Lido/EigenLayer) fetch failed — positions not included." } : {}) },
+    ...(tronAddress
+      ? {
+          tron: errors.tron
+            ? { covered: false, errored: true, note: "TRON balance fetch failed (TronGrid) — TRX/TRC-20 not included in totals." }
+            : { covered: true },
+        }
+      : {}),
     unpricedAssets,
   };
 
@@ -256,12 +292,14 @@ async function buildWalletSummary(
     stakingUsd,
     totalUsd,
     perChain,
+    ...(tronSlice ? { tronUsd: round(tronBalancesUsd, 2) } : {}),
     breakdown: {
       native,
       erc20,
       lending: lendingPositions,
       lp: lp.positions,
       staking: staking.positions,
+      ...(tronSlice ? { tron: tronSlice } : {}),
     },
     coverage,
   };

@@ -99,6 +99,16 @@ export function resolveOneInchApiKey(userConfig: UserConfig | null): string | un
   return process.env.ONEINCH_API_KEY || userConfig?.oneInchApiKey;
 }
 
+/**
+ * Pull the TronGrid API key from env or user config; undefined if none set.
+ * An undefined key means TRON reads are either disabled or fall back to
+ * anonymous TronGrid (rate-limited — the reader flags that in its errored
+ * coverage status rather than silently degrading).
+ */
+export function resolveTronApiKey(userConfig: UserConfig | null): string | undefined {
+  return process.env.TRON_API_KEY || userConfig?.tronApiKey;
+}
+
 /** Pull the WalletConnect project ID from env or user config; undefined if none set. */
 export function resolveWalletConnectProjectId(userConfig: UserConfig | null): string | undefined {
   return process.env.WALLETCONNECT_PROJECT_ID || userConfig?.walletConnect?.projectId;

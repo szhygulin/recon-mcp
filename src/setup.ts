@@ -171,6 +171,40 @@ async function configureOneInch(p: Prompt): Promise<string | undefined> {
   return answer || undefined;
 }
 
+async function validateTronApiKey(apiKey: string): Promise<void> {
+  // USDT-TRC20 address — well-known, always returns 200 on a healthy grid.
+  const url = "https://api.trongrid.io/v1/accounts/TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+  const res = await fetch(url, { headers: { "TRON-PRO-API-KEY": apiKey } });
+  if (!res.ok) {
+    throw new Error(`TronGrid returned ${res.status} ${res.statusText}`);
+  }
+}
+
+async function configureTron(p: Prompt): Promise<string | undefined> {
+  console.log("\n--- TRON (optional — enables TRX + TRC-20 balance reads) ---");
+  console.log("TRON is non-EVM: no Aave/Compound/Uniswap there, but TRC-20 USDT");
+  console.log("dominates the chain and is worth folding into your portfolio total.");
+  console.log("Create a free key at https://www.trongrid.io (Dashboard → API Keys).");
+  console.log("Skip with empty input — TRON reads will be disabled.");
+  const existing = readUserConfig()?.tronApiKey;
+  const answer = await p.ask(
+    existing
+      ? "TronGrid API key [press enter to keep existing]: "
+      : "TronGrid API key (or blank to skip): "
+  );
+  const apiKey = answer || existing;
+  if (!apiKey) return undefined;
+
+  try {
+    await validateTronApiKey(apiKey);
+    console.log("  TronGrid API key OK.");
+  } catch (e) {
+    console.warn(`  Warning: could not validate TronGrid key — ${(e as Error).message}`);
+    console.warn("  Saving anyway; TRON reads will surface the error at query time.");
+  }
+  return apiKey;
+}
+
 async function configureWalletConnect(p: Prompt): Promise<string | undefined> {
   console.log("\n--- WalletConnect (optional — required for Ledger Live signing) ---");
   console.log("Create a free project at https://cloud.walletconnect.com.");
@@ -263,6 +297,11 @@ async function main() {
     const oneInchApiKey = await configureOneInch(p);
     if (oneInchApiKey !== undefined) {
       patchUserConfig({ oneInchApiKey });
+    }
+
+    const tronApiKey = await configureTron(p);
+    if (tronApiKey !== undefined) {
+      patchUserConfig({ tronApiKey });
     }
 
     const wcProjectId = await configureWalletConnect(p);
