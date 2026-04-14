@@ -3,26 +3,35 @@ import { SUPPORTED_CHAINS } from "../../types/index.js";
 import { approvalCapSchema } from "../shared/approval.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
-const walletSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/);
-const marketIdSchema = z.string().regex(/^0x[a-fA-F0-9]{64}$/);
+const walletSchema = z
+  .string()
+  .regex(/^0x[a-fA-F0-9]{40}$/)
+  .describe("0x-prefixed EVM wallet address (40 hex chars) that will execute this action.");
+const marketIdSchema = z
+  .string()
+  .regex(/^0x[a-fA-F0-9]{64}$/)
+  .describe(
+    "Morpho Blue market id — 32-byte hex (0x + 64 hex chars). Identifies the market's (loanToken, collateralToken, oracle, irm, lltv) tuple. Discover via get_morpho_positions."
+  );
 
 export const getMorphoPositionsInput = z.object({
   wallet: walletSchema,
-  chain: chainEnum.default("ethereum"),
-  /**
-   * Morpho Blue market IDs (bytes32 each) to check. If omitted, the server
-   * discovers the wallet's markets by scanning Morpho Blue event logs
-   * (Supply / Borrow / SupplyCollateral with `onBehalf == wallet`). Pass this
-   * explicitly as a fast path when the set of markets is already known —
-   * discovery on cold lookups walks from Morpho's deploy block to head in
-   * ~10k-block chunks and can take several seconds.
-   */
-  marketIds: z.array(marketIdSchema).optional(),
+  chain: chainEnum
+    .default("ethereum")
+    .describe("EVM chain Morpho Blue is deployed on. Currently only ethereum is enabled."),
+  marketIds: z
+    .array(marketIdSchema)
+    .optional()
+    .describe(
+      "Morpho Blue market ids (bytes32 each) to check. If omitted, the server auto-discovers the wallet's markets by scanning Morpho Blue event logs (Supply / Borrow / SupplyCollateral with onBehalf == wallet). Pass explicitly as a fast path — cold discovery walks from Morpho's deploy block to head in ~10k-block chunks and can take several seconds."
+    ),
 });
 
 const baseMarketAction = z.object({
   wallet: walletSchema,
-  chain: chainEnum.default("ethereum"),
+  chain: chainEnum
+    .default("ethereum")
+    .describe("EVM chain Morpho Blue is deployed on. Currently only ethereum is enabled."),
   marketId: marketIdSchema,
   amount: z
     .string()

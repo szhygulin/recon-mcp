@@ -3,21 +3,33 @@ import { SUPPORTED_CHAINS } from "../../types/index.js";
 import { approvalCapSchema } from "../shared/approval.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
-const walletSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/);
+const walletSchema = z
+  .string()
+  .regex(/^0x[a-fA-F0-9]{40}$/)
+  .describe("0x-prefixed EVM wallet address (40 hex chars) that will execute this action.");
 const addressSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/);
 
 export const getCompoundPositionsInput = z.object({
   wallet: walletSchema,
-  chains: z.array(chainEnum).optional(),
+  chains: z
+    .array(chainEnum)
+    .optional()
+    .describe(
+      "Subset of chains to scan for Compound V3 markets. Omit to scan all supported chains."
+    ),
 });
 
 const baseCometAction = z.object({
   wallet: walletSchema,
-  chain: chainEnum.default("ethereum"),
+  chain: chainEnum
+    .default("ethereum")
+    .describe("EVM chain the Comet market lives on. Defaults to ethereum."),
   market: addressSchema.describe(
     "Comet market address (e.g. cUSDCv3). Discover via get_compound_positions or the Compound registry."
   ),
-  asset: addressSchema,
+  asset: addressSchema.describe(
+    "ERC-20 token address being supplied or withdrawn — either the market's base token or a listed collateral token."
+  ),
   amount: z
     .string()
     .describe(
@@ -34,8 +46,12 @@ export const prepareCompoundWithdrawInput = baseCometAction;
 /** Convenience wrappers — borrow = withdraw(baseToken); repay = supply(baseToken). */
 export const prepareCompoundBorrowInput = z.object({
   wallet: walletSchema,
-  chain: chainEnum.default("ethereum"),
-  market: addressSchema,
+  chain: chainEnum
+    .default("ethereum")
+    .describe("EVM chain the Comet market lives on. Defaults to ethereum."),
+  market: addressSchema.describe(
+    "Comet market address (e.g. cUSDCv3). The base token is resolved on-chain."
+  ),
   amount: z
     .string()
     .describe(

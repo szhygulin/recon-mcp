@@ -353,7 +353,7 @@ async function main() {
     "estimate_staking_yield",
     {
       description:
-        "Project annual yield on a hypothetical staking amount for a given protocol (Lido or EigenLayer) using current APRs.",
+        "Project annual yield on a hypothetical staking amount for Lido or EigenLayer using current APRs. Use this for 'what would I earn if I staked X ETH?' questions before the user commits capital. Returns the protocol, input amount, APR used, and projected annual rewards denominated in the same asset. Purely forward-looking — does NOT read any wallet or on-chain position; pair with `get_staking_positions` for actual holdings.",
       inputSchema: estimateStakingYieldInput.shape,
     },
     handler(estimateStakingYield)
@@ -364,7 +364,7 @@ async function main() {
     "get_portfolio_summary",
     {
       description:
-        "Aggregate a complete portfolio view: native balances, top ERC-20 holdings, Aave V3 positions, Uniswap V3 LP positions, and staking — with USD totals and per-chain breakdown.",
+        "One-shot cross-chain portfolio aggregation for one or more wallets. Fans out across Ethereum/Arbitrum/Polygon/Base (unless `chains` narrows it) and assembles: native ETH/MATIC balances, top ERC-20 holdings, Aave V3 and Compound V3 lending positions, Uniswap V3 LP positions, and Lido/EigenLayer staking — each valued in USD via DefiLlama. Returns a `totalUsd`, a `breakdown` by category and by chain, and the raw per-protocol position arrays. Default tool for 'what's in my portfolio?' / 'total value' questions; prefer it over calling each per-protocol reader separately.",
       inputSchema: getPortfolioSummaryInput.shape,
     },
     handler(getPortfolioSummary)
@@ -595,7 +595,7 @@ async function main() {
     "get_compound_positions",
     {
       description:
-        "Fetch Compound V3 (Comet) positions for a wallet across supported markets (cUSDCv3, cUSDTv3, cWETHv3, etc.). Returns base-token supplied/borrowed, per-asset collateral, and USD totals.",
+        "Fetch Compound V3 (Comet) positions for a wallet across all known markets on the selected chains (cUSDCv3, cUSDTv3, cWETHv3, etc.). For each market the wallet touches, returns the base-token supply or borrow balance, per-asset collateral deposits, and USD valuations. Use this to answer 'my Compound positions' or before preparing a `prepare_compound_*` action so you have the right market address. Returns an empty list if the wallet has no Compound V3 exposure on the requested chains.",
       inputSchema: getCompoundPositionsInput.shape,
     },
     handler(getCompoundPositions)
@@ -625,7 +625,7 @@ async function main() {
     "prepare_compound_borrow",
     {
       description:
-        "Build an unsigned Compound V3 borrow transaction — encoded as withdraw(baseToken) beyond the user's supplied balance. Base token is resolved on-chain from the Comet.",
+        "Build an unsigned Compound V3 borrow transaction. Compound V3 encodes a borrow as `withdraw(baseToken)` drawn beyond the wallet's supplied balance — the base token is resolved on-chain from the Comet market so you only pass the market address and amount. Requires the wallet to have already supplied enough collateral in that market; `get_compound_positions` shows the current collateral mix. Returns a handle + human-readable preview for the user to sign on Ledger; no approval step is needed (borrowing doesn't pull tokens from the wallet).",
       inputSchema: prepareCompoundBorrowInput.shape,
     },
     txHandler(buildCompoundBorrow)
@@ -656,7 +656,7 @@ async function main() {
     "prepare_morpho_supply",
     {
       description:
-        "Build an unsigned Morpho Blue supply transaction (deposits loan token for yield). Market params are resolved on-chain from the market id. Includes an approve step if needed.",
+        "Build an unsigned Morpho Blue supply transaction — deposits the market's loan token to earn lending yield. Market params (loan/collateral tokens, oracle, IRM, LLTV) are resolved on-chain from the market id, so only wallet/marketId/amount are required. If the wallet's current allowance is insufficient, an ERC-20 approve tx is emitted first (chainable via `.next`); control the cap with `approvalCap` (defaults to unlimited for UX, pass 'exact' or a decimal ceiling to scope it). Returns a handle + preview for Ledger signing.",
       inputSchema: prepareMorphoSupplyInput.shape,
     },
     txHandler(buildMorphoSupply)
@@ -706,7 +706,7 @@ async function main() {
     "prepare_morpho_withdraw_collateral",
     {
       description:
-        "Build an unsigned Morpho Blue withdrawCollateral transaction — removes collateral from a market. Explicit amount only.",
+        "Build an unsigned Morpho Blue withdrawCollateral transaction — removes collateral from a market to send back to the wallet. Only withdraws the exact amount specified; `\"max\"` is NOT supported because Morpho's isolated-market accounting doesn't expose a clean max-safe value without simulating against the market's oracle/LLTV (query `get_morpho_positions` first to know your deposited collateral). Will revert on-chain if the withdrawal would push the position below the liquidation threshold. No approval step needed. Returns a handle + preview for Ledger signing.",
       inputSchema: prepareMorphoWithdrawCollateralInput.shape,
     },
     txHandler(buildMorphoWithdrawCollateral)
