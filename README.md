@@ -36,13 +36,12 @@ This is an **agent-driven portfolio management** tool, not a wallet replacement.
 
 EVM: Ethereum, Arbitrum, Polygon, Base.
 
-Non-EVM: TRON (phases 1 + 2 + 2b + 2c — balance + staking reads, SR listing, and tx preparation for native TRX sends, canonical TRC-20 transfers, voting-reward claims, Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze, and VoteWitness; Ledger signing lands in a follow-up phase).
+Non-EVM: TRON — full reads (balance, staking state, SR listing) and full write coverage (native TRX sends, canonical TRC-20 transfers, voting-reward claims, Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze, and VoteWitness) signed on a directly-connected Ledger over USB HID. Ledger Live's WalletConnect relay does not currently honor the `tron:` namespace (verified 2026-04-14), so TRON signing goes through `@ledgerhq/hw-app-trx` — the user's Ledger must be plugged into the host running the MCP, unlocked, with the TRON app open. Pair via `pair_ledger_tron` once per session.
 
 Not every protocol is on every chain. Lido and EigenLayer are L1-only (Ethereum). Morpho Blue is currently enabled on Ethereum only — it is deployed on Base at the same address but the discovery scan needs a pinned deployment block, tracked as a follow-up. TRON has no lending/LP coverage in this server (none of Aave/Compound/Morpho/Uniswap are deployed there); balance reads return TRX + canonical TRC-20 stablecoins (USDT, USDC, USDD, TUSD) that together cover the vast majority of TRON token volume, and TRON-native staking (frozen TRX under Stake 2.0, pending unfreezes, claimable voting rewards) is surfaced via `get_tron_staking` and folded into the portfolio summary. Readers short-circuit cleanly on chains where a protocol isn't deployed.
 
 ## Roadmap
 
-- **TRON Ledger signing** — phase 3 of TRON support. All TRON `prepare_*` tools (send, TRC-20, claim rewards, freeze/unfreeze/withdraw-expire-unfreeze) ship as preview-only today; `send_transaction` currently refuses TRON handles. Phase 3 signs them via **direct USB integration with `@ledgerhq/hw-app-trx`** — Ledger Live's WalletConnect relay does *not* currently honor the `tron:` namespace (verified 2026-04-14 via a SunSwap pairing attempt), so TRON signing diverges from the Ledger-Live-at-a-distance flow used for EVM: the user's Ledger must be plugged into the host running the MCP, with the TRON app open on the device.
 - **MetaMask support** (WalletConnect) — alongside the existing Ledger Live integration. Will let users sign through a MetaMask-paired session when a hardware wallet isn't available.
 - **Solana** — coming later. Non-EVM: introduces a separate SDK (`@solana/web3.js`), base58 addresses, and the WalletConnect `solana:` namespace for signing.
 
@@ -71,9 +70,9 @@ Meta:
 
 - `request_capability` — agent-facing escape hatch: files a GitHub issue on this repo when the user asks for something vaultpilot-mcp can't do (new protocol, new chain, missing tool). Default mode returns a pre-filled issue URL (zero spam risk — user must click to submit). Operators can set `VAULTPILOT_FEEDBACK_ENDPOINT` to a proxy that posts directly. Rate-limited: 30s between calls, 3/hour, 10/day, 7-day dedupe on identical summaries.
 
-Execution (Ledger-signed via WalletConnect):
+Execution (Ledger-signed):
 
-- `pair_ledger_live`, `get_ledger_status` — session management and account discovery; `get_ledger_status` returns per-chain exposure (`accountDetails[]` with `address`, `chainIds`, `chains`) so duplicate-looking addresses across chains are disambiguated
+- `pair_ledger_live` (WalletConnect, EVM), `pair_ledger_tron` (USB HID, TRON), `get_ledger_status` — session management and account discovery; `get_ledger_status` returns per-chain EVM exposure (`accountDetails[]` with `address`, `chainIds`, `chains`) so duplicate-looking addresses across chains are disambiguated, and a `tron: [{ address, path, appVersion, accountIndex }, …]` array (one entry per paired TRON account) when `pair_ledger_tron` has been called. Pass `accountIndex: 1` (2, 3, …) to pair additional TRON accounts.
 - `prepare_aave_supply` / `_withdraw` / `_borrow` / `_repay`
 - `prepare_compound_supply` / `_withdraw` / `_borrow` / `_repay`
 - `prepare_morpho_supply` / `_withdraw` / `_borrow` / `_repay` / `_supply_collateral` / `_withdraw_collateral`
@@ -81,14 +80,15 @@ Execution (Ledger-signed via WalletConnect):
 - `prepare_eigenlayer_deposit`
 - `prepare_swap` — LiFi-routed intra- or cross-chain swap/bridge
 - `prepare_native_send`, `prepare_token_send`
-- `prepare_tron_native_send`, `prepare_tron_token_send`, `prepare_tron_claim_rewards`, `prepare_tron_freeze`, `prepare_tron_unfreeze`, `prepare_tron_withdraw_expire_unfreeze`, `prepare_tron_vote` — TRON tx builders (native TRX send, canonical TRC-20 transfer, WithdrawBalance claim, Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze, VoteWitness). Preview-only in this release; `send_transaction` still refuses TRON handles until the USB HID signer lands.
-- `send_transaction` — forwards a prepared EVM tx to Ledger Live for user approval
+- `prepare_tron_native_send`, `prepare_tron_token_send`, `prepare_tron_claim_rewards`, `prepare_tron_freeze`, `prepare_tron_unfreeze`, `prepare_tron_withdraw_expire_unfreeze`, `prepare_tron_vote` — TRON tx builders (native TRX send, canonical TRC-20 transfer, WithdrawBalance claim, Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze, VoteWitness)
+- `send_transaction` — forwards a prepared tx for user approval. EVM handles go to Ledger Live via WalletConnect; TRON handles go to the USB-connected Ledger via `@ledgerhq/hw-app-trx` and are broadcast via TronGrid
 
 ## Requirements
 
 - Node.js >= 18.17
 - An RPC provider (Infura, Alchemy, or custom) for the EVM chains
-- Optional: Etherscan API key, 1inch Developer Portal API key (enables swap-quote comparison), WalletConnect Cloud project ID (required for Ledger signing), TronGrid API key (enables TRX + TRC-20 balance reads)
+- Optional: Etherscan API key, 1inch Developer Portal API key (enables swap-quote comparison), WalletConnect Cloud project ID (required for EVM Ledger signing), TronGrid API key (enables TRX + TRC-20 balance reads)
+- For TRON signing: USB HID access to a Ledger device with the **Tron** app installed. On Linux, Ledger's [udev rules](https://github.com/LedgerHQ/udev-rules) must be installed or `hidraw` access fails with "permission denied". The `@ledgerhq/hw-transport-node-hid` dependency compiles `node-hid` natively at `npm install` time, which needs `libudev-dev` + a C/C++ toolchain on Debian/Ubuntu (`sudo apt install libudev-dev build-essential`).
 
 ## Install
 

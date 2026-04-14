@@ -45,6 +45,7 @@ import { getSwapQuoteInput, prepareSwapInput } from "./modules/swap/schemas.js";
 
 import {
   pairLedgerLive,
+  pairLedgerTron,
   getLedgerStatus,
   prepareAaveSupply,
   prepareAaveWithdraw,
@@ -60,6 +61,7 @@ import {
 } from "./modules/execution/index.js";
 import {
   pairLedgerLiveInput,
+  pairLedgerTronInput,
   getLedgerStatusInput,
   prepareAaveSupplyInput,
   prepareAaveWithdrawInput,
@@ -427,25 +429,36 @@ async function main() {
     "pair_ledger_live",
     {
       description:
-        "Initiate a WalletConnect v2 pairing session with Ledger Live. Returns a URI and ASCII QR code — paste into Ledger Live's WalletConnect screen to complete pairing. The session persists for future transactions.",
+        "Initiate a WalletConnect v2 pairing session with Ledger Live. Returns a URI and ASCII QR code — paste into Ledger Live's WalletConnect screen to complete pairing. The session persists for future transactions. EVM chains only; for TRON use `pair_ledger_tron` instead.",
       inputSchema: pairLedgerLiveInput.shape,
     },
     handler(pairLedgerLive)
   );
 
   server.registerTool(
+    "pair_ledger_tron",
+    {
+      description:
+        "Pair the host's directly-connected Ledger device for TRON signing. REQUIREMENTS: Ledger plugged into the machine running this MCP (USB, not WalletConnect), device unlocked, and the 'Tron' app open on-screen. Ledger Live's WalletConnect relay does not currently honor the `tron:` CAIP namespace, so TRON signing goes over USB HID via @ledgerhq/hw-app-trx. Reads the device address at m/44'/195'/<accountIndex>'/0/0 (default accountIndex=0) and caches it so `get_ledger_status` can report it. Call multiple times with different `accountIndex` values (0, 1, 2, …) to pair additional TRON accounts — each call adds to the cache; subsequent calls for the same index refresh in place. Call this once per session (per account) before calling any `prepare_tron_*` tool or `send_transaction` with a TRON handle. If the TRON app isn't open, or the device is locked, returns an actionable error describing what to fix.",
+      inputSchema: pairLedgerTronInput.shape,
+    },
+    handler(pairLedgerTron)
+  );
+
+  server.registerTool(
     "get_ledger_status",
     {
       description:
-        "Report whether a WalletConnect session with Ledger Live is active, which wallet it's connected to, and which accounts are exposed. " +
-        "Returns `accounts: 0x…[]` — the list of wallet addresses the user has connected. " +
+        "Report whether a WalletConnect session with Ledger Live is active (EVM chains) AND whether any TRON Ledger pairings are cached (USB HID — see `pair_ledger_tron`). " +
+        "Returns `accounts: 0x…[]` — the list of EVM wallet addresses the user has connected — and optionally `tron: [{ address, path, appVersion, accountIndex }, …]` (one entry per paired TRON account, ordered by accountIndex) if `pair_ledger_tron` has been run at least once. " +
         "Call this FIRST whenever the user refers to their wallet(s) by position or nickname instead of by address — e.g. " +
-        '\"my wallet\", \"the first address\", \"account 2\", \"second wallet\" — so you can resolve the reference to a concrete 0x… ' +
-        "before invoking any prepare_* / swap / send / portfolio tool that takes a `wallet` argument. Do NOT ask the user to paste an " +
-        "address if it's already in `accounts` here. " +
-        "SECURITY: the returned `wallet`/`peerUrl` are self-reported by the paired app. Before the FIRST send_transaction of a session, " +
+        '\"my wallet\", \"my TRON wallet\", \"the first address\", \"account 2\", \"second wallet\", \"second TRON account\" — so you can resolve the reference to a concrete 0x… / T… ' +
+        "before invoking any prepare_* / swap / send / portfolio tool that takes a `wallet` / `tronAddress` argument. Do NOT ask the user to paste an " +
+        "address if it's already in `accounts` or a `tron[*].address` here. " +
+        "SECURITY: the returned `wallet`/`peerUrl` (EVM) are self-reported by the paired WC app. Before the FIRST send_transaction of a session, " +
         "state the paired wallet name + URL back to the user and ask them to confirm it matches their Ledger Live install — " +
-        "any WalletConnect peer can claim to be 'Ledger Live'. The physical Ledger device's on-screen confirmation is the final check.",
+        "any WalletConnect peer can claim to be 'Ledger Live'. The physical Ledger device's on-screen confirmation is the final check. " +
+        "The `tron` array is read from the cache populated by `pair_ledger_tron`; `send_transaction` re-probes USB on every TRON sign, so the cache cannot be spoofed into approving a tx for the wrong account.",
       inputSchema: getLedgerStatusInput.shape,
     },
     handler(getLedgerStatus)
@@ -525,8 +538,9 @@ async function main() {
     "send_transaction",
     {
       description:
-        "Forward an already-prepared transaction to Ledger Live via WalletConnect for user signing. The user must review and approve the tx in Ledger Live and on their Ledger device; this call blocks until the user signs or rejects. " +
-        "You MUST pass `confirmed: true` — the agent is affirming that the user has seen and acknowledged the decoded preview.",
+        "Forward an already-prepared transaction to the Ledger device for user signing. Routes on the handle's origin: EVM handles (prepare_aave_*, prepare_compound_*, prepare_swap, prepare_native_send, ...) go through Ledger Live via WalletConnect; TRON handles (prepare_tron_*) go through the directly-connected Ledger over USB HID and are broadcast via TronGrid. In both cases the user must review and physically approve the tx on the Ledger screen; this call blocks until the user signs or rejects. " +
+        "You MUST pass `confirmed: true` — the agent is affirming that the user has seen and acknowledged the decoded preview. " +
+        "For TRON handles, `pair_ledger_tron` must have been called at least once per session (so the TRON app has been opened on the device) and the Ledger must still be plugged in with the TRON app open at send time.",
       inputSchema: sendTransactionInput.shape,
     },
     handler(sendTransaction)
@@ -615,7 +629,7 @@ async function main() {
     "prepare_tron_native_send",
     {
       description:
-        "Build an unsigned TRON native TRX send transaction via TronGrid's /wallet/createtransaction. Returns a human-readable preview + opaque handle. NOTE: TRON handles are PREVIEW-ONLY in this release — the physical signing path (USB HID via @ledgerhq/hw-app-trx) lands in a later phase; `send_transaction` only consumes EVM handles. Use this tool today to double-check an intended transfer (recipient, amount) against TronGrid's own tx builder before signing through Ledger Live's native TRON flow, TronLink, or another client.",
+        "Build an unsigned TRON native TRX send transaction via TronGrid's /wallet/createtransaction. Returns a human-readable preview + opaque handle. Forward the handle via `send_transaction` to sign on the directly-connected Ledger (USB HID via @ledgerhq/hw-app-trx) and broadcast to TronGrid. Run `pair_ledger_tron` once per session first so the TRON app is open and the device address is verified.",
       inputSchema: prepareTronNativeSendInput.shape,
     },
     handler(buildTronNativeSend)
@@ -625,7 +639,7 @@ async function main() {
     "prepare_tron_token_send",
     {
       description:
-        "Build an unsigned TRC-20 transfer transaction (canonical set only: USDT, USDC, USDD, TUSD) via TronGrid's /wallet/triggersmartcontract. Decimals are resolved from the canonical table — unknown TRC-20s are rejected with an explicit error. Default fee_limit is 100 TRX (TronLink/Ledger Live default); override with `feeLimitTrx` if energy pricing has moved. Returns a preview + opaque handle. NOTE: PREVIEW-ONLY in this release — the Ledger USB HID signing path lands in a later phase. `send_transaction` will refuse TRON handles.",
+        "Build an unsigned TRC-20 transfer transaction (canonical set only: USDT, USDC, USDD, TUSD) via TronGrid's /wallet/triggersmartcontract. Decimals are resolved from the canonical table — unknown TRC-20s are rejected with an explicit error. Default fee_limit is 100 TRX (TronLink/Ledger Live default); override with `feeLimitTrx` if energy pricing has moved. Returns a preview + opaque handle. Forward via `send_transaction` for USB-HID signing on the paired Ledger. USDT renders natively on the TRON app; other TRC-20s may display raw hex on-device (the contract address and amount are still shown, so the user can verify against the preview).",
       inputSchema: prepareTronTokenSendInput.shape,
     },
     handler(buildTronTokenSend)
@@ -635,7 +649,7 @@ async function main() {
     "prepare_tron_claim_rewards",
     {
       description:
-        "Build an unsigned TRON WithdrawBalance transaction that claims accumulated voting rewards to the owner's balance. TRON enforces a 24-hour cooldown between claims — TronGrid will reject (surfaced as an error) if the previous claim was inside the window. Pair with `get_tron_staking` first to read `claimableRewards` and avoid empty-claim tx builds. Returns a preview + opaque handle. NOTE: PREVIEW-ONLY in this release — signing lands with the USB HID phase.",
+        "Build an unsigned TRON WithdrawBalance transaction that claims accumulated voting rewards to the owner's balance. TRON enforces a 24-hour cooldown between claims — TronGrid will reject (surfaced as an error) if the previous claim was inside the window. Pair with `get_tron_staking` first to read `claimableRewards` and avoid empty-claim tx builds. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronClaimRewardsInput.shape,
     },
     handler(buildTronClaimRewards)
@@ -645,7 +659,7 @@ async function main() {
     "prepare_tron_freeze",
     {
       description:
-        "Build an unsigned TRON Stake 2.0 FreezeBalanceV2 transaction. Locks TRX to earn `bandwidth` (fuels plain transfers) or `energy` (fuels smart-contract calls) and gains proportional voting power. IMPORTANT: freezing alone does NOT accrue TRX rewards — `claimableRewards` (see `get_tron_staking`) only grows after the user also votes for a Super Representative. Pair this tool with `list_tron_witnesses` + `prepare_tron_vote` for the full reward-earning flow. Unlocking requires a 14-day cooldown via `prepare_tron_unfreeze` + `prepare_tron_withdraw_expire_unfreeze`. Returns a preview + opaque handle. NOTE: PREVIEW-ONLY until the USB HID signer lands.",
+        "Build an unsigned TRON Stake 2.0 FreezeBalanceV2 transaction. Locks TRX to earn `bandwidth` (fuels plain transfers) or `energy` (fuels smart-contract calls) and gains proportional voting power. IMPORTANT: freezing alone does NOT accrue TRX rewards — `claimableRewards` (see `get_tron_staking`) only grows after the user also votes for a Super Representative. Pair this tool with `list_tron_witnesses` + `prepare_tron_vote` for the full reward-earning flow. Unlocking requires a 14-day cooldown via `prepare_tron_unfreeze` + `prepare_tron_withdraw_expire_unfreeze`. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronFreezeInput.shape,
     },
     handler(buildTronFreeze)
@@ -655,7 +669,7 @@ async function main() {
     "prepare_tron_unfreeze",
     {
       description:
-        "Build an unsigned TRON Stake 2.0 UnfreezeBalanceV2 transaction — begins the 14-day cooldown on a previously-frozen slice. The `amount` must not exceed what's currently frozen for that resource (query `get_tron_staking` first; TronGrid rejects otherwise with 'less than frozen balance'). After 14 days the slice shows up in `pendingUnfreezes` with an elapsed `unlockAt`; call `prepare_tron_withdraw_expire_unfreeze` to sweep it back to liquid TRX. Returns a preview + opaque handle. NOTE: PREVIEW-ONLY until the USB HID signer lands.",
+        "Build an unsigned TRON Stake 2.0 UnfreezeBalanceV2 transaction — begins the 14-day cooldown on a previously-frozen slice. The `amount` must not exceed what's currently frozen for that resource (query `get_tron_staking` first; TronGrid rejects otherwise with 'less than frozen balance'). After 14 days the slice shows up in `pendingUnfreezes` with an elapsed `unlockAt`; call `prepare_tron_withdraw_expire_unfreeze` to sweep it back to liquid TRX. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronUnfreezeInput.shape,
     },
     handler(buildTronUnfreeze)
@@ -665,7 +679,7 @@ async function main() {
     "prepare_tron_withdraw_expire_unfreeze",
     {
       description:
-        "Build an unsigned TRON WithdrawExpireUnfreeze transaction — sweeps every matured unfreeze slice (those whose 14-day cooldown elapsed) back to liquid TRX. No amount needed; the chain drains all eligible slices in one call. Inspect `pendingUnfreezes` from `get_tron_staking` first — if every entry's `unlockAt` is still in the future, TronGrid returns 'no expire unfreeze' and this tool errors. Returns a preview + opaque handle. NOTE: PREVIEW-ONLY until the USB HID signer lands.",
+        "Build an unsigned TRON WithdrawExpireUnfreeze transaction — sweeps every matured unfreeze slice (those whose 14-day cooldown elapsed) back to liquid TRX. No amount needed; the chain drains all eligible slices in one call. Inspect `pendingUnfreezes` from `get_tron_staking` first — if every entry's `unlockAt` is still in the future, TronGrid returns 'no expire unfreeze' and this tool errors. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronWithdrawExpireUnfreezeInput.shape,
     },
     handler(buildTronWithdrawExpireUnfreeze)
@@ -687,7 +701,7 @@ async function main() {
     "prepare_tron_vote",
     {
       description:
-        "Build an unsigned TRON VoteWitnessContract transaction — casts votes for Super Representatives to earn voting rewards on frozen TRX. IMPORTANT: VoteWitness REPLACES the wallet's entire prior vote allocation atomically. Pass every SR you intend to back (not just a delta); an empty `votes` array clears all votes. Sum of `count` values must not exceed the wallet's available TRON Power — check `list_tron_witnesses(address)` → `availableVotes` first. `count` is an integer (1 vote = 1 TRX of TRON Power). Rewards accrue per block and are harvested via `prepare_tron_claim_rewards` (24h cooldown). Returns a preview + opaque handle. NOTE: PREVIEW-ONLY until the USB HID signer lands.",
+        "Build an unsigned TRON VoteWitnessContract transaction — casts votes for Super Representatives to earn voting rewards on frozen TRX. IMPORTANT: VoteWitness REPLACES the wallet's entire prior vote allocation atomically. Pass every SR you intend to back (not just a delta); an empty `votes` array clears all votes. Sum of `count` values must not exceed the wallet's available TRON Power — check `list_tron_witnesses(address)` → `availableVotes` first. `count` is an integer (1 vote = 1 TRX of TRON Power). Rewards accrue per block and are harvested via `prepare_tron_claim_rewards` (24h cooldown). Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronVoteInput.shape,
     },
     handler(buildTronVote)

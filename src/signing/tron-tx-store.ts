@@ -6,9 +6,9 @@ import type { UnsignedTronTx } from "../types/index.js";
  * signing/tx-store.ts but stores `UnsignedTronTx` rather than EVM
  * `UnsignedTx`. Separated deliberately: the EVM send flow runs an
  * eth_call re-simulation, chain-id check, and spender allowlist that are
- * all meaningless on TRON. A TRON handle therefore cannot be consumed by
- * the EVM `send_transaction` — the two stores share no keys and the TRON
- * send path (Phase 3, USB HID) will have its own security pipeline.
+ * all meaningless on TRON. `send_transaction` routes by which store owns
+ * the handle — TRON handles go to the USB HID signer in
+ * tron-usb-signer.ts, EVM handles stay on the WalletConnect path.
  *
  * Lifetime matches the EVM store (15 min from issue).
  */

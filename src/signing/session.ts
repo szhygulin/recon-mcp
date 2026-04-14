@@ -4,6 +4,7 @@ import {
   getSignClient,
   isPeerUnreachable,
 } from "./walletconnect.js";
+import { getPairedTronAddresses } from "./tron-usb-signer.js";
 import type { SupportedChain } from "../types/index.js";
 
 export interface SessionAccount {
@@ -45,6 +46,23 @@ export interface SessionStatus {
    * peer comes back online or the user re-pairs.
    */
   peerUnreachable?: boolean;
+  /**
+   * Present when the user has run `pair_ledger_tron` at least once. TRON
+   * doesn't share WalletConnect with EVM — signing goes over USB HID — so
+   * this section is independent of the `paired`/`accounts` fields above
+   * (which describe the WC session for EVM chains only). An array because
+   * users can pair multiple account slots (index 0, 1, …) in the same
+   * session; entries are ordered by `accountIndex`. Absent/empty means the
+   * agent should ask the user to run `pair_ledger_tron` before preparing a
+   * TRON tx.
+   */
+  tron?: Array<{
+    address: string;
+    path: string;
+    appVersion: string;
+    /** Null when the path is not in the standard `44'/195'/<n>'/0/0` layout. */
+    accountIndex: number | null;
+  }>;
 }
 
 export const PEER_TRUST_WARNING =
@@ -56,12 +74,25 @@ export const PEER_TRUST_WARNING =
 export async function getSessionStatus(): Promise<SessionStatus> {
   await getSignClient(); // triggers restore + liveness check
   const session = getCurrentSession();
+  const tronPaired = getPairedTronAddresses();
+  const tronSection =
+    tronPaired.length > 0
+      ? {
+          tron: tronPaired.map((e) => ({
+            address: e.address,
+            path: e.path,
+            appVersion: e.appVersion,
+            accountIndex: e.accountIndex,
+          })),
+        }
+      : {};
   if (!session)
     return {
       paired: false,
       accounts: [],
       accountDetails: [],
       peerTrustWarning: PEER_TRUST_WARNING,
+      ...tronSection,
     };
   const accountDetails = await getConnectedAccountsDetailed();
   const accounts = accountDetails.map((a) => a.address);
@@ -78,5 +109,6 @@ export async function getSessionStatus(): Promise<SessionStatus> {
     ...(meta?.description ? { peerDescription: meta.description } : {}),
     peerTrustWarning: PEER_TRUST_WARNING,
     ...(unreachable ? { peerUnreachable: true } : {}),
+    ...tronSection,
   };
 }

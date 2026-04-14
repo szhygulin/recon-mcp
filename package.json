@@ -116,6 +116,8 @@
   "author": "Viacheslav Zhygulin",
   "license": "MIT",
   "dependencies": {
+    "@ledgerhq/hw-app-trx": "^6.34.1",
+    "@ledgerhq/hw-transport-node-hid": "^6.32.1",
     "@lifi/sdk": "^3.16.3",
     "@modelcontextprotocol/sdk": "^1.0.4",
     "@walletconnect/sign-client": "^2.17.0",

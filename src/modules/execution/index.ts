@@ -7,6 +7,15 @@ import {
 } from "../../signing/walletconnect.js";
 import { getSessionStatus } from "../../signing/session.js";
 import { consumeHandle, retireHandle } from "../../signing/tx-store.js";
+import { consumeTronHandle, retireTronHandle } from "../../signing/tron-tx-store.js";
+import {
+  getTronLedgerAddress,
+  signTronTxOnLedger,
+  setPairedTronAddress,
+  getPairedTronByAddress,
+  tronPathForAccountIndex,
+} from "../../signing/tron-usb-signer.js";
+import { broadcastTronTx } from "../tron/broadcast.js";
 import { assertTransactionSafe } from "../../signing/pre-sign-check.js";
 import { getClient, verifyChainId } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
@@ -24,6 +33,7 @@ import {
 } from "../staking/actions.js";
 import { getTokenPrice } from "../../data/prices.js";
 import type {
+  PairLedgerTronArgs,
   PrepareAaveSupplyArgs,
   PrepareAaveWithdrawArgs,
   PrepareAaveBorrowArgs,
@@ -36,7 +46,8 @@ import type {
   SendTransactionArgs,
   GetTransactionStatusArgs,
 } from "./schemas.js";
-import type { SupportedChain, UnsignedTx } from "../../types/index.js";
+import type { SupportedChain, UnsignedTx, UnsignedTronTx } from "../../types/index.js";
+import { hasTronHandle } from "../../signing/tron-tx-store.js";
 import { round } from "../../data/format.js";
 
 /** Render a QR code as an ASCII string (returns promise with the string). */
@@ -65,6 +76,39 @@ export async function pairLedgerLive(): Promise<{
       "Open Ledger Live → Discover → WalletConnect, paste this URI (or scan the QR) to pair. " +
       "Once pairing completes, the session is persisted; you can call `send_transaction` without re-pairing.",
     waitingForApproval: true,
+  };
+}
+
+/**
+ * Pair the host's directly-connected Ledger device for TRON signing. Unlike
+ * `pair_ledger_live` (WalletConnect relay for EVM), TRON signs over USB HID —
+ * the Ledger must be plugged into the host running this MCP, unlocked, with
+ * the TRON app open. Reads + caches the device address at the BIP-44 path
+ * derived from `accountIndex` (default 0 = first Ledger Live TRON account)
+ * so subsequent `get_ledger_status` calls can report it without re-probing.
+ * Call with different `accountIndex` values to expose multiple TRON accounts.
+ */
+export async function pairLedgerTron(args: PairLedgerTronArgs = {}): Promise<{
+  address: string;
+  path: string;
+  appVersion: string;
+  accountIndex: number;
+  instructions: string;
+}> {
+  const accountIndex = args.accountIndex ?? 0;
+  const path = tronPathForAccountIndex(accountIndex);
+  const result = await getTronLedgerAddress(path);
+  setPairedTronAddress(result);
+  return {
+    address: result.address,
+    path: result.path,
+    appVersion: result.appVersion,
+    accountIndex,
+    instructions:
+      "TRON account paired. You can now call `prepare_tron_*` with this address and " +
+      "forward the handle via `send_transaction`. Keep the Ledger plugged in with the " +
+      "TRON app open — each sign re-opens USB and re-verifies the device address. " +
+      "To pair a different slot, call `pair_ledger_tron` again with another `accountIndex`.",
   };
 }
 
@@ -278,11 +322,70 @@ export async function prepareTokenSend(args: PrepareTokenSendArgs): Promise<Unsi
 
 // ----- Send + status -----
 
+/**
+ * Sign a prepared TRON tx on the connected Ledger and broadcast via TronGrid.
+ * Called internally from `sendTransaction` when the handle belongs to the
+ * TRON store.
+ *
+ * Security pipeline (intentionally narrower than the EVM one — many EVM
+ * checks don't translate to TRON):
+ *   - consumeTronHandle gives us the exact tx the user previewed.
+ *   - signTronTxOnLedger re-opens USB, re-derives the address, and refuses
+ *     if it doesn't match `tx.from`. This is the TRON equivalent of EVM's
+ *     "tx.from must be a paired account" guard.
+ *   - broadcastTronTx posts the signed envelope; TronGrid validates the
+ *     contract before inclusion.
+ *
+ * We don't re-simulate. TronGrid's createtransaction / triggersmartcontract
+ * already validates at prepare time (insufficient balance, fee_limit too low,
+ * contract revert), and there's no equivalent of eth_call against a specific
+ * block on TRON that we'd gain from re-running. A genuine drift between
+ * prepare and send (someone drained the balance in the interim) surfaces as
+ * a broadcast error, which we propagate verbatim.
+ */
+async function sendTronTransaction(args: SendTransactionArgs): Promise<{
+  txHash: string;
+  chain: "tron";
+}> {
+  const tx: UnsignedTronTx = consumeTronHandle(args.handle);
+  // If the user paired this `from` via `pair_ledger_tron`, use the path they
+  // paired on (covers non-default account slots). If we have no paired entry
+  // for `from`, fall through to the signer's default path — the device
+  // address check inside signTronTxOnLedger will then surface a clear error
+  // telling the user to pair the right slot.
+  const paired = getPairedTronByAddress(tx.from);
+  const { signature } = await signTronTxOnLedger({
+    rawDataHex: tx.rawDataHex,
+    expectedFrom: tx.from,
+    ...(paired ? { path: paired.path } : {}),
+  });
+  const { txID } = await broadcastTronTx(tx, signature);
+  // Only retire the handle after successful broadcast. If signing fails
+  // (user rejected, device disconnected) or the broadcast fails (transient
+  // TronGrid error), the handle stays valid and the caller can retry
+  // within the 15-min TTL without re-preparing.
+  retireTronHandle(args.handle);
+  return { txHash: txID, chain: "tron" };
+}
+
+/**
+ * Forward a prepared tx to the right signer based on which store owns the
+ * handle. EVM handles take the WalletConnect path (unchanged). TRON handles
+ * take the USB HID path: `consume → sign on Ledger → broadcast via TronGrid`.
+ *
+ * The two stores share no keys (`randomUUID` collision is ~0), and we check
+ * TRON first because its path has strictly fewer side effects on failure
+ * (no WC relay roundtrip, no eth_call, no chain-id check that would
+ * meaninglessly fire before we even know what chain we're on).
+ */
 export async function sendTransaction(args: SendTransactionArgs): Promise<{
-  txHash: `0x${string}`;
-  chain: SupportedChain;
+  txHash: `0x${string}` | string;
+  chain: SupportedChain | "tron";
   nextHandle?: string;
 }> {
+  if (hasTronHandle(args.handle)) {
+    return sendTronTransaction(args);
+  }
   const tx = consumeHandle(args.handle);
   // Last-line check: refuse to sign against an RPC that's pointing at the
   // wrong chain. See verifyChainId() for the threat model.
