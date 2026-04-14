@@ -86,12 +86,18 @@ import {
   buildTronNativeSend,
   buildTronTokenSend,
   buildTronClaimRewards,
+  buildTronFreeze,
+  buildTronUnfreeze,
+  buildTronWithdrawExpireUnfreeze,
 } from "./modules/tron/actions.js";
 import {
   getTronStakingInput,
   prepareTronNativeSendInput,
   prepareTronTokenSendInput,
   prepareTronClaimRewardsInput,
+  prepareTronFreezeInput,
+  prepareTronUnfreezeInput,
+  prepareTronWithdrawExpireUnfreezeInput,
 } from "./modules/tron/schemas.js";
 
 import { getCompoundPositions } from "./modules/compound/index.js";
@@ -629,6 +635,36 @@ async function main() {
       inputSchema: prepareTronClaimRewardsInput.shape,
     },
     handler(buildTronClaimRewards)
+  );
+
+  server.registerTool(
+    "prepare_tron_freeze",
+    {
+      description:
+        "Build an unsigned TRON Stake 2.0 FreezeBalanceV2 transaction. Locks TRX to earn `bandwidth` (fuels plain transfers) or `energy` (fuels smart-contract calls) and gains proportional voting power. IMPORTANT: freezing alone does NOT accrue TRX rewards — `claimableRewards` (see `get_tron_staking`) only grows after the user also votes for a Super Representative, and VoteWitness is not yet exposed as a tool in this server. Unlocking requires a 14-day cooldown via `prepare_tron_unfreeze` + `prepare_tron_withdraw_expire_unfreeze`. Returns a preview + opaque handle. NOTE: PREVIEW-ONLY until the USB HID signer lands.",
+      inputSchema: prepareTronFreezeInput.shape,
+    },
+    handler(buildTronFreeze)
+  );
+
+  server.registerTool(
+    "prepare_tron_unfreeze",
+    {
+      description:
+        "Build an unsigned TRON Stake 2.0 UnfreezeBalanceV2 transaction — begins the 14-day cooldown on a previously-frozen slice. The `amount` must not exceed what's currently frozen for that resource (query `get_tron_staking` first; TronGrid rejects otherwise with 'less than frozen balance'). After 14 days the slice shows up in `pendingUnfreezes` with an elapsed `unlockAt`; call `prepare_tron_withdraw_expire_unfreeze` to sweep it back to liquid TRX. Returns a preview + opaque handle. NOTE: PREVIEW-ONLY until the USB HID signer lands.",
+      inputSchema: prepareTronUnfreezeInput.shape,
+    },
+    handler(buildTronUnfreeze)
+  );
+
+  server.registerTool(
+    "prepare_tron_withdraw_expire_unfreeze",
+    {
+      description:
+        "Build an unsigned TRON WithdrawExpireUnfreeze transaction — sweeps every matured unfreeze slice (those whose 14-day cooldown elapsed) back to liquid TRX. No amount needed; the chain drains all eligible slices in one call. Inspect `pendingUnfreezes` from `get_tron_staking` first — if every entry's `unlockAt` is still in the future, TronGrid returns 'no expire unfreeze' and this tool errors. Returns a preview + opaque handle. NOTE: PREVIEW-ONLY until the USB HID signer lands.",
+      inputSchema: prepareTronWithdrawExpireUnfreezeInput.shape,
+    },
+    handler(buildTronWithdrawExpireUnfreeze)
   );
 
   server.registerTool(

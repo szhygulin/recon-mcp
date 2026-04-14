@@ -399,7 +399,13 @@ export interface MultiWalletPortfolioSummary {
 export interface UnsignedTronTx {
   chain: "tron";
   /** Discriminator for the preview + future signer branching. */
-  action: "native_send" | "trc20_send" | "claim_rewards";
+  action:
+    | "native_send"
+    | "trc20_send"
+    | "claim_rewards"
+    | "freeze"
+    | "unfreeze"
+    | "withdraw_expire_unfreeze";
   /** Base58 owner address (prefix T). */
   from: string;
   /** TronGrid-returned transaction ID (sha256 of raw_data_hex, hex string). */

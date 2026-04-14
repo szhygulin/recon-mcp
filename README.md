@@ -36,14 +36,13 @@ This is an **agent-driven portfolio management** tool, not a wallet replacement.
 
 EVM: Ethereum, Arbitrum, Polygon, Base.
 
-Non-EVM: TRON (phases 1 + 2 — balance + staking reads and transaction preparation for native TRX sends, canonical TRC-20 transfers, and voting-reward claims; Ledger signing lands in a follow-up phase).
+Non-EVM: TRON (phases 1 + 2 + 2b — balance + staking reads, tx preparation for native TRX sends, canonical TRC-20 transfers, voting-reward claims, and Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze; Ledger signing lands in a follow-up phase).
 
 Not every protocol is on every chain. Lido and EigenLayer are L1-only (Ethereum). Morpho Blue is currently enabled on Ethereum only — it is deployed on Base at the same address but the discovery scan needs a pinned deployment block, tracked as a follow-up. TRON has no lending/LP coverage in this server (none of Aave/Compound/Morpho/Uniswap are deployed there); balance reads return TRX + canonical TRC-20 stablecoins (USDT, USDC, USDD, TUSD) that together cover the vast majority of TRON token volume, and TRON-native staking (frozen TRX under Stake 2.0, pending unfreezes, claimable voting rewards) is surfaced via `get_tron_staking` and folded into the portfolio summary. Readers short-circuit cleanly on chains where a protocol isn't deployed.
 
 ## Roadmap
 
-- **TRON Ledger signing** — phase 3 of TRON support. TRON preparation tools (`prepare_tron_native_send`, `prepare_tron_token_send`, `prepare_tron_claim_rewards`) already ship as preview-only; `send_transaction` currently refuses TRON handles. Phase 3 signs them via **direct USB integration with `@ledgerhq/hw-app-trx`** — Ledger Live's WalletConnect relay does *not* currently honor the `tron:` namespace (verified 2026-04-14 via a SunSwap pairing attempt), so TRON signing diverges from the Ledger-Live-at-a-distance flow used for EVM: the user's Ledger must be plugged into the host running the MCP, with the TRON app open on the device.
-- **TRON Stake 2.0 writes** — phase 2b follows phase 2: `freezeBalanceV2`, `unfreezeBalanceV2`, and `withdrawExpireUnfreeze` preparation for bandwidth/energy management.
+- **TRON Ledger signing** — phase 3 of TRON support. All TRON `prepare_*` tools (send, TRC-20, claim rewards, freeze/unfreeze/withdraw-expire-unfreeze) ship as preview-only today; `send_transaction` currently refuses TRON handles. Phase 3 signs them via **direct USB integration with `@ledgerhq/hw-app-trx`** — Ledger Live's WalletConnect relay does *not* currently honor the `tron:` namespace (verified 2026-04-14 via a SunSwap pairing attempt), so TRON signing diverges from the Ledger-Live-at-a-distance flow used for EVM: the user's Ledger must be plugged into the host running the MCP, with the TRON app open on the device.
 - **MetaMask support** (WalletConnect) — alongside the existing Ledger Live integration. Will let users sign through a MetaMask-paired session when a hardware wallet isn't available.
 - **Solana** — coming later. Non-EVM: introduces a separate SDK (`@solana/web3.js`), base58 addresses, and the WalletConnect `solana:` namespace for signing.
 
@@ -81,7 +80,7 @@ Execution (Ledger-signed via WalletConnect):
 - `prepare_eigenlayer_deposit`
 - `prepare_swap` — LiFi-routed intra- or cross-chain swap/bridge
 - `prepare_native_send`, `prepare_token_send`
-- `prepare_tron_native_send`, `prepare_tron_token_send`, `prepare_tron_claim_rewards` — TRON tx builders (native TRX send, canonical TRC-20 transfer, WithdrawBalance claim). Preview-only in this release; `send_transaction` still refuses TRON handles until the USB HID signer lands.
+- `prepare_tron_native_send`, `prepare_tron_token_send`, `prepare_tron_claim_rewards`, `prepare_tron_freeze`, `prepare_tron_unfreeze`, `prepare_tron_withdraw_expire_unfreeze` — TRON tx builders (native TRX send, canonical TRC-20 transfer, WithdrawBalance claim, Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze). Preview-only in this release; `send_transaction` still refuses TRON handles until the USB HID signer lands.
 - `send_transaction` — forwards a prepared EVM tx to Ledger Live for user approval
 
 ## Requirements

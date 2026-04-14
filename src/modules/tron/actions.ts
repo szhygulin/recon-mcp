@@ -245,6 +245,164 @@ export async function buildTronTokenSend(
   return issueTronHandle(tx);
 }
 
+// ----- Stake 2.0: Freeze / Unfreeze / WithdrawExpireUnfreeze -----
+
+/**
+ * TRON Stake 2.0 resource types. Lowercase on our API surface for consistency
+ * with the staking reader (`get_tron_staking` returns `type: "bandwidth"|"energy"`).
+ * TronGrid expects uppercase, so we uppercase at the edge.
+ */
+export type TronResource = "bandwidth" | "energy";
+
+export interface BuildTronFreezeArgs {
+  from: string;
+  amount: string;
+  resource: TronResource;
+}
+
+export async function buildTronFreeze(
+  args: BuildTronFreezeArgs
+): Promise<UnsignedTronTx> {
+  if (!isTronAddress(args.from)) {
+    throw new Error(`"from" is not a valid TRON mainnet address: ${args.from}`);
+  }
+  const amountSun = parseUnits(args.amount, TRX_DECIMALS);
+  if (amountSun <= 0n) {
+    throw new Error(`Amount must be greater than 0 (got "${args.amount}").`);
+  }
+
+  const apiKey = resolveTronApiKey(readUserConfig());
+  const body = {
+    owner_address: args.from,
+    frozen_balance: Number(amountSun),
+    resource: args.resource.toUpperCase(),
+    visible: true,
+  };
+  const res = await trongridPost<TrongridDirectTx>(
+    "/wallet/freezebalancev2",
+    body,
+    apiKey
+  );
+  if (res.Error) {
+    throw new Error(`TronGrid freezebalancev2 failed: ${res.Error}`);
+  }
+  if (!res.txID || !res.raw_data_hex) {
+    throw new Error("TronGrid freezebalancev2 returned no transaction — unexpected shape.");
+  }
+
+  const tx: UnsignedTronTx = {
+    chain: "tron",
+    action: "freeze",
+    from: args.from,
+    txID: res.txID,
+    rawData: res.raw_data,
+    rawDataHex: res.raw_data_hex,
+    description: `Freeze ${args.amount} TRX for ${args.resource} (Stake 2.0)`,
+    decoded: {
+      functionName: "FreezeBalanceV2Contract",
+      args: { owner: args.from, amount: args.amount, resource: args.resource },
+    },
+  };
+  return issueTronHandle(tx);
+}
+
+export interface BuildTronUnfreezeArgs {
+  from: string;
+  amount: string;
+  resource: TronResource;
+}
+
+export async function buildTronUnfreeze(
+  args: BuildTronUnfreezeArgs
+): Promise<UnsignedTronTx> {
+  if (!isTronAddress(args.from)) {
+    throw new Error(`"from" is not a valid TRON mainnet address: ${args.from}`);
+  }
+  const amountSun = parseUnits(args.amount, TRX_DECIMALS);
+  if (amountSun <= 0n) {
+    throw new Error(`Amount must be greater than 0 (got "${args.amount}").`);
+  }
+
+  const apiKey = resolveTronApiKey(readUserConfig());
+  const body = {
+    owner_address: args.from,
+    unfreeze_balance: Number(amountSun),
+    resource: args.resource.toUpperCase(),
+    visible: true,
+  };
+  const res = await trongridPost<TrongridDirectTx>(
+    "/wallet/unfreezebalancev2",
+    body,
+    apiKey
+  );
+  if (res.Error) {
+    // Common failure: "less than frozen balance" when the caller asks to
+    // unfreeze more than they've frozen for that resource type. Surface
+    // TronGrid's message verbatim so the agent can relay it.
+    throw new Error(`TronGrid unfreezebalancev2 failed: ${res.Error}`);
+  }
+  if (!res.txID || !res.raw_data_hex) {
+    throw new Error("TronGrid unfreezebalancev2 returned no transaction — unexpected shape.");
+  }
+
+  const tx: UnsignedTronTx = {
+    chain: "tron",
+    action: "unfreeze",
+    from: args.from,
+    txID: res.txID,
+    rawData: res.raw_data,
+    rawDataHex: res.raw_data_hex,
+    description: `Unfreeze ${args.amount} TRX from ${args.resource} — 14-day unstaking cooldown begins`,
+    decoded: {
+      functionName: "UnfreezeBalanceV2Contract",
+      args: { owner: args.from, amount: args.amount, resource: args.resource },
+    },
+  };
+  return issueTronHandle(tx);
+}
+
+export interface BuildTronWithdrawExpireUnfreezeArgs {
+  from: string;
+}
+
+export async function buildTronWithdrawExpireUnfreeze(
+  args: BuildTronWithdrawExpireUnfreezeArgs
+): Promise<UnsignedTronTx> {
+  if (!isTronAddress(args.from)) {
+    throw new Error(`"from" is not a valid TRON mainnet address: ${args.from}`);
+  }
+
+  const apiKey = resolveTronApiKey(readUserConfig());
+  const res = await trongridPost<TrongridDirectTx>(
+    "/wallet/withdrawexpireunfreeze",
+    { owner_address: args.from, visible: true },
+    apiKey
+  );
+  if (res.Error) {
+    // Common: "no expire unfreeze" when no unfrozenV2 slices have matured.
+    // Pair with get_tron_staking to check pendingUnfreezes[].unlockAt first.
+    throw new Error(`TronGrid withdrawexpireunfreeze failed: ${res.Error}`);
+  }
+  if (!res.txID || !res.raw_data_hex) {
+    throw new Error("TronGrid withdrawexpireunfreeze returned no transaction — unexpected shape.");
+  }
+
+  const tx: UnsignedTronTx = {
+    chain: "tron",
+    action: "withdraw_expire_unfreeze",
+    from: args.from,
+    txID: res.txID,
+    rawData: res.raw_data,
+    rawDataHex: res.raw_data_hex,
+    description: `Withdraw all expired unfreezes back to liquid TRX for ${args.from}`,
+    decoded: {
+      functionName: "WithdrawExpireUnfreezeContract",
+      args: { owner: args.from },
+    },
+  };
+  return issueTronHandle(tx);
+}
+
 // ----- Claim voting rewards (WithdrawBalance) -----
 
 export interface BuildTronClaimRewardsArgs {
