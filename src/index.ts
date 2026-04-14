@@ -81,6 +81,9 @@ import {
   reverseResolveInput,
 } from "./modules/balances/schemas.js";
 
+import { getTronStaking } from "./modules/tron/staking.js";
+import { getTronStakingInput } from "./modules/tron/schemas.js";
+
 import { getCompoundPositions } from "./modules/compound/index.js";
 import {
   buildCompoundSupply,
@@ -202,6 +205,13 @@ async function main() {
         "- their DeFi positions on Ethereum, Arbitrum, Polygon, or Base — Aave V3 lending/",
         "  borrowing, Compound V3 (Comet), Morpho Blue (Ethereum), Uniswap V3 LP, Lido staking",
         "  (Ethereum/Arbitrum), EigenLayer restaking (Ethereum)",
+        "- their TRON balances (TRX + TRC-20 — USDT, USDC, USDD, TUSD) when the user",
+        "  supplies a base58 address (prefix T) via the `tronAddress` arg on",
+        "  `get_portfolio_summary` or the `chain: \"tron\"` branch of `get_token_balance`.",
+        "- their TRON staking: claimable voting rewards, frozen TRX (Stake 2.0),",
+        "  and pending unfreezes — via `get_tron_staking` or folded into",
+        "  `get_portfolio_summary` when a `tronAddress` is passed. TRON has no",
+        "  lending/LP coverage in this server (not deployed there).",
         "- portfolio value, cross-chain aggregation, health-factor / liquidation risk",
         "- executing on-chain actions: supply, borrow, repay, withdraw, stake, unstake,",
         "  send ETH/tokens, swap, bridge",
@@ -232,8 +242,9 @@ async function main() {
         "get_lp_positions, get_compound_positions, get_morpho_positions, get_staking_positions,",
         "get_staking_rewards, estimate_staking_yield, get_portfolio_summary, get_swap_quote,",
         "get_token_balance, get_token_price, resolve_ens_name, reverse_resolve_ens,",
-        "get_health_alerts, simulate_position_change, check_contract_security,",
-        "check_permission_risks, get_protocol_risk_score, get_transaction_status.",
+        "get_tron_staking, get_health_alerts, simulate_position_change,",
+        "check_contract_security, check_permission_risks, get_protocol_risk_score,",
+        "get_transaction_status.",
         "",
         "SWAP/BRIDGE ROUTING: prefer `prepare_swap` (LiFi aggregator) over building DEX",
         "router calls directly — LiFi handles route selection, approvals, and cross-chain",
@@ -364,7 +375,7 @@ async function main() {
     "get_portfolio_summary",
     {
       description:
-        "One-shot cross-chain portfolio aggregation for one or more wallets. Fans out across Ethereum/Arbitrum/Polygon/Base (unless `chains` narrows it) and assembles: native ETH/MATIC balances, top ERC-20 holdings, Aave V3 and Compound V3 lending positions, Uniswap V3 LP positions, and Lido/EigenLayer staking — each valued in USD via DefiLlama. Returns a `totalUsd`, a `breakdown` by category and by chain, and the raw per-protocol position arrays. Default tool for 'what's in my portfolio?' / 'total value' questions; prefer it over calling each per-protocol reader separately.",
+        "One-shot cross-chain portfolio aggregation for one or more wallets. Fans out across Ethereum/Arbitrum/Polygon/Base (unless `chains` narrows it) and assembles: native ETH/MATIC balances, top ERC-20 holdings, Aave V3 and Compound V3 lending positions, Uniswap V3 LP positions, and Lido/EigenLayer staking — each valued in USD via DefiLlama. Pass `tronAddress` (base58, prefix T) alongside a single `wallet` to fold TRX + TRC-20 balances plus TRON staking into the same totals; `breakdown.tron` holds the TRON slice, `tronUsd` the subtotal, and `tronStakingUsd` the staking portion. Returns a `totalUsd`, a `breakdown` by category and by chain, and the raw per-protocol position arrays. Default tool for 'what's in my portfolio?' / 'total value' questions; prefer it over calling each per-protocol reader separately.",
       inputSchema: getPortfolioSummaryInput.shape,
     },
     handler(getPortfolioSummary)
@@ -534,7 +545,7 @@ async function main() {
     "get_token_balance",
     {
       description:
-        "Fetch a wallet's balance of any ERC-20 token or the chain's native coin. Pass `token: \"native\"` for ETH (or chain-native asset) or an ERC-20 contract address. Returns amount, decimals, symbol, and USD value.",
+        "Fetch a wallet's balance of any ERC-20 token or the chain's native coin. Pass `token: \"native\"` for ETH (or chain-native asset) or an ERC-20 contract address. Returns amount, decimals, symbol, and USD value. For TRON, pass `chain: \"tron\"` with a base58 wallet (prefix T) and either `token: \"native\"` for TRX or a base58 TRC-20 address; returns a TronBalance (same fields, base58 token id).",
       inputSchema: getTokenBalanceInput.shape,
     },
     handler(getTokenBalance)
@@ -568,6 +579,16 @@ async function main() {
       inputSchema: reverseResolveInput.shape,
     },
     handler(reverseResolve)
+  );
+
+  server.registerTool(
+    "get_tron_staking",
+    {
+      description:
+        "Read TRON staking state for a base58 address: claimable voting rewards (WithdrawBalance-ready), frozen TRX under Stake 2.0 (bandwidth + energy), and pending unfreezes with their unlock timestamps. Returns raw SUN + formatted TRX + USD values, plus a `totalStakedUsd` rollup. Read-only; the WithdrawBalance transaction to actually claim rewards lands in TRON Phase 2.",
+      inputSchema: getTronStakingInput.shape,
+    },
+    handler((args: { address: string }) => getTronStaking(args.address))
   );
 
   server.registerTool(

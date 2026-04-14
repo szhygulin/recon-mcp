@@ -3,33 +3,53 @@ import { erc20Abi } from "../../abis/erc20.js";
 import { makeTokenAmount } from "../../data/format.js";
 import { getTokenPrice } from "../../data/prices.js";
 import { NATIVE_SYMBOL } from "../../config/contracts.js";
+import { getTronTokenBalance } from "../tron/balances.js";
 import type {
   GetTokenBalanceArgs,
   ResolveNameArgs,
   ReverseResolveArgs,
 } from "./schemas.js";
-import type { SupportedChain, TokenAmount } from "../../types/index.js";
+import type {
+  AnyChain,
+  SupportedChain,
+  TokenAmount,
+  TronBalance,
+} from "../../types/index.js";
 
 /**
  * Fetch the balance of an arbitrary token (ERC-20 by address, or the chain's native coin).
  * Returns `{ ...TokenAmount, zero: true }` when the wallet has no balance.
+ *
+ * On TRON, `wallet` must be base58 (prefix T) and `token` is either "native"
+ * (TRX) or a base58 TRC-20 contract address; the shape of the returned value
+ * is `TronBalance` rather than `TokenAmount`.
  */
-export async function getTokenBalance(args: GetTokenBalanceArgs): Promise<TokenAmount> {
+export async function getTokenBalance(
+  args: GetTokenBalanceArgs
+): Promise<TokenAmount | TronBalance> {
+  const chain = args.chain as AnyChain;
+
+  // TRON branches to its own reader — addresses are base58 and the price
+  // provider uses a different chain identifier.
+  if (chain === "tron") {
+    return getTronTokenBalance(args.wallet, args.token);
+  }
+
   const wallet = args.wallet as `0x${string}`;
-  const chain = args.chain as SupportedChain;
-  const client = getClient(chain);
+  const evmChain = chain as SupportedChain;
+  const client = getClient(evmChain);
 
   if (args.token === "native") {
     const [balance, price] = await Promise.all([
       client.getBalance({ address: wallet }),
-      getTokenPrice(chain, "native"),
+      getTokenPrice(evmChain, "native"),
     ]);
     return makeTokenAmount(
-      chain,
+      evmChain,
       "0x0000000000000000000000000000000000000000" as `0x${string}`,
       balance,
       18,
-      NATIVE_SYMBOL[chain],
+      NATIVE_SYMBOL[evmChain],
       price
     );
   }
@@ -43,9 +63,9 @@ export async function getTokenBalance(args: GetTokenBalanceArgs): Promise<TokenA
     ],
     allowFailure: false,
   });
-  const price = await getTokenPrice(chain, token);
+  const price = await getTokenPrice(evmChain, token);
   return makeTokenAmount(
-    chain,
+    evmChain,
     token,
     balance as bigint,
     Number(decimals),
