@@ -36,13 +36,14 @@ This is an **agent-driven portfolio management** tool, not a wallet replacement.
 
 EVM: Ethereum, Arbitrum, Polygon, Base.
 
-Non-EVM: TRON (phase 1 — balance + staking reads; transaction preparation and Ledger signing land in follow-up phases).
+Non-EVM: TRON (phases 1 + 2 — balance + staking reads and transaction preparation for native TRX sends, canonical TRC-20 transfers, and voting-reward claims; Ledger signing lands in a follow-up phase).
 
 Not every protocol is on every chain. Lido and EigenLayer are L1-only (Ethereum). Morpho Blue is currently enabled on Ethereum only — it is deployed on Base at the same address but the discovery scan needs a pinned deployment block, tracked as a follow-up. TRON has no lending/LP coverage in this server (none of Aave/Compound/Morpho/Uniswap are deployed there); balance reads return TRX + canonical TRC-20 stablecoins (USDT, USDC, USDD, TUSD) that together cover the vast majority of TRON token volume, and TRON-native staking (frozen TRX under Stake 2.0, pending unfreezes, claimable voting rewards) is surfaced via `get_tron_staking` and folded into the portfolio summary. Readers short-circuit cleanly on chains where a protocol isn't deployed.
 
 ## Roadmap
 
-- **TRON transaction preparation + Ledger signing** — phase 2 and phase 3 of TRON support. Phase 2 prepares native TRX and TRC-20 sends. Phase 3 signs them via **direct USB integration with `@ledgerhq/hw-app-trx`** — Ledger Live's WalletConnect relay does *not* currently honor the `tron:` namespace (verified 2026-04-14 via a SunSwap pairing attempt), so TRON signing diverges from the Ledger-Live-at-a-distance flow used for EVM: the user's Ledger must be plugged into the host running the MCP, with the TRON app open on the device.
+- **TRON Ledger signing** — phase 3 of TRON support. TRON preparation tools (`prepare_tron_native_send`, `prepare_tron_token_send`, `prepare_tron_claim_rewards`) already ship as preview-only; `send_transaction` currently refuses TRON handles. Phase 3 signs them via **direct USB integration with `@ledgerhq/hw-app-trx`** — Ledger Live's WalletConnect relay does *not* currently honor the `tron:` namespace (verified 2026-04-14 via a SunSwap pairing attempt), so TRON signing diverges from the Ledger-Live-at-a-distance flow used for EVM: the user's Ledger must be plugged into the host running the MCP, with the TRON app open on the device.
+- **TRON Stake 2.0 writes** — phase 2b follows phase 2: `freezeBalanceV2`, `unfreezeBalanceV2`, and `withdrawExpireUnfreeze` preparation for bandwidth/energy management.
 - **MetaMask support** (WalletConnect) — alongside the existing Ledger Live integration. Will let users sign through a MetaMask-paired session when a hardware wallet isn't available.
 - **Solana** — coming later. Non-EVM: introduces a separate SDK (`@solana/web3.js`), base58 addresses, and the WalletConnect `solana:` namespace for signing.
 
@@ -60,7 +61,7 @@ Read-only (no Ledger pairing required):
 - `simulate_position_change` — projected Aave health factor for a hypothetical action
 - `simulate_transaction` — run `eth_call` against a prepared or arbitrary tx to preview success/revert before signing; prepared txs are re-simulated automatically at send time
 - `get_token_balance`, `get_token_price` — balances and DefiLlama prices; `get_token_balance` accepts `chain: "tron"` with a base58 wallet and a base58 TRC-20 address (or `token: "native"` for TRX), returning a `TronBalance` shape
-- `get_tron_staking` — TRON-native staking state for a base58 address: claimable voting rewards (WithdrawBalance-ready), frozen TRX under Stake 2.0 (bandwidth + energy), and pending unfreezes with ISO unlock timestamps. Read-only; the actual claim/withdraw transactions land in TRON Phase 2.
+- `get_tron_staking` — TRON-native staking state for a base58 address: claimable voting rewards (WithdrawBalance-ready), frozen TRX under Stake 2.0 (bandwidth + energy), and pending unfreezes with ISO unlock timestamps. Pair with `prepare_tron_claim_rewards` to actually withdraw accumulated rewards.
 - `resolve_ens_name`, `reverse_resolve_ens` — ENS forward/reverse
 - `get_swap_quote` — LiFi quote (optionally cross-checked against 1inch)
 - `check_contract_security`, `check_permission_risks`, `get_protocol_risk_score` — risk tooling
@@ -80,7 +81,8 @@ Execution (Ledger-signed via WalletConnect):
 - `prepare_eigenlayer_deposit`
 - `prepare_swap` — LiFi-routed intra- or cross-chain swap/bridge
 - `prepare_native_send`, `prepare_token_send`
-- `send_transaction` — forwards a prepared tx to Ledger Live for user approval
+- `prepare_tron_native_send`, `prepare_tron_token_send`, `prepare_tron_claim_rewards` — TRON tx builders (native TRX send, canonical TRC-20 transfer, WithdrawBalance claim). Preview-only in this release; `send_transaction` still refuses TRON handles until the USB HID signer lands.
+- `send_transaction` — forwards a prepared EVM tx to Ledger Live for user approval
 
 ## Requirements
 
