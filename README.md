@@ -3,6 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/recon-crypto-mcp.svg)](https://www.npmjs.com/package/recon-crypto-mcp)
 [![license](https://img.shields.io/npm/l/recon-crypto-mcp.svg)](./LICENSE)
 [![node](https://img.shields.io/node/v/recon-crypto-mcp.svg)](package.json)
+[![recon-crypto-mcp MCP server](https://glama.ai/mcp/servers/szhygulin/recon-crypto-mcp/badges/score.svg)](https://glama.ai/mcp/servers/szhygulin/recon-crypto-mcp)
 
 **Self-custodial crypto portfolio and DeFi, managed by AI agents — signed on your Ledger hardware wallet.**
 
