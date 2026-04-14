@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/vaultpilot-mcp.svg)](https://www.npmjs.com/package/vaultpilot-mcp)
 [![license](https://img.shields.io/npm/l/vaultpilot-mcp.svg)](./LICENSE)
 [![node](https://img.shields.io/node/v/vaultpilot-mcp.svg)](package.json)
-[![vaultpilot-mcp MCP server](https://glama.ai/mcp/servers/szhygulin/recon-crypto-mcp/badges/score.svg)](https://glama.ai/mcp/servers/szhygulin/recon-crypto-mcp)
+[![vaultpilot-mcp MCP server](https://glama.ai/mcp/servers/szhygulin/vaultpilot-mcp/badges/score.svg)](https://glama.ai/mcp/servers/szhygulin/vaultpilot-mcp)
 
 **Self-custodial crypto portfolio and DeFi, managed by AI agents — signed on your Ledger hardware wallet.**
 
