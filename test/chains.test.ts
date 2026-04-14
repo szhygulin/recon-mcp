@@ -5,6 +5,8 @@ import type { UserConfig } from "../src/types/index.js";
 const RPC_ENV_KEYS = [
   "ETHEREUM_RPC_URL",
   "ARBITRUM_RPC_URL",
+  "POLYGON_RPC_URL",
+  "BASE_RPC_URL",
   "RPC_PROVIDER",
   "RPC_API_KEY",
 ];
@@ -41,12 +43,22 @@ describe("resolveRpcUrl", () => {
     expect(resolveRpcUrl("arbitrum", null)).toBe(
       "https://arbitrum-mainnet.infura.io/v3/abc123"
     );
+    expect(resolveRpcUrl("base", null)).toBe("https://base-mainnet.infura.io/v3/abc123");
   });
 
   it("user config Alchemy produces provider URL", () => {
     const cfg: UserConfig = { rpc: { provider: "alchemy", apiKey: "k" } };
     expect(resolveRpcUrl("ethereum", cfg)).toBe("https://eth-mainnet.g.alchemy.com/v2/k");
     expect(resolveRpcUrl("arbitrum", cfg)).toBe("https://arb-mainnet.g.alchemy.com/v2/k");
+    expect(resolveRpcUrl("base", cfg)).toBe("https://base-mainnet.g.alchemy.com/v2/k");
+  });
+
+  it("BASE_RPC_URL env var wins over everything else", () => {
+    process.env.BASE_RPC_URL = "https://env-base.example/";
+    process.env.RPC_PROVIDER = "alchemy";
+    process.env.RPC_API_KEY = "envkey";
+    const cfg: UserConfig = { rpc: { provider: "infura", apiKey: "cfgkey" } };
+    expect(resolveRpcUrl("base", cfg)).toBe("https://env-base.example/");
   });
 
   it("custom provider uses per-chain URL from config", () => {

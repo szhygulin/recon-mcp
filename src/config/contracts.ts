@@ -114,6 +114,44 @@ export const CONTRACTS = {
       "cUSDT.ev3": "0xaeB318360f27748Acb200CE616E389A6C9409a07",
     },
   },
+  base: {
+    aave: {
+      // Aave V3 Base deployment. PoolAddressesProvider is chain-specific on
+      // Base (not the deterministic cross-L2 address), per the Aave docs.
+      poolAddressProvider: "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D",
+      uiPoolDataProvider: "0x174446a6741c0bdA9cEe4D8FF4419Fb0ca1c7883",
+      pool: "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5",
+    },
+    uniswap: {
+      // Canonical Uniswap V3 deployment on Base. Factory is the standard
+      // cross-chain address; PositionManager too.
+      positionManager: "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1",
+      factory: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+    },
+    // Lido and EigenLayer are L1-only — no `lido`/`eigenlayer` keys means the
+    // staking reader short-circuits for Base, matching how Polygon is handled.
+    tokens: {
+      // Native USDC on Base (Circle-issued). USDbC is the bridged legacy
+      // Coinbase-wrapped USDC — kept because Compound still has a market for
+      // it and some older positions are denominated in it.
+      USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      USDbC: "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA",
+      DAI: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
+      WETH: "0x4200000000000000000000000000000000000006",
+      cbETH: "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22",
+    },
+    compound: {
+      cUSDCv3: "0xb125E6687d4313864e53df431d5425969c15Eb2F",
+      cUSDbCv3: "0x9c4ec768c28520B50860ea7a15bd7213a9fF58bf",
+      cWETHv3: "0x46e6b214b524310239732D51387075E0e70970bf",
+    },
+    // Morpho Blue is deployed on Base (same bytecode/address as mainnet)
+    // but we deliberately omit the `morpho` key here because the discovery
+    // scan in src/modules/morpho/discover.ts needs a known deployment block
+    // to start the `eth_getLogs` walk from — and that block hasn't been
+    // verified for Base yet. Add the address + block together in a future
+    // PR rather than guess and risk missing positions.
+  },
 } as const;
 
 export type ChainContracts<C extends SupportedChain> = (typeof CONTRACTS)[C];
@@ -124,4 +162,5 @@ export const NATIVE_SYMBOL: Record<SupportedChain, string> = {
   arbitrum: "ETH",
   // Polygon's native token is MATIC (rebranding to POL is in progress — same contract).
   polygon: "MATIC",
+  base: "ETH",
 };

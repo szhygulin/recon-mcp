@@ -7,6 +7,7 @@ const API_BASE: Record<SupportedChain, string> = {
   ethereum: "https://api.etherscan.io/api",
   arbitrum: "https://api.arbiscan.io/api",
   polygon: "https://api.polygonscan.com/api",
+  base: "https://api.basescan.org/api",
 };
 
 export interface ContractInfo {

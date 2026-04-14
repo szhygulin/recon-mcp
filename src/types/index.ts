@@ -1,11 +1,12 @@
 // Shared domain types used across all modules.
 
-export type SupportedChain = "ethereum" | "arbitrum" | "polygon";
+export type SupportedChain = "ethereum" | "arbitrum" | "polygon" | "base";
 
 export const SUPPORTED_CHAINS: readonly SupportedChain[] = [
   "ethereum",
   "arbitrum",
   "polygon",
+  "base",
 ] as const;
 
 export type RpcProvider = "infura" | "alchemy" | "custom";
@@ -15,12 +16,14 @@ export const CHAIN_IDS: Record<SupportedChain, number> = {
   ethereum: 1,
   arbitrum: 42161,
   polygon: 137,
+  base: 8453,
 };
 
 export const CHAIN_ID_TO_NAME: Record<number, SupportedChain> = {
   1: "ethereum",
   42161: "arbitrum",
   137: "polygon",
+  8453: "base",
 };
 
 /** A token balance with optional USD valuation. */

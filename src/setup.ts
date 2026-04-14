@@ -65,11 +65,13 @@ const PROVIDER_URLS: Record<"infura" | "alchemy", Record<SupportedChain, (k: str
     ethereum: (k) => `https://mainnet.infura.io/v3/${k}`,
     arbitrum: (k) => `https://arbitrum-mainnet.infura.io/v3/${k}`,
     polygon: (k) => `https://polygon-mainnet.infura.io/v3/${k}`,
+    base: (k) => `https://base-mainnet.infura.io/v3/${k}`,
   },
   alchemy: {
     ethereum: (k) => `https://eth-mainnet.g.alchemy.com/v2/${k}`,
     arbitrum: (k) => `https://arb-mainnet.g.alchemy.com/v2/${k}`,
     polygon: (k) => `https://polygon-mainnet.g.alchemy.com/v2/${k}`,
+    base: (k) => `https://base-mainnet.g.alchemy.com/v2/${k}`,
   },
 };
 
@@ -93,6 +95,7 @@ async function configureRpc(p: Prompt): Promise<UserConfig["rpc"]> {
     const ethUrl = await p.ask("Ethereum RPC URL: ");
     const arbUrl = await p.ask("Arbitrum RPC URL (leave blank to skip): ");
     const polyUrl = await p.ask("Polygon RPC URL (leave blank to skip): ");
+    const baseUrl = await p.ask("Base RPC URL (leave blank to skip): ");
     if (ethUrl) {
       try {
         const id = await validateRpcUrl(ethUrl);
@@ -108,6 +111,7 @@ async function configureRpc(p: Prompt): Promise<UserConfig["rpc"]> {
         ...(ethUrl ? { ethereum: ethUrl } : {}),
         ...(arbUrl ? { arbitrum: arbUrl } : {}),
         ...(polyUrl ? { polygon: polyUrl } : {}),
+        ...(baseUrl ? { base: baseUrl } : {}),
       },
     };
   }
