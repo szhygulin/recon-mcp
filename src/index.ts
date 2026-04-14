@@ -82,7 +82,17 @@ import {
 } from "./modules/balances/schemas.js";
 
 import { getTronStaking } from "./modules/tron/staking.js";
-import { getTronStakingInput } from "./modules/tron/schemas.js";
+import {
+  buildTronNativeSend,
+  buildTronTokenSend,
+  buildTronClaimRewards,
+} from "./modules/tron/actions.js";
+import {
+  getTronStakingInput,
+  prepareTronNativeSendInput,
+  prepareTronTokenSendInput,
+  prepareTronClaimRewardsInput,
+} from "./modules/tron/schemas.js";
 
 import { getCompoundPositions } from "./modules/compound/index.js";
 import {
@@ -585,10 +595,40 @@ async function main() {
     "get_tron_staking",
     {
       description:
-        "Read TRON staking state for a base58 address: claimable voting rewards (WithdrawBalance-ready), frozen TRX under Stake 2.0 (bandwidth + energy), and pending unfreezes with their unlock timestamps. Returns raw SUN + formatted TRX + USD values, plus a `totalStakedUsd` rollup. Read-only; the WithdrawBalance transaction to actually claim rewards lands in TRON Phase 2.",
+        "Read TRON staking state for a base58 address: claimable voting rewards (WithdrawBalance-ready), frozen TRX under Stake 2.0 (bandwidth + energy), and pending unfreezes with their unlock timestamps. Returns raw SUN + formatted TRX + USD values, plus a `totalStakedUsd` rollup. Read-only; pair with `prepare_tron_claim_rewards` to actually withdraw the accumulated reward.",
       inputSchema: getTronStakingInput.shape,
     },
     handler((args: { address: string }) => getTronStaking(args.address))
+  );
+
+  server.registerTool(
+    "prepare_tron_native_send",
+    {
+      description:
+        "Build an unsigned TRON native TRX send transaction via TronGrid's /wallet/createtransaction. Returns a human-readable preview + opaque handle. NOTE: TRON handles are PREVIEW-ONLY in this release — the physical signing path (USB HID via @ledgerhq/hw-app-trx) lands in a later phase; `send_transaction` only consumes EVM handles. Use this tool today to double-check an intended transfer (recipient, amount) against TronGrid's own tx builder before signing through Ledger Live's native TRON flow, TronLink, or another client.",
+      inputSchema: prepareTronNativeSendInput.shape,
+    },
+    handler(buildTronNativeSend)
+  );
+
+  server.registerTool(
+    "prepare_tron_token_send",
+    {
+      description:
+        "Build an unsigned TRC-20 transfer transaction (canonical set only: USDT, USDC, USDD, TUSD) via TronGrid's /wallet/triggersmartcontract. Decimals are resolved from the canonical table — unknown TRC-20s are rejected with an explicit error. Default fee_limit is 100 TRX (TronLink/Ledger Live default); override with `feeLimitTrx` if energy pricing has moved. Returns a preview + opaque handle. NOTE: PREVIEW-ONLY in this release — the Ledger USB HID signing path lands in a later phase. `send_transaction` will refuse TRON handles.",
+      inputSchema: prepareTronTokenSendInput.shape,
+    },
+    handler(buildTronTokenSend)
+  );
+
+  server.registerTool(
+    "prepare_tron_claim_rewards",
+    {
+      description:
+        "Build an unsigned TRON WithdrawBalance transaction that claims accumulated voting rewards to the owner's balance. TRON enforces a 24-hour cooldown between claims — TronGrid will reject (surfaced as an error) if the previous claim was inside the window. Pair with `get_tron_staking` first to read `claimableRewards` and avoid empty-claim tx builds. Returns a preview + opaque handle. NOTE: PREVIEW-ONLY in this release — signing lands with the USB HID phase.",
+      inputSchema: prepareTronClaimRewardsInput.shape,
+    },
+    handler(buildTronClaimRewards)
   );
 
   server.registerTool(

@@ -384,6 +384,46 @@ export interface MultiWalletPortfolioSummary {
   coverage: PortfolioCoverage;
 }
 
+/**
+ * Unsigned TRON transaction. Shape is unavoidably different from EVM:
+ * TronGrid builds the tx server-side (raw_data + raw_data_hex) and the
+ * device signs the serialized raw_data_hex. We keep the TRON tx shape
+ * separate from UnsignedTx so send_transaction's EVM-only security pipeline
+ * (eth_call re-simulation, chain-id check, spender allowlist) can't be
+ * silently shortcut by a TRON handle masquerading as an EVM one.
+ *
+ * Phase 2 ships preparation only — there is no send_tron_transaction yet.
+ * Handles are issued so the Phase 3 signer (USB HID via @ledgerhq/hw-app-trx)
+ * can consume them exactly the way send_transaction consumes EVM handles.
+ */
+export interface UnsignedTronTx {
+  chain: "tron";
+  /** Discriminator for the preview + future signer branching. */
+  action: "native_send" | "trc20_send" | "claim_rewards";
+  /** Base58 owner address (prefix T). */
+  from: string;
+  /** TronGrid-returned transaction ID (sha256 of raw_data_hex, hex string). */
+  txID: string;
+  /** TronGrid's raw_data object — opaque to us; serialized in raw_data_hex. */
+  rawData: unknown;
+  /** Hex-encoded raw_data used by the signer. */
+  rawDataHex: string;
+  /** Human-readable description for the preview. */
+  description: string;
+  decoded: {
+    functionName: string;
+    args: Record<string, string>;
+  };
+  /**
+   * Fee limit in SUN, present on contract calls (TRC-20 transfers require it;
+   * TronGrid rejects triggersmartcontract without one). Absent on native TRX
+   * sends and WithdrawBalance — those pay bandwidth only.
+   */
+  feeLimitSun?: string;
+  /** Opaque handle — see tron-tx-store.ts. Phase 3 signer consumes this. */
+  handle?: string;
+}
+
 /** Unsigned transaction, ready to be sent to Ledger Live for signing. */
 export interface UnsignedTx {
   chain: SupportedChain;
