@@ -120,6 +120,14 @@ describe("send_transaction re-simulates before signing", () => {
     vi.doMock("../src/data/rpc.js", () => ({
       getClient: () => ({
         call: vi.fn().mockResolvedValue({ data: "0x" }),
+        // Send-time pin fetches — issue #37. These are called before
+        // requestSendTransaction to compute the EIP-1559 pre-sign hash.
+        getTransactionCount: vi.fn().mockResolvedValue(7),
+        estimateFeesPerGas: vi.fn().mockResolvedValue({
+          maxFeePerGas: 30_000_000_000n,
+          maxPriorityFeePerGas: 1_500_000_000n,
+        }),
+        estimateGas: vi.fn().mockResolvedValue(21_000n),
       }),
       verifyChainId: vi.fn().mockResolvedValue(undefined),
       resetClients: () => {},
@@ -145,6 +153,20 @@ describe("send_transaction re-simulates before signing", () => {
     });
     expect(result.txHash).toBe("0xabc123");
     expect(requestSendMock).toHaveBeenCalledTimes(1);
+    // Pinned fields reach WalletConnect so Ledger's on-device RLP hash is
+    // deterministic.
+    const pinned = requestSendMock.mock.calls[0][1];
+    expect(pinned).toEqual({
+      nonce: 7,
+      maxFeePerGas: 30_000_000_000n,
+      maxPriorityFeePerGas: 1_500_000_000n,
+      gas: 21_000n,
+    });
+    // Result echoes preSignHash + to + valueWei so the handler can emit the
+    // LEDGER BLIND-SIGN HASH block without re-reading the consumed handle.
+    expect(result.preSignHash).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(result.to).toBe("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+    expect(result.valueWei).toBe("500000000000000000");
   });
 });
 

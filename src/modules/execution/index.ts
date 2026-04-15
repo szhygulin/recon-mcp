@@ -17,7 +17,11 @@ import {
 } from "../../signing/tron-usb-signer.js";
 import { broadcastTronTx } from "../tron/broadcast.js";
 import { assertTransactionSafe } from "../../signing/pre-sign-check.js";
-import { payloadFingerprint, tronPayloadFingerprint } from "../../signing/verification.js";
+import {
+  eip1559PreSignHash,
+  payloadFingerprint,
+  tronPayloadFingerprint,
+} from "../../signing/verification.js";
 import { getClient, verifyChainId } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { simulateTx } from "../simulation/index.js";
@@ -48,6 +52,7 @@ import type {
   GetTransactionStatusArgs,
   GetTxVerificationArgs,
 } from "./schemas.js";
+import { CHAIN_IDS } from "../../types/index.js";
 import type { SupportedChain, UnsignedTx, UnsignedTronTx } from "../../types/index.js";
 import { hasTronHandle } from "../../signing/tron-tx-store.js";
 import { hasHandle } from "../../signing/tx-store.js";
@@ -406,6 +411,28 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
   txHash: `0x${string}` | string;
   chain: SupportedChain | "tron";
   nextHandle?: string;
+  /**
+   * EIP-1559 pre-sign RLP hash Ledger's blind-sign screen should display.
+   * Present only for EVM sends; TRON has its own txID flow. See
+   * `eip1559PreSignHash` for the preimage shape.
+   */
+  preSignHash?: `0x${string}`;
+  /**
+   * The nonce + fee fields we pinned and forwarded via WalletConnect.
+   * Surfaced so the hash block can remind the user of the exact values —
+   * if Ledger Live's "Edit gas" UI changed any of these, the on-device
+   * hash will diverge and the user should reject.
+   */
+  pinned?: {
+    nonce: number;
+    maxFeePerGas: string;
+    maxPriorityFeePerGas: string;
+    gas: string;
+  };
+  /** Echoed back so the send handler can render on-device eyeball values without re-reading the handle. */
+  to?: `0x${string}`;
+  /** Decimal wei string, echoed alongside `preSignHash` for the Ledger hash block. */
+  valueWei?: string;
 }> {
   if (hasTronHandle(args.handle)) {
     return sendTronTransaction(args);
@@ -472,7 +499,47 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
       );
     }
   }
-  const hash = await requestSendTransaction(tx);
+  // Pin nonce + EIP-1559 fee fields server-side at SEND time (not prepare
+  // time — gas conditions move). Pinning all four lets us predict the EIP-1559
+  // pre-sign RLP hash Ledger displays in blind-sign mode, which restores the
+  // on-device calldata-integrity check that was otherwise unavailable. See
+  // issue #37. If any RPC call fails we throw — unpinned would defeat the
+  // purpose of surfacing a hash.
+  const rpcClient = getClient(tx.chain);
+  const fromAddr =
+    tx.from ?? ((await getConnectedAccounts())[0] as `0x${string}` | undefined);
+  if (!fromAddr) {
+    throw new Error(
+      "Cannot determine sender address for nonce/fee pin; pair Ledger Live first.",
+    );
+  }
+  const [nonceRaw, fees, gasLimit] = await Promise.all([
+    rpcClient.getTransactionCount({ address: fromAddr, blockTag: "pending" }),
+    rpcClient.estimateFeesPerGas(),
+    rpcClient.estimateGas({
+      account: fromAddr,
+      to: tx.to,
+      data: tx.data,
+      value: BigInt(tx.value),
+    }),
+  ]);
+  const pinned = {
+    nonce: Number(nonceRaw),
+    maxFeePerGas: fees.maxFeePerGas,
+    maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+    gas: gasLimit,
+  };
+  const preSignHash = eip1559PreSignHash({
+    chainId: CHAIN_IDS[tx.chain],
+    nonce: pinned.nonce,
+    maxFeePerGas: pinned.maxFeePerGas,
+    maxPriorityFeePerGas: pinned.maxPriorityFeePerGas,
+    gas: pinned.gas,
+    to: tx.to,
+    value: BigInt(tx.value),
+    data: tx.data,
+  });
+  const hash = await requestSendTransaction(tx, pinned);
   // Only retire the handle after successful submission. If requestSendTransaction
   // throws (device disconnect, user rejection, relay timeout), the handle stays
   // valid and the caller can retry until the 15-minute TTL expires.
@@ -481,6 +548,15 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
     txHash: hash,
     chain: tx.chain,
     ...(tx.next?.handle ? { nextHandle: tx.next.handle } : {}),
+    preSignHash,
+    pinned: {
+      nonce: pinned.nonce,
+      maxFeePerGas: pinned.maxFeePerGas.toString(),
+      maxPriorityFeePerGas: pinned.maxPriorityFeePerGas.toString(),
+      gas: pinned.gas.toString(),
+    },
+    to: tx.to,
+    valueWei: tx.value,
   };
 }
 

@@ -195,24 +195,67 @@ export function renderAgentTaskBlock(
     `           user named, but still a different code path. If the user`,
     `           picks (c), state the limitation before doing the fetch so`,
     `           they can redirect to (b) if they prefer.`,
-    `  4. End your reply with the Ledger-screen reminder. DO NOT tell the`,
-    `     user "the hash on Ledger must be <shortHash>" — our payloadHash is`,
-    `     over {chain, to, value, data} only, but Ledger's blind-sign hash`,
-    `     is over the full RLP including nonce + fee fields that Ledger Live`,
-    `     chooses at send time. Those hashes will not match, and claiming`,
-    `     they will train the user to rubber-stamp a real mismatch. Instead,`,
-    `     cover both on-device modes honestly in one sentence:`,
+    `  4. End your reply with the Ledger-screen reminder. DO NOT equate our`,
+    `     prepare-time payloadHashShort with Ledger's on-device hash — those`,
+    `     are different preimages and claiming they match would train the`,
+    `     user to rubber-stamp a real mismatch. What the user SHOULD match`,
+    `     on-device is surfaced separately at SEND time: send_transaction`,
+    `     pins nonce + EIP-1559 fees server-side and emits a block titled`,
+    `     "LEDGER BLIND-SIGN HASH — RELAY VERBATIM TO USER; THEY MATCH`,
+    `     ON-DEVICE". That block is authoritative — forward it verbatim when`,
+    `     it appears on the send response. At PREPARE time (this turn), the`,
+    `     hash does not exist yet, so your reminder here just sets`,
+    `     expectations:`,
     `       "On the Ledger screen: if the device clear-signs with decoded`,
     `        fields (Aave / Lido / 1inch / LiFi / approve plugin), confirm`,
     `        <function> + <key field, e.g. 'Min out 0.04 ETH' for a swap or`,
     `        'Spender + Cap' for an approve>. If the device blind-signs`,
-    `        (shows only a hash), the hash is not pre-computable here — the`,
-    `        checks you CAN do on-screen are: To = <to address> and Value =`,
-    `        <human native amount>. Reject on-device if either doesn't match."`,
+    `        (shows only a hash), match the hash you will see in the`,
+    `        LEDGER BLIND-SIGN HASH block printed after send_transaction,`,
+    `        and additionally verify To = <to address> and Value =`,
+    `        <human native amount>. Reject on-device if anything doesn't`,
+    `        match."`,
     `     Fill in <to address> and <human native amount> from the bullet`,
     `     summary above so the user has exact values to eyeball.`,
   ];
   return lines.join("\n");
+}
+
+/**
+ * User-facing block emitted on every successful EVM `send_transaction`.
+ * Surfaces the EIP-1559 pre-sign RLP hash we predict Ledger will display in
+ * blind-sign mode, given the nonce/fee/gas fields we pinned and forwarded via
+ * WalletConnect. This closes the calldata-integrity gap at the device
+ * boundary — in the old world the on-device hash was unpredictable (Ledger
+ * Live picked nonce + fees) so the user could only eyeball To + Value.
+ *
+ * Marked for VERBATIM relay to the user — the orchestrator agent must NOT
+ * collapse this into its bullet summary. The "Edit gas / Edit fees" warning
+ * is load-bearing: if the user taps that in Ledger Live, the hash diverges
+ * and they should reject on-device and re-run send_transaction.
+ */
+export function renderLedgerHashBlock(args: {
+  preSignHash: string;
+  to: string;
+  valueWei: string;
+}): string {
+  return [
+    "LEDGER BLIND-SIGN HASH — RELAY VERBATIM TO USER; THEY MATCH ON-DEVICE",
+    `  Hash: ${args.preSignHash}`,
+    "",
+    "If your Ledger device BLIND-SIGNS (shows only a hash), the hash on-device",
+    "MUST equal the value above. Reject on the device if they differ.",
+    "",
+    "If your Ledger CLEAR-SIGNS (decoded fields via an Aave/Lido/1inch/LiFi/",
+    "approve plugin), hash matching does not apply — confirm the decoded",
+    "function + key field instead (as described in the prepare step).",
+    "",
+    `On-device you can always additionally verify:  To = ${args.to}   Value = ${args.valueWei} wei`,
+    "",
+    "If you tap \"Edit gas\" / \"Edit fees\" in Ledger Live, the hash WILL NOT",
+    "match (you changed a field that feeds the hash). Reject on the device and",
+    "re-run send_transaction to pick up fresh fees.",
+  ].join("\n");
 }
 
 /**

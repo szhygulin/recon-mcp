@@ -308,17 +308,19 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     expect(task).toMatch(/\(b\)/);
     expect(task).toMatch(/\(c\)/);
     expect(task).toMatch(/client-side Next\.js SPA/);
-    // Final Ledger reminder must honestly cover both modes and NOT claim the
-    // Ledger hash matches our payloadHash.
+    // Final Ledger reminder must honestly cover both modes and NOT claim our
+    // prepare-time payloadHashShort matches Ledger's on-device hash.
     expect(task).toMatch(/On the Ledger screen/);
     expect(task).toMatch(/clear-signs/);
     expect(task).toMatch(/blind-signs/);
-    expect(task).toMatch(/not pre-computable here/);
+    // Must point at the send-time LEDGER BLIND-SIGN HASH block as the
+    // authoritative source, not claim our prepare-time hash works.
+    expect(task).toMatch(/LEDGER BLIND-SIGN HASH/);
     expect(task).toMatch(/To = <to address>/);
     expect(task).toMatch(/Value =\s*<human native amount>/);
-    // The shortHash placeholder must not be substituted anywhere — the new
-    // block refers to it only inside a warning quote, never as a "Ledger
-    // must show X" directive.
+    // The prepare-time shortHash placeholder must not be substituted anywhere
+    // — the new block refers to it only inside a warning quote, never as a
+    // "Ledger must show X" directive.
     expect(task).not.toContain(stamped.verification!.payloadHashShort);
   });
 

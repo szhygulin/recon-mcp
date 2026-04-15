@@ -153,6 +153,7 @@ import { requestCapability, requestCapabilityInput } from "./modules/feedback/in
 import { issueHandles } from "./signing/tx-store.js";
 import {
   renderAgentTaskBlock,
+  renderLedgerHashBlock,
   renderPostSendPollBlock,
   renderTronVerificationBlock,
   renderVerificationBlock,
@@ -289,6 +290,15 @@ function sendTransactionHandler(
     txHash: `0x${string}` | string;
     chain: SupportedChain | "tron";
     nextHandle?: string;
+    preSignHash?: `0x${string}`;
+    pinned?: {
+      nonce: number;
+      maxFeePerGas: string;
+      maxPriorityFeePerGas: string;
+      gas: string;
+    };
+    to?: `0x${string}`;
+    valueWei?: string;
   }>,
 ) {
   return async (args: SendTransactionArgs) => {
@@ -296,15 +306,28 @@ function sendTransactionHandler(
       const result = await fn(args);
       const content: { type: "text"; text: string }[] = [
         { type: "text", text: JSON.stringify(result, bigintReplacer, 2) },
-        {
-          type: "text",
-          text: renderPostSendPollBlock({
-            chain: String(result.chain),
-            txHash: String(result.txHash),
-            ...(result.nextHandle ? { nextHandle: result.nextHandle } : {}),
-          }),
-        },
       ];
+      // EVM sends: surface the EIP-1559 pre-sign hash so the user can match it
+      // against Ledger's blind-sign screen. TRON sends don't go through
+      // WalletConnect/Ledger blind-sign, so no hash block.
+      if (result.preSignHash && result.to && result.valueWei) {
+        content.push({
+          type: "text",
+          text: renderLedgerHashBlock({
+            preSignHash: result.preSignHash,
+            to: result.to,
+            valueWei: result.valueWei,
+          }),
+        });
+      }
+      content.push({
+        type: "text",
+        text: renderPostSendPollBlock({
+          chain: String(result.chain),
+          txHash: String(result.txHash),
+          ...(result.nextHandle ? { nextHandle: result.nextHandle } : {}),
+        }),
+      });
       return { content };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -438,10 +461,21 @@ async function main() {
         "units, not wei). If either differs, they MUST reject on-device. For all OTHER",
         "txs (non-approve), the end-of-reply Ledger reminder must cover both on-device",
         "modes honestly: CLEAR-SIGN (device shows decoded fields via a plugin — confirm",
-        "function + key field from the bullet summary) AND BLIND-SIGN (device shows only",
-        "a hash we cannot pre-compute — the user's on-screen checks are To = <to address>",
-        "and Value = <human native amount>; reject if either doesn't match). Never claim",
-        "the Ledger hash must equal our payloadHash.",
+        "function + key field from the bullet summary) AND BLIND-SIGN (device shows a",
+        "hash — match it against the LEDGER BLIND-SIGN HASH block `send_transaction`",
+        "emits, and additionally verify To = <to address> and Value = <human native",
+        "amount>; reject if anything doesn't match). Never claim our prepare-time",
+        "payloadHashShort equals the Ledger hash — those are different preimages. The",
+        "send-time block is the authoritative source.",
+        "",
+        "LEDGER BLIND-SIGN HASH (POST-SEND): on every EVM send_transaction, the server",
+        "pins nonce + EIP-1559 fees and emits a content block titled \"LEDGER BLIND-SIGN",
+        "HASH — RELAY VERBATIM TO USER; THEY MATCH ON-DEVICE\". Forward that block",
+        "VERBATIM to the user — do not collapse it into a summary. The Edit-gas warning",
+        "inside it is load-bearing: if the user taps \"Edit gas\" / \"Edit fees\" in Ledger",
+        "Live, the on-device hash will legitimately diverge from the one we predict, and",
+        "the user should reject and re-run send_transaction to pick up fresh fees. This",
+        "block only exists for EVM sends; TRON goes through a different signing flow.",
         "",
         "INDEPENDENT CROSS-CHECK: the server now runs the 4byte.directory decode",
         "automatically for every prepared EVM tx and emits the result as a [CROSS-CHECK",
