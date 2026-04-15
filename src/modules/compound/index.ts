@@ -93,16 +93,24 @@ async function readMarketPosition(
   const metaResults = await client.multicall({ contracts: metaCalls, allowFailure: true });
   const baseSuppliedWei = supplied as bigint;
   const baseBorrowedWei = borrowed as bigint;
-  // If either base balance is nonzero we MUST know the base token's decimals to
-  // format correctly. Previously this silently fell back to 18, which rendered a
-  // 184k USDC (6-decimal) supply as ~0.0000002 USDC — showed up as dust in the
-  // portfolio summary while the direct get_compound_positions call succeeded.
-  // Skip the market rather than emit a wrong-scale amount.
+  // If either base balance is nonzero we MUST know the base token's decimals
+  // to format correctly — a silent fallback to 18 once rendered a 184k USDC
+  // (6-decimal) supply as ~0.0000002 USDC. Previously this path `return null`'d,
+  // which aggregator-side looked like "no position" and did NOT set the
+  // `errored` flag (issue #36: a 184k cUSDCv3 supply vanished from results
+  // with clean coverage). Throw instead, so the Promise.allSettled wrapper in
+  // getCompoundPositions classifies the market as errored and `positions: []`
+  // is never reported as clean coverage when a curated-registry market's
+  // base-token decimals read failed.
   if (
     metaResults[0].status !== "success" &&
     (baseSuppliedWei > 0n || baseBorrowedWei > 0n)
   ) {
-    return null;
+    throw new Error(
+      `Compound V3 ${chain}:${market.name} — base-token decimals read failed ` +
+        `on a curated-registry market with a nonzero base balance; refusing to ` +
+        `emit a wrong-scale amount.`,
+    );
   }
   const baseDecimals =
     metaResults[0].status === "success" ? Number(metaResults[0].result) : 18;

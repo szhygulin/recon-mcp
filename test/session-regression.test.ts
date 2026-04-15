@@ -489,13 +489,15 @@ describe("Bug 8: Compound V3 reader surfaces base balance even when a getAssetIn
     expect(ethMarket!.baseSupplied?.formatted).toBe("184874.39434");
   });
 
-  it("skips a market with a nonzero base balance when the base token's decimals read fails", async () => {
+  it("surfaces a nonzero-base-balance decimals-read failure via the errored flag (issue #36)", async () => {
     // Live-session bug: wallet C0f5...4075 held 184377 USDC in cUSDCv3, but
     // get_portfolio_summary rendered it as ~0.0000002 USDC because the base
     // token's decimals() multicall entry transiently failed and the code fell
     // back to decimals=18. A 6-decimal USDC supply formatted as 18 decimals
-    // looks like dust. Fix: skip the market rather than emit wrong-scale
-    // numbers; the direct get_compound_positions retry will typically succeed.
+    // looks like dust. PR #35 blocked the wrong-scale number but still
+    // `return null`'d — the aggregator then reported clean coverage with the
+    // six-figure supply silently missing. Issue #36: throw instead so the
+    // Promise.allSettled wrapper classifies the market as errored.
     let callIdx = 0;
     const mockClient = {
       multicall: vi.fn(async ({ contracts }: { contracts: unknown[] }) => {
@@ -539,12 +541,18 @@ describe("Bug 8: Compound V3 reader surfaces base balance even when a getAssetIn
     });
 
     const { getCompoundPositions } = await import("../src/modules/compound/index.js");
-    const { positions } = await getCompoundPositions({
+    const result = await getCompoundPositions({
       wallet: "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
       chains: ["ethereum"],
     });
-    const ethMarket = positions.find((p) => p.chain === "ethereum");
+    const ethMarket = result.positions.find((p) => p.chain === "ethereum");
     expect(ethMarket).toBeUndefined();
+    expect(result.errored).toBe(true);
+    expect(result.erroredMarkets).toBeDefined();
+    const ethFailure = result.erroredMarkets!.find(
+      (m) => m.chain === "ethereum" && /decimals read failed/i.test(m.error),
+    );
+    expect(ethFailure).toBeDefined();
   });
 });
 
