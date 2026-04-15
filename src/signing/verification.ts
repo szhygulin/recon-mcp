@@ -3,6 +3,7 @@ import {
   hexToBytes,
   keccak256,
   numberToBytes,
+  serializeTransaction,
   toBytes,
 } from "viem";
 import { CHAIN_IDS } from "../types/index.js";
@@ -41,6 +42,42 @@ export function payloadFingerprint(
       hexToBytes(tx.data),
     ]),
   );
+}
+
+/**
+ * Compute the EIP-1559 pre-sign hash — keccak256 of the unsigned RLP envelope
+ * Ledger's Ethereum app displays in blind-sign mode. Input must be the FULL
+ * tuple Ledger sees after Ledger Live forwards our pinned nonce/fees/gas via
+ * WalletConnect. Any desync (e.g. user taps "Edit gas" in Ledger Live) will
+ * shift this hash — that's the intended failure mode; the user rejects.
+ *
+ * Access list is empty — we never emit 2930 txs, so the serialization is
+ * `0x02 || rlp([chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gas, to,
+ * value, data, []])`. viem's `serializeTransaction({type:"eip1559", ...})`
+ * emits this exact shape when no signature is present.
+ */
+export function eip1559PreSignHash(args: {
+  chainId: number;
+  nonce: number;
+  maxFeePerGas: bigint;
+  maxPriorityFeePerGas: bigint;
+  gas: bigint;
+  to: `0x${string}`;
+  value: bigint;
+  data: `0x${string}`;
+}): `0x${string}` {
+  const serialized = serializeTransaction({
+    type: "eip1559",
+    chainId: args.chainId,
+    nonce: args.nonce,
+    maxFeePerGas: args.maxFeePerGas,
+    maxPriorityFeePerGas: args.maxPriorityFeePerGas,
+    gas: args.gas,
+    to: args.to,
+    value: args.value,
+    data: args.data,
+  });
+  return keccak256(serialized);
 }
 
 export function tronPayloadFingerprint(rawDataHex: string): `0x${string}` {

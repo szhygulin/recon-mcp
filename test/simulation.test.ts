@@ -65,11 +65,11 @@ describe("simulate_transaction tool", () => {
   });
 });
 
-describe("send_transaction re-simulates before signing", () => {
+describe("preview_send runs guards and pins fees; send_transaction consumes the pin", () => {
   beforeEach(() => vi.resetModules());
   afterEach(() => vi.restoreAllMocks());
 
-  it("refuses to forward to Ledger when the tx will revert", async () => {
+  it("preview_send refuses when the tx will revert (guards run at preview time)", async () => {
     const requestSendMock = vi.fn().mockResolvedValue("0xhash");
     vi.doMock("../src/signing/walletconnect.js", () => ({
       requestSendTransaction: requestSendMock,
@@ -100,16 +100,55 @@ describe("send_transaction re-simulates before signing", () => {
       description: "transferFrom test",
     });
 
-    const { sendTransaction } = await import("../src/modules/execution/index.js");
-    await expect(
-      sendTransaction({ handle: stamped.handle!, confirmed: true })
-    ).rejects.toThrow(/Pre-sign simulation failed/);
+    const { previewSend } = await import("../src/modules/execution/index.js");
+    await expect(previewSend({ handle: stamped.handle! })).rejects.toThrow(
+      /Pre-sign simulation failed/,
+    );
     // Critical: the WalletConnect request was never made — no gas burned, no
-    // user approval prompt on Ledger for a guaranteed-to-fail tx.
+    // user approval prompt on Ledger for a guaranteed-to-fail tx. Catching
+    // the revert at preview time also means no Ledger device prompt appears
+    // after the user has already matched a hash.
     expect(requestSendMock).not.toHaveBeenCalled();
   });
 
-  it("forwards to Ledger when the simulation succeeds", async () => {
+  it("send_transaction refuses when preview_send was skipped (no pin on the handle)", async () => {
+    const requestSendMock = vi.fn().mockResolvedValue("0xhash");
+    vi.doMock("../src/signing/walletconnect.js", () => ({
+      requestSendTransaction: requestSendMock,
+      getConnectedAccounts: async () => [
+        "0x8F9dE85C01070D2762d29A6Dd7ffEcC965b34361",
+      ],
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({ call: vi.fn().mockResolvedValue({ data: "0x" }) }),
+      verifyChainId: vi.fn().mockResolvedValue(undefined),
+      resetClients: () => {},
+    }));
+    vi.doMock("../src/signing/pre-sign-check.js", () => ({
+      assertTransactionSafe: vi.fn().mockResolvedValue(undefined),
+    }));
+
+    const { issueHandles } = await import("../src/signing/tx-store.js");
+    const stamped = issueHandles({
+      chain: "ethereum",
+      to: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      data: "0x",
+      value: "1",
+      from: "0x8F9dE85C01070D2762d29A6Dd7ffEcC965b34361",
+      description: "test",
+    });
+
+    const { sendTransaction } = await import("../src/modules/execution/index.js");
+    await expect(
+      sendTransaction({ handle: stamped.handle!, confirmed: true }),
+    ).rejects.toThrow(/Missing pinned gas/);
+    // The protocol split is load-bearing: without preview_send the user never
+    // saw the LEDGER BLIND-SIGN HASH block, so the on-device hash would be
+    // unverifiable. Refusing to proceed is the correct action.
+    expect(requestSendMock).not.toHaveBeenCalled();
+  });
+
+  it("preview_send + send_transaction: pin flows through to WalletConnect", async () => {
     const requestSendMock = vi.fn().mockResolvedValue("0xabc123");
     vi.doMock("../src/signing/walletconnect.js", () => ({
       requestSendTransaction: requestSendMock,
@@ -120,6 +159,11 @@ describe("send_transaction re-simulates before signing", () => {
     vi.doMock("../src/data/rpc.js", () => ({
       getClient: () => ({
         call: vi.fn().mockResolvedValue({ data: "0x" }),
+        // preview_send calls these to pin fees server-side.
+        getTransactionCount: vi.fn().mockResolvedValue(7),
+        getBlock: vi.fn().mockResolvedValue({ baseFeePerGas: 10_000_000_000n }),
+        estimateMaxPriorityFeePerGas: vi.fn().mockResolvedValue(2_000_000_000n),
+        estimateGas: vi.fn().mockResolvedValue(21_000n),
       }),
       verifyChainId: vi.fn().mockResolvedValue(undefined),
       resetClients: () => {},
@@ -138,13 +182,78 @@ describe("send_transaction re-simulates before signing", () => {
       description: "wrap ETH",
     });
 
-    const { sendTransaction } = await import("../src/modules/execution/index.js");
+    const { previewSend, sendTransaction } = await import(
+      "../src/modules/execution/index.js"
+    );
+    const preview = await previewSend({ handle: stamped.handle! });
+    expect(preview.preSignHash).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(preview.pinned).toEqual({
+      nonce: 7,
+      // baseFee * 2 + max(priority, 1.5 gwei) = 20 gwei + 2 gwei = 22 gwei
+      maxFeePerGas: 22_000_000_000n.toString(),
+      maxPriorityFeePerGas: 2_000_000_000n.toString(),
+      gas: 21_000n.toString(),
+    });
+
     const result = await sendTransaction({
       handle: stamped.handle!,
       confirmed: true,
     });
     expect(result.txHash).toBe("0xabc123");
     expect(requestSendMock).toHaveBeenCalledTimes(1);
+    // The pin forwarded to WalletConnect is the exact tuple preview_send
+    // stashed — this equality is what makes the on-device hash deterministic.
+    const pinned = requestSendMock.mock.calls[0][1];
+    expect(pinned).toEqual({
+      nonce: 7,
+      maxFeePerGas: 22_000_000_000n,
+      maxPriorityFeePerGas: 2_000_000_000n,
+      gas: 21_000n,
+    });
+    expect(result.preSignHash).toBe(preview.preSignHash);
+    expect(result.to).toBe("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
+    expect(result.valueWei).toBe("500000000000000000");
+  });
+
+  it("priority-fee floor: bumps to 1.5 gwei when node estimate is lower", async () => {
+    const requestSendMock = vi.fn().mockResolvedValue("0xabc");
+    vi.doMock("../src/signing/walletconnect.js", () => ({
+      requestSendTransaction: requestSendMock,
+      getConnectedAccounts: async () => [
+        "0x8F9dE85C01070D2762d29A6Dd7ffEcC965b34361",
+      ],
+    }));
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({
+        call: vi.fn().mockResolvedValue({ data: "0x" }),
+        getTransactionCount: vi.fn().mockResolvedValue(1),
+        getBlock: vi.fn().mockResolvedValue({ baseFeePerGas: 5_000_000_000n }),
+        // Node reports 20 mwei priority on a quiet block — below the floor.
+        estimateMaxPriorityFeePerGas: vi.fn().mockResolvedValue(20_000_000n),
+        estimateGas: vi.fn().mockResolvedValue(21_000n),
+      }),
+      verifyChainId: vi.fn().mockResolvedValue(undefined),
+      resetClients: () => {},
+    }));
+    vi.doMock("../src/signing/pre-sign-check.js", () => ({
+      assertTransactionSafe: vi.fn().mockResolvedValue(undefined),
+    }));
+
+    const { issueHandles } = await import("../src/signing/tx-store.js");
+    const stamped = issueHandles({
+      chain: "ethereum",
+      to: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      data: "0x",
+      value: "1",
+      from: "0x8F9dE85C01070D2762d29A6Dd7ffEcC965b34361",
+      description: "floor test",
+    });
+
+    const { previewSend } = await import("../src/modules/execution/index.js");
+    const preview = await previewSend({ handle: stamped.handle! });
+    // Floor applied: priority clamped to 1.5 gwei, maxFee = 5*2 + 1.5 = 11.5 gwei.
+    expect(preview.pinned.maxPriorityFeePerGas).toBe("1500000000");
+    expect(preview.pinned.maxFeePerGas).toBe("11500000000");
   });
 });
 

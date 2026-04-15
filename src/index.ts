@@ -56,6 +56,7 @@ import {
   prepareEigenLayerDeposit,
   prepareNativeSend,
   prepareTokenSend,
+  previewSend,
   sendTransaction,
   getTransactionStatus,
   getTxVerification,
@@ -74,6 +75,7 @@ import {
   prepareEigenLayerDepositInput,
   prepareNativeSendInput,
   prepareTokenSendInput,
+  previewSendInput,
   sendTransactionInput,
   getTransactionStatusInput,
   getTxVerificationInput,
@@ -153,7 +155,11 @@ import { requestCapability, requestCapabilityInput } from "./modules/feedback/in
 import { issueHandles } from "./signing/tx-store.js";
 import {
   renderAgentTaskBlock,
+  renderLedgerHashBlock,
+  renderPostBroadcastBlock,
   renderPostSendPollBlock,
+  renderPrepareReceiptBlock,
+  renderPreviewVerifyAgentTaskBlock,
   renderTronVerificationBlock,
   renderVerificationBlock,
   shouldRenderVerificationBlock,
@@ -245,13 +251,36 @@ export async function collectVerificationBlocks(
  * The block lives next to the JSON so machine readers still get the
  * structured data AND the user sees the verification prose verbatim.
  */
-function handler<T, R>(fn: (args: T) => Promise<R> | R) {
+function handler<T, R>(
+  fn: (args: T) => Promise<R> | R,
+  opts?: { toolName?: string },
+) {
   return async (args: T) => {
     try {
       const result = await fn(args);
       const content: { type: "text"; text: string }[] = [
         { type: "text", text: JSON.stringify(result, bigintReplacer, 2) },
       ];
+      // Emit the prepare-receipt for every tool that built a transaction
+      // (result carries `verification`). Gives the user a verbatim-relay view
+      // of the args that hit the server, independent of the agent's bullet
+      // summary — raises the tampering bar against narrow prompt injections
+      // and malicious add-ons that rewrite args without also crafting an
+      // output filter. See render-verification.ts for the full rationale.
+      if (
+        opts?.toolName &&
+        result !== null &&
+        typeof result === "object" &&
+        "verification" in (result as Record<string, unknown>)
+      ) {
+        content.push({
+          type: "text",
+          text: renderPrepareReceiptBlock({
+            tool: opts.toolName,
+            args: (args ?? {}) as Record<string, unknown>,
+          }),
+        });
+      }
       for (const block of await collectVerificationBlocks(result)) {
         content.push({ type: "text", text: block });
       }
@@ -272,23 +301,94 @@ function handler<T, R>(fn: (args: T) => Promise<R> | R) {
  * `send_transaction` can re-hydrate the exact tx from server state. The agent
  * never passes raw calldata to the signing path — it calls send_transaction
  * with a handle, which closes the prompt-injection → arbitrary-calldata window.
+ *
+ * `toolName` is the registered MCP tool name; it's threaded through so the
+ * prepare-receipt block can label which tool was called with which args.
  */
-function txHandler<T>(fn: (args: T) => Promise<UnsignedTx> | UnsignedTx) {
-  return handler(async (args: T) => issueHandles(await fn(args)));
+function txHandler<T>(toolName: string, fn: (args: T) => Promise<UnsignedTx> | UnsignedTx) {
+  return handler(async (args: T) => issueHandles(await fn(args)), { toolName });
 }
 
 /**
- * Handler wrapper for `send_transaction`. Appends a per-call agent task
- * block instructing the agent to poll `get_transaction_status` itself
- * instead of waiting for the user to ask. The session-level instructions
- * tend to drift out of attention after a few hundred tokens, so we put
- * the directive adjacent to the txHash it refers to.
+ * Handler wrapper for `preview_send`. Appends the user-facing LEDGER BLIND-
+ * SIGN HASH block so the agent relays the hash verbatim BEFORE calling
+ * `send_transaction` — which is the whole point of the preview step: the
+ * user must see the hash on their screen before the Ledger device prompt
+ * fires, since a single MCP tool call cannot emit content between pinning
+ * and signing.
+ */
+function previewSendHandler(
+  fn: (args: { handle: string }) => Promise<{
+    handle: string;
+    chain: SupportedChain;
+    to: `0x${string}`;
+    valueWei: string;
+    preSignHash: `0x${string}`;
+    pinned: {
+      nonce: number;
+      maxFeePerGas: string;
+      maxPriorityFeePerGas: string;
+      gas: string;
+    };
+  }>,
+) {
+  return async (args: { handle: string }) => {
+    try {
+      const result = await fn(args);
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, bigintReplacer, 2) },
+          {
+            type: "text" as const,
+            text: renderLedgerHashBlock({
+              preSignHash: result.preSignHash,
+              to: result.to,
+              valueWei: result.valueWei,
+            }),
+          },
+          // Agent-task block: offer the user an independent hash re-computation
+          // against a compromised MCP that lies about the hash. Optional, not
+          // run unprompted. Emitting it here (per-call) keeps the values in-
+          // context for the agent to splice into the local viem command.
+          {
+            type: "text" as const,
+            text: renderPreviewVerifyAgentTaskBlock({
+              chain: result.chain,
+              preSignHash: result.preSignHash,
+              pinned: result.pinned,
+              to: result.to,
+              valueWei: result.valueWei,
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: "text" as const, text: `Error: ${message}` }],
+        isError: true,
+      };
+    }
+  };
+}
+
+/**
+ * Handler wrapper for `send_transaction`. Emits a user-facing post-broadcast
+ * block with the txHash + explorer link (so the agent cannot silently drop
+ * the hash from the chat — a live-test regression that motivated this
+ * block), followed by an agent-task block directing self-polling via
+ * `get_transaction_status`. The session-level instructions tend to drift out
+ * of attention after a few hundred tokens, so we put the directive adjacent
+ * to the txHash it refers to.
  */
 function sendTransactionHandler(
   fn: (args: SendTransactionArgs) => Promise<{
     txHash: `0x${string}` | string;
     chain: SupportedChain | "tron";
     nextHandle?: string;
+    preSignHash?: `0x${string}`;
+    to?: `0x${string}`;
+    valueWei?: string;
   }>,
 ) {
   return async (args: SendTransactionArgs) => {
@@ -296,6 +396,14 @@ function sendTransactionHandler(
       const result = await fn(args);
       const content: { type: "text"; text: string }[] = [
         { type: "text", text: JSON.stringify(result, bigintReplacer, 2) },
+        {
+          type: "text",
+          text: renderPostBroadcastBlock({
+            chain: String(result.chain),
+            txHash: String(result.txHash),
+            ...(result.preSignHash ? { preSignHash: result.preSignHash } : {}),
+          }),
+        },
         {
           type: "text",
           text: renderPostSendPollBlock({
@@ -375,20 +483,27 @@ async function main() {
         "3. Call a `prepare_*` tool to build the unsigned transaction (this returns a handle",
         "   plus a human-readable decoded preview; no calldata is exposed to the agent).",
         "4. Show the decoded preview to the user and get explicit confirmation.",
-        "5. Call `send_transaction` with the handle and `confirmed: true` — Ledger Live will",
-        "   prompt the user to review and physically sign on the device.",
-        "6. After `send_transaction` returns a txHash, poll `get_transaction_status`",
-        "   YOURSELF every ~5s until status is `success` or `failed` (budget ~2min).",
-        "   Do NOT stop and wait for the user to type \"next\" — the per-call AGENT",
-        "   TASK block emitted alongside the txHash prescribes the exact cadence.",
+        "5. FOR EVM HANDLES ONLY: call `preview_send(handle)` BEFORE `send_transaction`. It pins",
+        "   nonce + EIP-1559 fees server-side and returns a LEDGER BLIND-SIGN HASH content block.",
+        "   Relay that block VERBATIM to the user so the hash is on-screen when the Ledger device",
+        "   prompt later appears. Skip this step for TRON handles — they use USB-HID signing with",
+        "   native clear-sign screens, no WalletConnect hash.",
+        "6. Call `send_transaction` with the handle and `confirmed: true` — Ledger Live will",
+        "   prompt the user to review and physically sign on the device. For EVM handles this",
+        "   reads the pin from step 5; if you skipped preview_send it throws \"Missing pinned gas\".",
+        "7. After `send_transaction` returns a txHash, relay the TRANSACTION BROADCAST block",
+        "   VERBATIM to the user (it carries the hash + explorer link — do NOT drop it), THEN",
+        "   poll `get_transaction_status` YOURSELF every ~5s until status is `success` or",
+        "   `failed` (budget ~2min). Do NOT stop and wait for the user to type \"next\" — the",
+        "   per-call AGENT TASK block emitted alongside the txHash prescribes the exact cadence.",
         "",
         "TWO-STEP ALLOWANCE FLOWS: when a `prepare_*` tool returns an approval tx alongside",
-        "the main tx (supply, repay, swap, etc.), submit the approval via `send_transaction`",
-        "FIRST. The post-send auto-poll (step 6) is how you wait for the approval to be",
-        "included — do not ask the user to confirm inclusion. Only AFTER status flips to",
-        "`success`, simulate or send the main tx. Simulating against pre-approval state",
-        "fails with \"insufficient allowance\" / ERC20 reverts and looks like a builder bug",
-        "— it is not, the allowance just isn't on-chain yet.",
+        "the main tx (supply, repay, swap, etc.), submit the approval FIRST via preview_send",
+        "→ send_transaction. The post-send auto-poll (step 7) is how you wait for the approval",
+        "to be included — do not ask the user to confirm inclusion. Only AFTER status flips to",
+        "`success`, call preview_send on the nextHandle and then send the main tx. Simulating",
+        "or previewing against pre-approval state fails with \"insufficient allowance\" / ERC20",
+        "reverts and looks like a builder bug — it is not, the allowance just isn't on-chain yet.",
         "",
         "READ-ONLY TOOLS need no pairing and can be called freely: get_lending_positions,",
         "get_lp_positions, get_compound_positions, get_morpho_positions, get_staking_positions,",
@@ -438,10 +553,35 @@ async function main() {
         "units, not wei). If either differs, they MUST reject on-device. For all OTHER",
         "txs (non-approve), the end-of-reply Ledger reminder must cover both on-device",
         "modes honestly: CLEAR-SIGN (device shows decoded fields via a plugin — confirm",
-        "function + key field from the bullet summary) AND BLIND-SIGN (device shows only",
-        "a hash we cannot pre-compute — the user's on-screen checks are To = <to address>",
-        "and Value = <human native amount>; reject if either doesn't match). Never claim",
-        "the Ledger hash must equal our payloadHash.",
+        "function + key field from the bullet summary) AND BLIND-SIGN (device shows a",
+        "hash — match it against the LEDGER BLIND-SIGN HASH block `send_transaction`",
+        "emits, and additionally verify To = <to address> and Value = <human native",
+        "amount>; reject if anything doesn't match). Never claim our prepare-time",
+        "payloadHashShort equals the Ledger hash — those are different preimages. The",
+        "send-time block is the authoritative source.",
+        "",
+        "LEDGER BLIND-SIGN HASH (PRE-SIGN, via preview_send): a single MCP tool call cannot",
+        "emit content WHILE the Ledger device prompt is open, so the hash must be surfaced in",
+        "a separate step. For every EVM send, call `preview_send(handle)` BEFORE calling",
+        "`send_transaction`. preview_send pins nonce + EIP-1559 fees server-side, stashes them",
+        "on the handle, computes the EIP-1559 pre-sign RLP hash, and returns a \"LEDGER BLIND-",
+        "SIGN HASH — RELAY VERBATIM TO USER; THEY MATCH ON-DEVICE\" content block. Forward",
+        "that block VERBATIM — do not collapse it into a summary. Only after the user has",
+        "seen the hash should you call send_transaction (which then reads the pin and forwards",
+        "it via WalletConnect). The Edit-gas paragraph in the block is load-bearing: if the",
+        "user taps \"Edit gas\" / \"Edit fees\" in Ledger Live, the on-device hash will",
+        "legitimately diverge. The block lets the user decide — they may accept the divergence",
+        "(at which point the server's hash-match guarantee no longer applies and they are",
+        "signing without the calldata-integrity check), or reject and call preview_send again",
+        "for a fresh pin. Do NOT rewrite that paragraph as a flat \"you must reject\" — the",
+        "user's choice is part of the contract. If send_transaction throws \"Missing pinned",
+        "gas\", you skipped preview_send — call it and retry. This step is EVM-only; TRON uses",
+        "USB-HID clear-signing with no hash block.",
+        "",
+        "POST-BROADCAST (after send_transaction): the server emits a \"TRANSACTION BROADCAST —",
+        "RELAY VERBATIM TO USER\" block carrying the txHash + block-explorer link. Forward it",
+        "VERBATIM — a live-test regression showed the agent sometimes dropped the hash from",
+        "the chat, forcing the user to dig through Ledger Live. Never summarize away the hash.",
         "",
         "INDEPENDENT CROSS-CHECK: the server now runs the 4byte.directory decode",
         "automatically for every prepared EVM tx and emits the result as a [CROSS-CHECK",
@@ -602,7 +742,7 @@ async function main() {
         "Prepare an unsigned swap or bridge transaction via LiFi aggregator. Same-chain swaps use the best DEX route; cross-chain swaps use a bridge + DEX combo. Default is exact-in (`amount` = fromToken); set `amountSide: \"to\"` for exact-out (`amount` = target toToken output, e.g. \"I want 100 USDC out\"). The returned tx can be sent via `send_transaction`.",
       inputSchema: prepareSwapInput.shape,
     },
-    txHandler(prepareSwap)
+    txHandler("prepare_swap", prepareSwap)
   );
 
   // ---- Module 6: Execution (Ledger Live) ----
@@ -652,7 +792,7 @@ async function main() {
         "Build an unsigned Aave V3 supply transaction. If an ERC-20 approve() is required first, it is returned as the outer tx and the supply tx is embedded in `.next`. Both must be signed for the supply to succeed.",
       inputSchema: prepareAaveSupplyInput.shape,
     },
-    txHandler(prepareAaveSupply)
+    txHandler("prepare_aave_supply", prepareAaveSupply)
   );
 
   server.registerTool(
@@ -662,7 +802,7 @@ async function main() {
         "Build an unsigned Aave V3 withdraw transaction. Pass `amount: \"max\"` to withdraw the entire aToken balance.",
       inputSchema: prepareAaveWithdrawInput.shape,
     },
-    txHandler(prepareAaveWithdraw)
+    txHandler("prepare_aave_withdraw", prepareAaveWithdraw)
   );
 
   server.registerTool(
@@ -672,7 +812,7 @@ async function main() {
         "Build an unsigned Aave V3 borrow transaction (variable rate — stable rate is deprecated and reverts on production markets). The borrower must already have sufficient collateral supplied.",
       inputSchema: prepareAaveBorrowInput.shape,
     },
-    txHandler(prepareAaveBorrow)
+    txHandler("prepare_aave_borrow", prepareAaveBorrow)
   );
 
   server.registerTool(
@@ -682,7 +822,7 @@ async function main() {
         "Build an unsigned Aave V3 repay transaction. If an ERC-20 approve() is required first, it is returned as the outer tx and repay is in `.next`. Pass `amount: \"max\"` to repay the full debt.",
       inputSchema: prepareAaveRepayInput.shape,
     },
-    txHandler(prepareAaveRepay)
+    txHandler("prepare_aave_repay", prepareAaveRepay)
   );
 
   server.registerTool(
@@ -692,7 +832,7 @@ async function main() {
         "Build an unsigned Lido stake transaction (wraps ETH into stETH via stETH.submit). The tx's value field is the ETH amount to stake.",
       inputSchema: prepareLidoStakeInput.shape,
     },
-    txHandler(prepareLidoStake)
+    txHandler("prepare_lido_stake", prepareLidoStake)
   );
 
   server.registerTool(
@@ -702,7 +842,7 @@ async function main() {
         "Build an unsigned Lido withdrawal request transaction. Wraps `requestWithdrawals` on the Lido Withdrawal Queue and includes an approve step if needed.",
       inputSchema: prepareLidoUnstakeInput.shape,
     },
-    txHandler(prepareLidoUnstake)
+    txHandler("prepare_lido_unstake", prepareLidoUnstake)
   );
 
   server.registerTool(
@@ -712,7 +852,26 @@ async function main() {
         "Build an unsigned EigenLayer StrategyManager.depositIntoStrategy transaction. Includes an ERC-20 approve step if needed.",
       inputSchema: prepareEigenLayerDepositInput.shape,
     },
-    txHandler(prepareEigenLayerDeposit)
+    txHandler("prepare_eigenlayer_deposit", prepareEigenLayerDeposit)
+  );
+
+  server.registerTool(
+    "preview_send",
+    {
+      description:
+        "EVM-only: finalize an already-prepared transaction for signing by pinning the nonce, " +
+        "EIP-1559 fees (maxFeePerGas, maxPriorityFeePerGas), and gas limit server-side, then computing " +
+        "the EIP-1559 pre-sign RLP hash Ledger will display in blind-sign mode. Returns a LEDGER " +
+        "BLIND-SIGN HASH content block the user reads BEFORE you call send_transaction — the Ledger " +
+        "device prompt blocks the MCP tool call, so the hash must be surfaced now, not after. The " +
+        "pinned tuple is stashed against the handle and forwarded verbatim on send_transaction so the " +
+        "on-device hash is deterministic. If gas conditions drift while the user reviews, call " +
+        "preview_send again on the same handle to refresh the pin (overwrites the prior one). " +
+        "send_transaction will throw a clear error if called without a prior preview_send. Not " +
+        "applicable to TRON handles (USB HID signing flow, no WalletConnect).",
+      inputSchema: previewSendInput.shape,
+    },
+    previewSendHandler(previewSend),
   );
 
   server.registerTool(
@@ -720,8 +879,9 @@ async function main() {
     {
       description:
         "Forward an already-prepared transaction to the Ledger device for user signing. Routes on the handle's origin: EVM handles (prepare_aave_*, prepare_compound_*, prepare_swap, prepare_native_send, ...) go through Ledger Live via WalletConnect; TRON handles (prepare_tron_*) go through the directly-connected Ledger over USB HID and are broadcast via TronGrid. In both cases the user must review and physically approve the tx on the Ledger screen; this call blocks until the user signs or rejects. " +
-        "You MUST pass `confirmed: true` — the agent is affirming that the user has seen and acknowledged the decoded preview. " +
-        "For TRON handles, `pair_ledger_tron` must have been called at least once per session (so the TRON app has been opened on the device) and the Ledger must still be plugged in with the TRON app open at send time.",
+        "EVM handles REQUIRE a prior preview_send(handle) call in the same session — send_transaction reads the pinned nonce + fees + gas stashed on the handle and will throw a clear error if the pin is missing. The split exists so the LEDGER BLIND-SIGN HASH is surfaced to the user BEFORE the blocking device prompt. " +
+        "You MUST pass `confirmed: true` — the agent is affirming that the user has seen and acknowledged the decoded preview AND the LEDGER BLIND-SIGN HASH emitted by preview_send. " +
+        "For TRON handles, `pair_ledger_tron` must have been called at least once per session (so the TRON app has been opened on the device) and the Ledger must still be plugged in with the TRON app open at send time; preview_send is skipped (TRON has its own clear-sign UX on-device).",
       inputSchema: sendTransactionInput.shape,
     },
     sendTransactionHandler(sendTransaction)
@@ -845,7 +1005,7 @@ async function main() {
         "Build an unsigned TRON native TRX send transaction via TronGrid's /wallet/createtransaction. Returns a human-readable preview + opaque handle. Forward the handle via `send_transaction` to sign on the directly-connected Ledger (USB HID via @ledgerhq/hw-app-trx) and broadcast to TronGrid. Run `pair_ledger_tron` once per session first so the TRON app is open and the device address is verified.",
       inputSchema: prepareTronNativeSendInput.shape,
     },
-    handler(buildTronNativeSend)
+    handler(buildTronNativeSend, { toolName: "prepare_tron_native_send" })
   );
 
   server.registerTool(
@@ -855,7 +1015,7 @@ async function main() {
         "Build an unsigned TRC-20 transfer transaction (canonical set only: USDT, USDC, USDD, TUSD) via TronGrid's /wallet/triggersmartcontract. Decimals are resolved from the canonical table — unknown TRC-20s are rejected with an explicit error. Default fee_limit is 100 TRX (TronLink/Ledger Live default); override with `feeLimitTrx` if energy pricing has moved. Returns a preview + opaque handle. Forward via `send_transaction` for USB-HID signing on the paired Ledger. USDT renders natively on the TRON app; other TRC-20s may display raw hex on-device (the contract address and amount are still shown, so the user can verify against the preview).",
       inputSchema: prepareTronTokenSendInput.shape,
     },
-    handler(buildTronTokenSend)
+    handler(buildTronTokenSend, { toolName: "prepare_tron_token_send" })
   );
 
   server.registerTool(
@@ -865,7 +1025,7 @@ async function main() {
         "Build an unsigned TRON WithdrawBalance transaction that claims accumulated voting rewards to the owner's balance. TRON enforces a 24-hour cooldown between claims — TronGrid will reject (surfaced as an error) if the previous claim was inside the window. Pair with `get_tron_staking` first to read `claimableRewards` and avoid empty-claim tx builds. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronClaimRewardsInput.shape,
     },
-    handler(buildTronClaimRewards)
+    handler(buildTronClaimRewards, { toolName: "prepare_tron_claim_rewards" })
   );
 
   server.registerTool(
@@ -875,7 +1035,7 @@ async function main() {
         "Build an unsigned TRON Stake 2.0 FreezeBalanceV2 transaction. Locks TRX to earn `bandwidth` (fuels plain transfers) or `energy` (fuels smart-contract calls) and gains proportional voting power. IMPORTANT: freezing alone does NOT accrue TRX rewards — `claimableRewards` (see `get_tron_staking`) only grows after the user also votes for a Super Representative. Pair this tool with `list_tron_witnesses` + `prepare_tron_vote` for the full reward-earning flow. Unlocking requires a 14-day cooldown via `prepare_tron_unfreeze` + `prepare_tron_withdraw_expire_unfreeze`. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronFreezeInput.shape,
     },
-    handler(buildTronFreeze)
+    handler(buildTronFreeze, { toolName: "prepare_tron_freeze" })
   );
 
   server.registerTool(
@@ -885,7 +1045,7 @@ async function main() {
         "Build an unsigned TRON Stake 2.0 UnfreezeBalanceV2 transaction — begins the 14-day cooldown on a previously-frozen slice. The `amount` must not exceed what's currently frozen for that resource (query `get_tron_staking` first; TronGrid rejects otherwise with 'less than frozen balance'). After 14 days the slice shows up in `pendingUnfreezes` with an elapsed `unlockAt`; call `prepare_tron_withdraw_expire_unfreeze` to sweep it back to liquid TRX. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronUnfreezeInput.shape,
     },
-    handler(buildTronUnfreeze)
+    handler(buildTronUnfreeze, { toolName: "prepare_tron_unfreeze" })
   );
 
   server.registerTool(
@@ -895,7 +1055,7 @@ async function main() {
         "Build an unsigned TRON WithdrawExpireUnfreeze transaction — sweeps every matured unfreeze slice (those whose 14-day cooldown elapsed) back to liquid TRX. No amount needed; the chain drains all eligible slices in one call. Inspect `pendingUnfreezes` from `get_tron_staking` first — if every entry's `unlockAt` is still in the future, TronGrid returns 'no expire unfreeze' and this tool errors. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronWithdrawExpireUnfreezeInput.shape,
     },
-    handler(buildTronWithdrawExpireUnfreeze)
+    handler(buildTronWithdrawExpireUnfreeze, { toolName: "prepare_tron_withdraw_expire_unfreeze" })
   );
 
   server.registerTool(
@@ -917,7 +1077,7 @@ async function main() {
         "Build an unsigned TRON VoteWitnessContract transaction — casts votes for Super Representatives to earn voting rewards on frozen TRX. IMPORTANT: VoteWitness REPLACES the wallet's entire prior vote allocation atomically. Pass every SR you intend to back (not just a delta); an empty `votes` array clears all votes. Sum of `count` values must not exceed the wallet's available TRON Power — check `list_tron_witnesses(address)` → `availableVotes` first. `count` is an integer (1 vote = 1 TRX of TRON Power). Rewards accrue per block and are harvested via `prepare_tron_claim_rewards` (24h cooldown). Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronVoteInput.shape,
     },
-    handler(buildTronVote)
+    handler(buildTronVote, { toolName: "prepare_tron_vote" })
   );
 
   server.registerTool(
@@ -927,7 +1087,7 @@ async function main() {
         "Build an unsigned native-coin send transaction (ETH on Ethereum/Arbitrum). Pass a human-readable amount like \"0.5\".",
       inputSchema: prepareNativeSendInput.shape,
     },
-    txHandler(prepareNativeSend)
+    txHandler("prepare_native_send", prepareNativeSend)
   );
 
   server.registerTool(
@@ -937,7 +1097,7 @@ async function main() {
         "Build an unsigned ERC-20 transfer transaction. Pass `amount: \"max\"` to send the full balance (resolved at build time).",
       inputSchema: prepareTokenSendInput.shape,
     },
-    txHandler(prepareTokenSend)
+    txHandler("prepare_token_send", prepareTokenSend)
   );
 
   // ---- Module 8: Compound V3 ----
@@ -958,7 +1118,7 @@ async function main() {
         "Build an unsigned Compound V3 supply transaction (base token or collateral). If an ERC-20 approve() is required first, it is returned as the outer tx with supply in `.next`.",
       inputSchema: prepareCompoundSupplyInput.shape,
     },
-    txHandler(buildCompoundSupply)
+    txHandler("prepare_compound_supply", buildCompoundSupply)
   );
 
   server.registerTool(
@@ -968,7 +1128,7 @@ async function main() {
         "Build an unsigned Compound V3 withdraw transaction. Pass `amount: \"max\"` to withdraw the full supplied balance.",
       inputSchema: prepareCompoundWithdrawInput.shape,
     },
-    txHandler(buildCompoundWithdraw)
+    txHandler("prepare_compound_withdraw", buildCompoundWithdraw)
   );
 
   server.registerTool(
@@ -978,7 +1138,7 @@ async function main() {
         "Build an unsigned Compound V3 borrow transaction. Compound V3 encodes a borrow as `withdraw(baseToken)` drawn beyond the wallet's supplied balance — the base token is resolved on-chain from the Comet market so you only pass the market address and amount. Requires the wallet to have already supplied enough collateral in that market; `get_compound_positions` shows the current collateral mix. Returns a handle + human-readable preview for the user to sign on Ledger; no approval step is needed (borrowing doesn't pull tokens from the wallet).",
       inputSchema: prepareCompoundBorrowInput.shape,
     },
-    txHandler(buildCompoundBorrow)
+    txHandler("prepare_compound_borrow", buildCompoundBorrow)
   );
 
   server.registerTool(
@@ -988,7 +1148,7 @@ async function main() {
         "Build an unsigned Compound V3 repay transaction — encoded as supply(baseToken) against an outstanding borrow. Includes an approve step if needed. Pass `amount: \"max\"` for a full repay.",
       inputSchema: prepareCompoundRepayInput.shape,
     },
-    txHandler(buildCompoundRepay)
+    txHandler("prepare_compound_repay", buildCompoundRepay)
   );
 
   // ---- Module 9: Morpho Blue ----
@@ -1009,7 +1169,7 @@ async function main() {
         "Build an unsigned Morpho Blue supply transaction — deposits the market's loan token to earn lending yield. Market params (loan/collateral tokens, oracle, IRM, LLTV) are resolved on-chain from the market id, so only wallet/marketId/amount are required. If the wallet's current allowance is insufficient, an ERC-20 approve tx is emitted first (chainable via `.next`); control the cap with `approvalCap` (defaults to unlimited for UX, pass 'exact' or a decimal ceiling to scope it). Returns a handle + preview for Ledger signing.",
       inputSchema: prepareMorphoSupplyInput.shape,
     },
-    txHandler(buildMorphoSupply)
+    txHandler("prepare_morpho_supply", buildMorphoSupply)
   );
 
   server.registerTool(
@@ -1019,7 +1179,7 @@ async function main() {
         "Build an unsigned Morpho Blue withdraw transaction (withdraws supplied loan token). Explicit amount only — \"max\" is not supported; query your position first.",
       inputSchema: prepareMorphoWithdrawInput.shape,
     },
-    txHandler(buildMorphoWithdraw)
+    txHandler("prepare_morpho_withdraw", buildMorphoWithdraw)
   );
 
   server.registerTool(
@@ -1029,7 +1189,7 @@ async function main() {
         "Build an unsigned Morpho Blue borrow transaction. Requires pre-existing collateral in the market.",
       inputSchema: prepareMorphoBorrowInput.shape,
     },
-    txHandler(buildMorphoBorrow)
+    txHandler("prepare_morpho_borrow", buildMorphoBorrow)
   );
 
   server.registerTool(
@@ -1039,7 +1199,7 @@ async function main() {
         "Build an unsigned Morpho Blue repay transaction. Includes an approve step if needed. Explicit amount only — \"max\" is not supported.",
       inputSchema: prepareMorphoRepayInput.shape,
     },
-    txHandler(buildMorphoRepay)
+    txHandler("prepare_morpho_repay", buildMorphoRepay)
   );
 
   server.registerTool(
@@ -1049,7 +1209,7 @@ async function main() {
         "Build an unsigned Morpho Blue supplyCollateral transaction — adds collateral to a market. Includes an approve step if needed.",
       inputSchema: prepareMorphoSupplyCollateralInput.shape,
     },
-    txHandler(buildMorphoSupplyCollateral)
+    txHandler("prepare_morpho_supply_collateral", buildMorphoSupplyCollateral)
   );
 
   server.registerTool(
@@ -1059,7 +1219,7 @@ async function main() {
         "Build an unsigned Morpho Blue withdrawCollateral transaction — removes collateral from a market to send back to the wallet. Only withdraws the exact amount specified; `\"max\"` is NOT supported because Morpho's isolated-market accounting doesn't expose a clean max-safe value without simulating against the market's oracle/LLTV (query `get_morpho_positions` first to know your deposited collateral). Will revert on-chain if the withdrawal would push the position below the liquidation threshold. No approval step needed. Returns a handle + preview for Ledger signing.",
       inputSchema: prepareMorphoWithdrawCollateralInput.shape,
     },
-    txHandler(buildMorphoWithdrawCollateral)
+    txHandler("prepare_morpho_withdraw_collateral", buildMorphoWithdrawCollateral)
   );
 
   // ---- Module 10: Capability requests (agent → maintainers) ----

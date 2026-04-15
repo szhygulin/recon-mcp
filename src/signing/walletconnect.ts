@@ -239,8 +239,27 @@ export async function getConnectedAccountsDetailed(): Promise<
   });
 }
 
+/**
+ * Nonce + EIP-1559 fee fields pinned server-side at send time. Including all
+ * four in the WalletConnect `eth_sendTransaction` params is what makes the
+ * pre-sign RLP hash on Ledger's blind-sign screen predictable — Ledger Live
+ * is supposed to honor dApp-supplied values (WalletConnect spec), but if the
+ * user taps "Edit gas / fees" in Ledger Live, the hash will diverge and the
+ * user should reject on-device. See `eip1559PreSignHash` in
+ * src/signing/verification.ts.
+ */
+export interface PinnedGasFields {
+  nonce: number;
+  maxFeePerGas: bigint;
+  maxPriorityFeePerGas: bigint;
+  gas: bigint;
+}
+
 /** Send an `eth_sendTransaction` request. Ledger Live shows it, user signs on device, we get tx hash back. */
-export async function requestSendTransaction(tx: UnsignedTx): Promise<`0x${string}`> {
+export async function requestSendTransaction(
+  tx: UnsignedTx,
+  pinned?: PinnedGasFields,
+): Promise<`0x${string}`> {
   const c = await getSignClient();
   if (!currentSession) {
     throw new Error(
@@ -251,20 +270,31 @@ export async function requestSendTransaction(tx: UnsignedTx): Promise<`0x${strin
   const from = tx.from ?? (await getConnectedAccounts())[0];
   if (!from) throw new Error("Cannot determine sender address from WalletConnect session.");
 
+  // When `pinned` is present, forward all four fields so Ledger's pre-sign RLP
+  // hash is deterministic. Fall back to the historical behavior (forward only
+  // the optional gas hint) for callers that haven't been updated — today that's
+  // only test code; the production `sendTransaction` path always pins.
+  const txParams: Record<string, string> = {
+    from,
+    to: tx.to,
+    data: tx.data,
+    value: tx.value === "0" ? "0x0" : `0x${BigInt(tx.value).toString(16)}`,
+  };
+  if (pinned) {
+    txParams.nonce = `0x${pinned.nonce.toString(16)}`;
+    txParams.maxFeePerGas = `0x${pinned.maxFeePerGas.toString(16)}`;
+    txParams.maxPriorityFeePerGas = `0x${pinned.maxPriorityFeePerGas.toString(16)}`;
+    txParams.gas = `0x${pinned.gas.toString(16)}`;
+  } else if (tx.gasEstimate) {
+    txParams.gas = `0x${BigInt(tx.gasEstimate).toString(16)}`;
+  }
+
   const request = {
     topic: currentSession.topic,
     chainId: `eip155:${chainId}`,
     request: {
       method: "eth_sendTransaction",
-      params: [
-        {
-          from,
-          to: tx.to,
-          data: tx.data,
-          value: tx.value === "0" ? "0x0" : `0x${BigInt(tx.value).toString(16)}`,
-          ...(tx.gasEstimate ? { gas: `0x${BigInt(tx.gasEstimate).toString(16)}` } : {}),
-        },
-      ],
+      params: [txParams],
     },
   };
 

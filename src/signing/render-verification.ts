@@ -195,24 +195,250 @@ export function renderAgentTaskBlock(
     `           user named, but still a different code path. If the user`,
     `           picks (c), state the limitation before doing the fetch so`,
     `           they can redirect to (b) if they prefer.`,
-    `  4. End your reply with the Ledger-screen reminder. DO NOT tell the`,
-    `     user "the hash on Ledger must be <shortHash>" — our payloadHash is`,
-    `     over {chain, to, value, data} only, but Ledger's blind-sign hash`,
-    `     is over the full RLP including nonce + fee fields that Ledger Live`,
-    `     chooses at send time. Those hashes will not match, and claiming`,
-    `     they will train the user to rubber-stamp a real mismatch. Instead,`,
-    `     cover both on-device modes honestly in one sentence:`,
+    `  4. After the user confirms, call preview_send(handle) BEFORE calling`,
+    `     send_transaction. preview_send pins nonce + EIP-1559 fees server-`,
+    `     side, computes the EIP-1559 pre-sign RLP hash Ledger will display`,
+    `     in blind-sign mode, and returns a content block titled "LEDGER`,
+    `     BLIND-SIGN HASH — RELAY VERBATIM TO USER; THEY MATCH ON-DEVICE".`,
+    `     Forward that block verbatim — the user reads it BEFORE calling`,
+    `     send_transaction, so the hash is on-screen when the Ledger device`,
+    `     prompt appears. Only then call send_transaction, which forwards`,
+    `     the pinned tuple through WalletConnect so the on-device hash is`,
+    `     deterministic. If send_transaction returns "Missing pinned gas",`,
+    `     you forgot preview_send — call it now.`,
+    `  5. End your prepare-turn reply with the Ledger-screen reminder. DO`,
+    `     NOT equate our prepare-time payloadHashShort with Ledger's on-`,
+    `     device hash — those are different preimages and claiming they`,
+    `     match would train the user to rubber-stamp a real mismatch. The`,
+    `     blind-sign hash the user will match comes from preview_send (step`,
+    `     4 above), not from this prepare turn. Reminder template:`,
     `       "On the Ledger screen: if the device clear-signs with decoded`,
     `        fields (Aave / Lido / 1inch / LiFi / approve plugin), confirm`,
     `        <function> + <key field, e.g. 'Min out 0.04 ETH' for a swap or`,
     `        'Spender + Cap' for an approve>. If the device blind-signs`,
-    `        (shows only a hash), the hash is not pre-computable here — the`,
-    `        checks you CAN do on-screen are: To = <to address> and Value =`,
-    `        <human native amount>. Reject on-device if either doesn't match."`,
+    `        (shows only a hash), match the hash you will see in the`,
+    `        LEDGER BLIND-SIGN HASH block printed by preview_send, and`,
+    `        additionally verify  To = <to address>  and  Value = <human native amount>.`,
+    `        Reject on-device if anything doesn't match."`,
     `     Fill in <to address> and <human native amount> from the bullet`,
     `     summary above so the user has exact values to eyeball.`,
   ];
   return lines.join("\n");
+}
+
+/**
+ * User-facing block emitted on every successful EVM `preview_send`. Surfaces
+ * the EIP-1559 pre-sign RLP hash we predict Ledger will display in blind-sign
+ * mode, given the nonce/fee/gas fields the server pinned and will forward via
+ * WalletConnect on the subsequent `send_transaction`. This closes the
+ * calldata-integrity gap at the device boundary — in the old world the
+ * on-device hash was unpredictable (Ledger Live picked nonce + fees) so the
+ * user could only eyeball To + Value.
+ *
+ * Emitted at PREVIEW time (before send_transaction) so the user sees the hash
+ * BEFORE the Ledger device prompt appears. Single MCP tool calls cannot
+ * interleave content with the blocking device prompt, so the preview → send
+ * split is the only way to guarantee ordering.
+ *
+ * Marked for VERBATIM relay to the user — the orchestrator agent must NOT
+ * collapse this into its bullet summary. The "Edit gas / Edit fees" warning
+ * is load-bearing: if the user taps that in Ledger Live, the hash diverges
+ * and they should reject on-device and re-run preview_send + send_transaction.
+ */
+export function renderLedgerHashBlock(args: {
+  preSignHash: string;
+  to: string;
+  valueWei: string;
+}): string {
+  return [
+    "LEDGER BLIND-SIGN HASH — RELAY VERBATIM TO USER; THEY MATCH ON-DEVICE",
+    `  Hash: ${args.preSignHash}`,
+    "",
+    "Read this hash NOW, before you call send_transaction. When Ledger prompts",
+    "on-device you will have seconds to compare — having the value on screen",
+    "already saves a lot of squinting.",
+    "",
+    "If your Ledger device BLIND-SIGNS (shows only a hash), the hash on-device",
+    "MUST equal the value above. Reject on the device if they differ.",
+    "",
+    "If your Ledger CLEAR-SIGNS (decoded fields via an Aave/Lido/1inch/LiFi/",
+    "approve plugin), hash matching does not apply — confirm the decoded",
+    "function + key field instead (as described in the prepare step).",
+    "",
+    `On-device you can always additionally verify:  To = ${args.to}   Value = ${args.valueWei} wei`,
+    "",
+    "If you tap \"Edit gas\" / \"Edit fees\" in Ledger Live, the hash WILL NOT",
+    "match the value above (you changed a field that feeds the hash). You may",
+    "still approve on-device if you accept that tradeoff — but the server's",
+    "hash-match guarantee no longer applies, so you are signing without the",
+    "end-to-end calldata-integrity check. If you want that check back, reject",
+    "on-device and call preview_send again for a fresh pin + hash, then send.",
+  ].join("\n");
+}
+
+/**
+ * User-facing block listing the EXACT args the agent supplied to a
+ * `prepare_*` tool. Raised against the "narrow prompt-injection / malicious
+ * skill / compromised subagent" threat model: the agent freely composes the
+ * bullet summary, so a narrowly-compromised agent can *display* benign args
+ * ("Send 0.1 ETH to Alice") while having *called* MCP with malicious ones
+ * ("to = 0xEvil"). Forcing these receipts through a labeled verbatim-relay
+ * block makes invisible tampering harder — the attacker must also craft
+ * instructions that strip/mutate this specific block, not just rewrite args.
+ *
+ * Caveats, stated honestly:
+ *   - A fully-coordinated compromised agent can drop this block; the whole
+ *     user view goes through it. This is defense-in-depth against common
+ *     attacks (prompt injection, add-on misbehavior), NOT a hard second
+ *     trust boundary like the Ledger device display.
+ *   - The values here match what MCP received, not what MCP forwards to
+ *     the device — MCP-side tampering is caught by the LEDGER BLIND-SIGN
+ *     HASH block at preview time, not here.
+ *
+ * Values are rendered as `key: value`; objects/arrays fall back to JSON so
+ * nested structures (e.g. Tron vote tuples) stay inspectable without hand-
+ * rolled formatting per shape.
+ */
+export function renderPrepareReceiptBlock(args: {
+  tool: string;
+  args: Record<string, unknown>;
+}): string {
+  const lines = [
+    "PREPARE RECEIPT — RELAY VERBATIM TO USER",
+    `  Tool: ${args.tool}`,
+    "  Args (as the agent supplied them to the MCP server — not the agent's retelling):",
+  ];
+  const entries = Object.entries(args.args);
+  if (entries.length === 0) {
+    lines.push("    (none)");
+  } else {
+    for (const [k, v] of entries) {
+      const rendered =
+        v === undefined || v === null
+          ? String(v)
+          : typeof v === "string" || typeof v === "number" || typeof v === "boolean" || typeof v === "bigint"
+            ? String(v)
+            : JSON.stringify(v);
+      lines.push(`    ${k}: ${rendered}`);
+    }
+  }
+  lines.push("");
+  lines.push("If these args don't match what you asked for, STOP — something between you");
+  lines.push("and the MCP server (prompt injection, malicious skill, compromised sub-");
+  lines.push("agent) rewrote the request. The bullet summary is the agent's retelling;");
+  lines.push("these values are what actually hit the server.");
+  return lines.join("\n");
+}
+
+/**
+ * Agent-task block attached to every `preview_send` response. Instructs the
+ * agent to OFFER an optional independent hash re-computation to the user —
+ * the defense against a compromised MCP that would return a hash over bytes
+ * different from the ones it actually forwards via WalletConnect.
+ *
+ * Why the offer-not-run design: the check requires local code execution
+ * (viem's `serializeTransaction` + keccak256). It's heavy for every send,
+ * and unnecessary if the user trusts their MCP install. We expose it so the
+ * option exists, without making every send slower.
+ *
+ * This is an agent-task block (not user-facing), so the agent processes the
+ * instructions and presents a natural-language prompt to the user.
+ */
+export function renderPreviewVerifyAgentTaskBlock(args: {
+  chain: string;
+  preSignHash: string;
+  pinned: {
+    nonce: number;
+    maxFeePerGas: string;
+    maxPriorityFeePerGas: string;
+    gas: string;
+  };
+  to: string;
+  valueWei: string;
+}): string {
+  const lines = [
+    "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
+    "Optional defense-in-depth: independent hash re-computation to verify",
+    "the server's preSignHash is actually over the bytes it will forward to",
+    "WalletConnect (caught: a compromised MCP returning hash(X) while sending",
+    "bytes Y).",
+    "",
+    "Offer this to the user as a FOURTH trust-boundary option (the first",
+    "three were at prepare time). Do NOT run it unprompted. Wording suggestion:",
+    '  "Want me to independently recompute the EIP-1559 pre-sign hash from',
+    '   the prepare/pin fields and check it matches what the server reported?',
+    '   This catches a compromised MCP that lies about the hash."',
+    "",
+    "If the user says yes, do this:",
+    "  1. Decode the `data` field from the `prepare_*` result against your",
+    "     OWN built-in ABI knowledge (not the MCP's decode). Check the",
+    "     decoded function + args match the user intent you recorded in the",
+    "     bullet summary. If they diverge, STOP — the MCP already tampered",
+    "     with `data` and the hash check below would only confirm the lie.",
+    "  2. Serialize the EIP-1559 tuple and keccak256 it. In this repo:",
+    "       node -e \"const {keccak256,serializeTransaction}=require('viem');",
+    "       console.log(keccak256(serializeTransaction({type:'eip1559',",
+    `       chainId:<${args.chain}-id>,nonce:${args.pinned.nonce},`,
+    `       maxFeePerGas:${args.pinned.maxFeePerGas}n,`,
+    `       maxPriorityFeePerGas:${args.pinned.maxPriorityFeePerGas}n,`,
+    `       gas:${args.pinned.gas}n,to:'${args.to}',value:${args.valueWei}n,`,
+    "       data:'<data from the prepare_* result>'})))\"",
+    `  3. Compare the output to ${args.preSignHash}. If they differ, REFUSE`,
+    "     to call send_transaction and tell the user the MCP hash did not",
+    "     verify independently. If they match, the bytes-integrity story",
+    "     holds end to end (agent args → MCP tuple → device hash).",
+    "",
+    "Skip the offer entirely for native sends where the agent already knows",
+    "the full tuple (data='0x') and `to`/`value` eyeballing covers the check.",
+  ];
+  return lines.join("\n");
+}
+
+/**
+ * Block explorer URL template per supported chain. Only the mainnet chains
+ * the server supports today — kept inline because centralizing this in a
+ * helper would be premature for four entries that rarely change.
+ */
+const EXPLORER_TX_URL: Record<string, (hash: string) => string> = {
+  ethereum: (h) => `https://etherscan.io/tx/${h}`,
+  arbitrum: (h) => `https://arbiscan.io/tx/${h}`,
+  polygon: (h) => `https://polygonscan.com/tx/${h}`,
+  base: (h) => `https://basescan.org/tx/${h}`,
+  tron: (h) => `https://tronscan.org/#/transaction/${h}`,
+};
+
+/**
+ * User-facing block emitted immediately after a successful broadcast. The
+ * orchestrator must relay it VERBATIM so the txHash and explorer link land
+ * in the user's chat BEFORE the polling block (which is an agent directive,
+ * not user content). A live-test regression showed the agent sometimes
+ * collapsed the raw JSON result and never surfaced the hash — this block
+ * makes the hash impossible to miss and gives the user a one-click cross-
+ * check while polling runs in the background.
+ */
+export function renderPostBroadcastBlock(args: {
+  chain: string;
+  txHash: string;
+  preSignHash?: string;
+}): string {
+  const explorer = EXPLORER_TX_URL[args.chain];
+  const explorerLine = explorer
+    ? `  Explorer: [view on block explorer](${explorer(args.txHash)})`
+    : `  Explorer: (open the tx hash on your chain's block explorer)`;
+  const hashMatchLine = args.preSignHash
+    ? `  Signed hash: ${args.preSignHash}  (same value you matched on-device at preview)`
+    : null;
+  return [
+    "TRANSACTION BROADCAST — RELAY VERBATIM TO USER",
+    `  Chain: ${args.chain}`,
+    `  Tx hash: ${args.txHash}`,
+    explorerLine,
+    ...(hashMatchLine ? [hashMatchLine] : []),
+    "",
+    "The tx was accepted by the relay and is now propagating. Inclusion polling",
+    "continues below — you don't need to do anything; the agent will report the",
+    "outcome when it confirms or times out.",
+  ].join("\n");
 }
 
 /**

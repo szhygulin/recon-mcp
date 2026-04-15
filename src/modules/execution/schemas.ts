@@ -121,6 +121,21 @@ export const sendTransactionInput = z.object({
     ),
 });
 
+export const previewSendInput = z.object({
+  handle: z
+    .string()
+    .min(1)
+    .describe(
+      "Opaque handle returned by a prepare_* tool. preview_send fetches the current " +
+        "nonce + EIP-1559 fees + gas limit, stashes them against the handle, computes " +
+        "the EIP-1559 pre-sign RLP hash Ledger will display in blind-sign mode, and " +
+        "returns the LEDGER BLIND-SIGN HASH block so the user can see and confirm the " +
+        "hash BEFORE the Ledger device prompt appears. A follow-up send_transaction " +
+        "call forwards the pinned fields verbatim. Handles expire 15 minutes after " +
+        "prepare; a fresh preview_send call can be made to refresh the pin if fees drift."
+    ),
+});
+
 export const getTransactionStatusInput = z.object({
   chain: chainEnum,
   txHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/),
@@ -149,6 +164,7 @@ export type PrepareLidoUnstakeArgs = z.infer<typeof prepareLidoUnstakeInput>;
 export type PrepareEigenLayerDepositArgs = z.infer<typeof prepareEigenLayerDepositInput>;
 export type PrepareNativeSendArgs = z.infer<typeof prepareNativeSendInput>;
 export type PrepareTokenSendArgs = z.infer<typeof prepareTokenSendInput>;
+export type PreviewSendArgs = z.infer<typeof previewSendInput>;
 export type SendTransactionArgs = z.infer<typeof sendTransactionInput>;
 export type GetTransactionStatusArgs = z.infer<typeof getTransactionStatusInput>;
 export type GetTxVerificationArgs = z.infer<typeof getTxVerificationInput>;

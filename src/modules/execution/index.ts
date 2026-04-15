@@ -6,7 +6,13 @@ import {
   getConnectedAccounts,
 } from "../../signing/walletconnect.js";
 import { getSessionStatus } from "../../signing/session.js";
-import { consumeHandle, retireHandle } from "../../signing/tx-store.js";
+import {
+  consumeHandle,
+  retireHandle,
+  attachPinnedGas,
+  getPinnedGas,
+  type StashedPin,
+} from "../../signing/tx-store.js";
 import { consumeTronHandle, retireTronHandle } from "../../signing/tron-tx-store.js";
 import {
   getTronLedgerAddress,
@@ -17,7 +23,11 @@ import {
 } from "../../signing/tron-usb-signer.js";
 import { broadcastTronTx } from "../tron/broadcast.js";
 import { assertTransactionSafe } from "../../signing/pre-sign-check.js";
-import { payloadFingerprint, tronPayloadFingerprint } from "../../signing/verification.js";
+import {
+  eip1559PreSignHash,
+  payloadFingerprint,
+  tronPayloadFingerprint,
+} from "../../signing/verification.js";
 import { getClient, verifyChainId } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { simulateTx } from "../simulation/index.js";
@@ -44,10 +54,12 @@ import type {
   PrepareEigenLayerDepositArgs,
   PrepareNativeSendArgs,
   PrepareTokenSendArgs,
+  PreviewSendArgs,
   SendTransactionArgs,
   GetTransactionStatusArgs,
   GetTxVerificationArgs,
 } from "./schemas.js";
+import { CHAIN_IDS } from "../../types/index.js";
 import type { SupportedChain, UnsignedTx, UnsignedTronTx } from "../../types/index.js";
 import { hasTronHandle } from "../../signing/tron-tx-store.js";
 import { hasHandle } from "../../signing/tx-store.js";
@@ -393,36 +405,85 @@ async function sendTronTransaction(args: SendTransactionArgs): Promise<{
 }
 
 /**
- * Forward a prepared tx to the right signer based on which store owns the
- * handle. EVM handles take the WalletConnect path (unchanged). TRON handles
- * take the USB HID path: `consume → sign on Ledger → broadcast via TronGrid`.
- *
- * The two stores share no keys (`randomUUID` collision is ~0), and we check
- * TRON first because its path has strictly fewer side effects on failure
- * (no WC relay roundtrip, no eth_call, no chain-id check that would
- * meaninglessly fire before we even know what chain we're on).
+ * Minimum priority fee floor in wei. viem's `estimateFeesPerGas` returns the
+ * node's priority-fee estimate, which on quiet blocks can drop below what
+ * mempool-aware miners actually include (observed: 20 mwei on Ethereum at
+ * 14:00 UTC while the inclusion floor was ~1 gwei). Floor at 1.5 gwei so a
+ * tx we pinned during a lull doesn't sit stuck when activity picks up.
  */
-export async function sendTransaction(args: SendTransactionArgs): Promise<{
-  txHash: `0x${string}` | string;
-  chain: SupportedChain | "tron";
-  nextHandle?: string;
+const MIN_PRIORITY_FEE_WEI = 1_500_000_000n;
+
+/**
+ * Multiplier applied to `baseFeePerGas` before adding priority fee. viem's
+ * default is `1.2x` — safe on average, too tight for user-review windows
+ * (observed live test: a tx pinned at 1.2x baseFee stuck in mempool after
+ * the block's baseFee bumped mid-review). 2x gives one full EIP-1559 double
+ * worth of headroom, which covers ~4 blocks of consecutive 12.5% baseFee
+ * rises — enough for a user to read, confirm, and press a Ledger button.
+ */
+const BASE_FEE_MULTIPLIER = 2n;
+
+/**
+ * Fetch `{nonce, maxFeePerGas, maxPriorityFeePerGas, gas}` from the chain
+ * for a single tx. Extracted so `previewSend` has one clearly-defined place
+ * to pick fee levels. All four fields land verbatim in the WalletConnect
+ * `eth_sendTransaction` params (hex-encoded in `walletconnect.ts`), and all
+ * four feed the EIP-1559 pre-sign RLP hash — so if this helper's output
+ * drifts, so does the hash the user matches on-device.
+ *
+ * Throws on RPC failure; unpinned sends defeat the hash-match UX by design
+ * (Ledger Live would substitute its own nonce + fees, making the on-device
+ * hash unpredictable).
+ */
+async function pinSendFields(
+  chain: SupportedChain,
+  from: `0x${string}`,
+  to: `0x${string}`,
+  data: `0x${string}`,
+  value: string,
+): Promise<{
+  nonce: number;
+  maxFeePerGas: bigint;
+  maxPriorityFeePerGas: bigint;
+  gas: bigint;
 }> {
-  if (hasTronHandle(args.handle)) {
-    return sendTronTransaction(args);
-  }
-  const tx = consumeHandle(args.handle);
-  // Last-line check: refuse to sign against an RPC that's pointing at the
-  // wrong chain. See verifyChainId() for the threat model.
+  const rpcClient = getClient(chain);
+  const [nonceRaw, latestBlock, priorityEstimate, gasLimit] = await Promise.all([
+    rpcClient.getTransactionCount({ address: from, blockTag: "pending" }),
+    rpcClient.getBlock({ blockTag: "latest" }),
+    rpcClient.estimateMaxPriorityFeePerGas(),
+    rpcClient.estimateGas({
+      account: from,
+      to,
+      data,
+      value: BigInt(value),
+    }),
+  ]);
+  const baseFee = latestBlock.baseFeePerGas ?? 0n;
+  const maxPriorityFeePerGas =
+    priorityEstimate < MIN_PRIORITY_FEE_WEI ? MIN_PRIORITY_FEE_WEI : priorityEstimate;
+  const maxFeePerGas = baseFee * BASE_FEE_MULTIPLIER + maxPriorityFeePerGas;
+  return {
+    nonce: Number(nonceRaw),
+    maxFeePerGas,
+    maxPriorityFeePerGas,
+    gas: gasLimit,
+  };
+}
+
+/**
+ * Run the full EVM pre-sign guard pipeline against the tx named by `handle`:
+ * chainId verification, destination/selector allowlist, re-simulation,
+ * account-match check against the paired WC session, and the payload-hash
+ * fingerprint. Re-used by `previewSend` (early surfacing before the user
+ * invests time matching a hash) and — tests only — for individual guard
+ * assertions.
+ *
+ * Handle is NOT retired here; `consumeHandle` is a non-destructive peek.
+ */
+async function runEvmPreSignGuards(tx: UnsignedTx): Promise<void> {
   await verifyChainId(tx.chain);
-  // Independent of the prepare_* pipeline: validate destination + selector +
-  // (for approve) spender allowlist. A compromised agent can't slip an
-  // "approve(attacker, MAX)" past this, even if the handle system were bypassed.
   await assertTransactionSafe(tx);
-  // Re-simulate against current chain state before asking the user to sign.
-  // At prepare time, step 2 of an approve→action pair legitimately reverts
-  // because the approve isn't mined yet. By send time, the approve is on-chain
-  // and the simulation should pass. A revert here means signing would waste gas
-  // on a guaranteed failure — refuse rather than forward.
   const sim = await simulateTx({
     chain: tx.chain,
     from: tx.from,
@@ -435,15 +496,9 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
       `Pre-sign simulation failed: ${sim.revertReason ?? "execution reverted"}. ` +
         `Refusing to forward to Ledger — signing this tx would burn gas on a revert. ` +
         `If a prerequisite step (e.g. an ERC-20 approve) must be mined first, send it ` +
-        `and wait for confirmation before retrying. Use simulate_transaction to debug.`
+        `and wait for confirmation before retrying. Use simulate_transaction to debug.`,
     );
   }
-  // Assert that tx.from is actually an account the paired wallet holds keys
-  // for. Without this check, a prepare_* call with a user-supplied `wallet`
-  // arg referencing an address the wallet doesn't control would be forwarded
-  // to Ledger Live and rejected deep in the sign flow with a confusing error.
-  // Worse: a prompt-injected agent could get us to request signing for an
-  // address the user didn't intend to use in this session.
   if (tx.from) {
     const accounts = (await getConnectedAccounts()).map((a) => a.toLowerCase());
     const from = tx.from.toLowerCase();
@@ -451,36 +506,169 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
       throw new Error(
         `Pre-sign check: tx.from (${tx.from}) is not one of the accounts exposed by the paired ` +
           `WalletConnect session (${accounts.join(", ")}). Refusing to submit. If this is a ` +
-          `different Ledger account, re-pair with that account unlocked.`
+          `different Ledger account, re-pair with that account unlocked.`,
       );
     }
   }
-  // Proof-of-identity guard: recompute the domain-tagged hash of the exact
-  // `{chainId, to, value, data}` that are about to be forwarded to WalletConnect
-  // (`requestSendTransaction` consumes these four fields, see
-  // src/signing/walletconnect.ts). Equality with `tx.verification.payloadHash`
-  // is the "what-you-preview == what-you-sign" proof. If they diverge, the
-  // request is refused — a mismatch would only be possible if tx state was
-  // mutated in-process between handle issuance and the send call.
   if (tx.verification) {
-    const rehash = payloadFingerprint({ chain: tx.chain, to: tx.to, value: tx.value, data: tx.data });
+    const rehash = payloadFingerprint({
+      chain: tx.chain,
+      to: tx.to,
+      value: tx.value,
+      data: tx.data,
+    });
     if (rehash !== tx.verification.payloadHash) {
       throw new Error(
-        `Payload hash mismatch at send time. Previewed ${tx.verification.payloadHash}, ` +
-          `about to send ${rehash}. The transaction bytes changed between preview and send — ` +
-          `refusing to forward to WalletConnect.`,
+        `Payload hash mismatch at preview/send time. Previewed ${tx.verification.payloadHash}, ` +
+          `about to sign ${rehash}. The transaction bytes changed between prepare and preview — ` +
+          `refusing to proceed.`,
       );
     }
   }
-  const hash = await requestSendTransaction(tx);
+}
+
+/**
+ * Server-side pin of nonce + EIP-1559 fees + gasLimit for the tx named by
+ * `handle`. Runs the full EVM pre-sign guard pipeline (chainId, safety
+ * allowlist, simulation, account match, payload hash) BEFORE pinning so a
+ * tx that would have been refused at send time never gets as far as the
+ * user matching a hash. Computes the EIP-1559 pre-sign RLP hash from the
+ * pinned tuple and stashes both on the handle.
+ *
+ * The caller (typically the `preview_send` MCP tool) surfaces the returned
+ * hash to the user as a `LEDGER BLIND-SIGN HASH` block — the user reads
+ * it BEFORE `send_transaction` is called and the Ledger device prompt
+ * appears. `send_transaction` then reads the stashed pin verbatim and
+ * forwards it through WalletConnect, so the on-device hash is deterministic.
+ *
+ * Re-entrant: calling `previewSend` twice on the same handle overwrites the
+ * prior pin. This is intentional — if the user pauses for minutes, gas
+ * conditions drift and a fresh pin (with a fresh hash) is the right fix.
+ */
+export async function previewSend(args: PreviewSendArgs): Promise<{
+  handle: string;
+  chain: SupportedChain;
+  to: `0x${string}`;
+  valueWei: string;
+  preSignHash: `0x${string}`;
+  pinned: {
+    nonce: number;
+    maxFeePerGas: string;
+    maxPriorityFeePerGas: string;
+    gas: string;
+  };
+}> {
+  if (hasTronHandle(args.handle)) {
+    throw new Error(
+      "preview_send is EVM-only; TRON handles do not use WalletConnect and their on-device " +
+        "preview comes from the TRON app's clear-sign screens. Call send_transaction directly " +
+        "for TRON handles.",
+    );
+  }
+  const tx = consumeHandle(args.handle);
+  await runEvmPreSignGuards(tx);
+  const from =
+    tx.from ?? ((await getConnectedAccounts())[0] as `0x${string}` | undefined);
+  if (!from) {
+    throw new Error(
+      "Cannot determine sender address for nonce/fee pin; pair Ledger Live first.",
+    );
+  }
+  const pinned = await pinSendFields(tx.chain, from, tx.to, tx.data, tx.value);
+  const preSignHash = eip1559PreSignHash({
+    chainId: CHAIN_IDS[tx.chain],
+    nonce: pinned.nonce,
+    maxFeePerGas: pinned.maxFeePerGas,
+    maxPriorityFeePerGas: pinned.maxPriorityFeePerGas,
+    gas: pinned.gas,
+    to: tx.to,
+    value: BigInt(tx.value),
+    data: tx.data,
+  });
+  const pin: StashedPin = {
+    nonce: pinned.nonce,
+    maxFeePerGas: pinned.maxFeePerGas,
+    maxPriorityFeePerGas: pinned.maxPriorityFeePerGas,
+    gas: pinned.gas,
+    preSignHash,
+    pinnedAt: Date.now(),
+  };
+  attachPinnedGas(args.handle, pin);
+  return {
+    handle: args.handle,
+    chain: tx.chain,
+    to: tx.to,
+    valueWei: tx.value,
+    preSignHash,
+    pinned: {
+      nonce: pinned.nonce,
+      maxFeePerGas: pinned.maxFeePerGas.toString(),
+      maxPriorityFeePerGas: pinned.maxPriorityFeePerGas.toString(),
+      gas: pinned.gas.toString(),
+    },
+  };
+}
+
+/**
+ * Forward a prepared tx to the right signer based on which store owns the
+ * handle. EVM handles take the WalletConnect path; the caller MUST have
+ * called `preview_send` first so the pinned gas tuple + pre-sign hash live
+ * on the handle (otherwise the on-device hash would be unpredictable and
+ * the whole hash-match UX collapses). TRON handles take the USB HID path
+ * and have no preview step.
+ *
+ * We check TRON first because its path has strictly fewer side effects on
+ * failure (no WC relay roundtrip, no eth_call, no chain-id check that would
+ * meaninglessly fire before we even know what chain we're on).
+ */
+export async function sendTransaction(args: SendTransactionArgs): Promise<{
+  txHash: `0x${string}` | string;
+  chain: SupportedChain | "tron";
+  nextHandle?: string;
+  /**
+   * EIP-1559 pre-sign RLP hash the user already matched on-device during
+   * preview_send. Echoed back so the post-broadcast block can reassure the
+   * user that what was signed equals what was previewed. TRON omits this.
+   */
+  preSignHash?: `0x${string}`;
+  /** Echoed back so the send handler can render on-device eyeball values without re-reading the handle. */
+  to?: `0x${string}`;
+  /** Decimal wei string, echoed alongside `preSignHash` for the post-broadcast block. */
+  valueWei?: string;
+}> {
+  if (hasTronHandle(args.handle)) {
+    return sendTronTransaction(args);
+  }
+  const stashed = getPinnedGas(args.handle);
+  if (!stashed) {
+    throw new Error(
+      "Missing pinned gas for this handle. Call `preview_send(handle)` first — it pins " +
+        "nonce + EIP-1559 fees server-side, computes the EIP-1559 pre-sign RLP hash Ledger " +
+        "will display in blind-sign mode, and returns the LEDGER BLIND-SIGN HASH block for " +
+        "the user to match BEFORE the Ledger device prompt appears. send_transaction then " +
+        "forwards the exact pinned tuple so the on-device hash is deterministic.",
+    );
+  }
+  const tx = consumeHandle(args.handle);
+  const pinned = {
+    nonce: stashed.nonce,
+    maxFeePerGas: stashed.maxFeePerGas,
+    maxPriorityFeePerGas: stashed.maxPriorityFeePerGas,
+    gas: stashed.gas,
+  };
+  const hash = await requestSendTransaction(tx, pinned);
   // Only retire the handle after successful submission. If requestSendTransaction
   // throws (device disconnect, user rejection, relay timeout), the handle stays
-  // valid and the caller can retry until the 15-minute TTL expires.
+  // valid and the caller can retry until the 15-minute TTL expires. The pin
+  // stays attached so a retry doesn't have to re-preview.
   retireHandle(args.handle);
   return {
     txHash: hash,
     chain: tx.chain,
     ...(tx.next?.handle ? { nextHandle: tx.next.handle } : {}),
+    preSignHash: stashed.preSignHash,
+    to: tx.to,
+    valueWei: tx.value,
   };
 }
 
