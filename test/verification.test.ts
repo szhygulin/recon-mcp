@@ -10,6 +10,7 @@ import {
 } from "../src/signing/verification.js";
 import { decodeCalldata } from "../src/signing/decode-calldata.js";
 import {
+  renderPostSendPollBlock,
   renderTronVerificationBlock,
   renderVerificationBlock,
   shouldRenderVerificationBlock,
@@ -24,6 +25,19 @@ import type { UnsignedTronTx, UnsignedTx } from "../src/types/index.js";
 const USDC = getAddress(CONTRACTS.ethereum.tokens.USDC);
 const RECIPIENT = getAddress("0x2222222222222222222222222222222222222222");
 const SENDER = getAddress("0x1111111111111111111111111111111111111111");
+
+/**
+ * Canned cross-check stub for tests so collectVerificationBlocks doesn't
+ * hit 4byte.directory over the network. Returns a `match` summary with
+ * a recognizable marker so tests can assert the block was auto-emitted.
+ */
+async function stubVerify() {
+  return {
+    status: "match" as const,
+    selector: "0xdeadbeef",
+    summary: "✓ Cross-check passed. (stub summary for tests)",
+  };
+}
 
 function usdcTransferTx(amount: bigint): UnsignedTx {
   return {
@@ -145,7 +159,7 @@ describe("buildVerification (EVM)", () => {
 });
 
 describe("collectVerificationBlocks — approve→action chain only renders the action block", () => {
-  it("skips the ERC-20 approve node and renders the swap node only", () => {
+  it("skips the ERC-20 approve node and renders the swap node only", async () => {
     const swap: UnsignedTx = {
       chain: "ethereum",
       to: getAddress("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE"), // LiFi Diamond
@@ -168,20 +182,23 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
       next: swap,
     };
     const stamped = issueHandles(approve);
-    const blocks = collectVerificationBlocks(stamped);
-    // One verification block + one agent-task directive block for the swap.
-    // The approve node is suppressed entirely (both blocks).
-    expect(blocks).toHaveLength(2);
+    const blocks = await collectVerificationBlocks(stamped, { verify: stubVerify });
+    // verify block + cross-check summary + agent-task block for the swap.
+    // The approve node is suppressed entirely (all three blocks).
+    expect(blocks).toHaveLength(3);
     expect(blocks[0]).toContain("VERIFY BEFORE SIGNING");
     expect(blocks[0]).not.toContain("approve(address,uint256)");
     expect(blocks[0]).toContain("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE");
-    expect(blocks[1]).toContain("[AGENT TASK");
-    // Task block delegates the cross-check to the server-side tool.
-    expect(blocks[1]).toContain("verify_tx_decode");
-    expect(blocks[1]).toContain("4byte.directory");
+    expect(blocks[1]).toContain("[CROSS-CHECK SUMMARY");
+    expect(blocks[1]).toContain("stub summary for tests");
+    expect(blocks[2]).toContain("[AGENT TASK");
+    // Task block points at the auto-emitted cross-check summary rather than
+    // instructing the agent to call verify_tx_decode itself.
+    expect(blocks[2]).toContain("CROSS-CHECK SUMMARY");
+    expect(blocks[2]).toContain("4byte.directory");
   });
 
-  it("renders the single tx with its verification block + agent task block", () => {
+  it("renders the single tx with its verification + cross-check + agent task blocks", async () => {
     const supply: UnsignedTx = {
       chain: "ethereum",
       to: CONTRACTS.ethereum.aave.pool as `0x${string}`,
@@ -191,14 +208,14 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
       description: "Aave supply",
     };
     const stamped = issueHandles(supply);
-    const blocks = collectVerificationBlocks(stamped);
-    expect(blocks).toHaveLength(2);
+    const blocks = await collectVerificationBlocks(stamped, { verify: stubVerify });
+    expect(blocks).toHaveLength(3);
     expect(blocks[0]).toContain("VERIFY BEFORE SIGNING");
-    expect(blocks[1]).toContain("[AGENT TASK");
-    expect(blocks[1]).toContain("verify_tx_decode");
+    expect(blocks[1]).toContain("[CROSS-CHECK SUMMARY");
+    expect(blocks[2]).toContain("[AGENT TASK");
   });
 
-  it("suppresses the agent task block for ERC-20 approves (verification block also suppressed)", () => {
+  it("suppresses all three blocks for ERC-20 approves (Ledger clear-signs natively)", async () => {
     const approveOnly: UnsignedTx = {
       chain: "ethereum",
       to: USDC,
@@ -212,11 +229,11 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
       description: "Approve USDC to LiFi",
     };
     const stamped = issueHandles(approveOnly);
-    const blocks = collectVerificationBlocks(stamped);
+    const blocks = await collectVerificationBlocks(stamped, { verify: stubVerify });
     expect(blocks).toHaveLength(0);
   });
 
-  it("agent task block directs the orchestrator at verify_tx_decode and keeps the hash-echo reminder", () => {
+  it("auto-emitted cross-check summary relays the stub verifier's result verbatim", async () => {
     const supply: UnsignedTx = {
       chain: "ethereum",
       to: CONTRACTS.ethereum.aave.pool as `0x${string}`,
@@ -226,48 +243,83 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
       description: "Aave supply",
     };
     const stamped = issueHandles(supply);
-    const blocks = collectVerificationBlocks(stamped);
-    const task = blocks[1];
-    // Names the MCP tool rather than asking the agent to WebFetch 4byte itself.
-    expect(task).toMatch(/verify_tx_decode/);
-    // Tells the agent to relay the tool's summary verbatim.
+    const blocks = await collectVerificationBlocks(stamped, { verify: stubVerify });
+    const crossCheck = blocks[1];
+    expect(crossCheck).toContain("[CROSS-CHECK SUMMARY");
+    expect(crossCheck).toContain("RELAY VERBATIM TO USER");
+    expect(crossCheck).toContain("✓ Cross-check passed.");
+    expect(crossCheck).toContain("stub summary for tests");
+  });
+
+  it("cross-check block surfaces a degraded-state message when the verifier throws", async () => {
+    const supply: UnsignedTx = {
+      chain: "ethereum",
+      to: CONTRACTS.ethereum.aave.pool as `0x${string}`,
+      data: "0x617ba0370000" as `0x${string}`,
+      value: "0",
+      from: SENDER,
+      description: "Aave supply",
+    };
+    const stamped = issueHandles(supply);
+    const throwingVerify = async () => {
+      throw new Error("network offline");
+    };
+    const blocks = await collectVerificationBlocks(stamped, { verify: throwingVerify });
+    expect(blocks[1]).toContain("[CROSS-CHECK SUMMARY");
+    expect(blocks[1]).toContain("network offline");
+    expect(blocks[1]).toMatch(/Could not run the independent calldata cross-check/);
+  });
+
+  it("agent task block points at the auto-emitted cross-check and drops the hash-match claim", async () => {
+    const supply: UnsignedTx = {
+      chain: "ethereum",
+      to: CONTRACTS.ethereum.aave.pool as `0x${string}`,
+      data: "0x617ba0370000" as `0x${string}`,
+      value: "0",
+      from: SENDER,
+      description: "Aave supply",
+    };
+    const stamped = issueHandles(supply);
+    const blocks = await collectVerificationBlocks(stamped, { verify: stubVerify });
+    const task = blocks[2];
+    // Points the agent at the auto-emitted CROSS-CHECK SUMMARY block.
+    expect(task).toMatch(/CROSS-CHECK SUMMARY/);
     expect(task).toMatch(/VERBATIM/);
-    // Prescribes a compact bullet summary INSTEAD of verbatim VERIFY-BEFORE-
-    // SIGNING relay — the validated UX pattern.
+    // Still forbids ad-hoc scraping of 4byte / swiss-knife.
+    expect(task).toMatch(/do NOT script your own WebFetch/i);
+    // Still forbids fabricating a passing cross-check line.
+    expect(task).toMatch(/do NOT fabricate/i);
+    // Prescribes the compact bullet shape.
     expect(task).toMatch(/COMPACT bullet summary/);
     expect(task).toMatch(/do NOT relay it verbatim/i);
     expect(task).toMatch(/Headline:/);
-    // Tx-specific field hints for the common flows.
     expect(task).toMatch(/Min out/);
     expect(task).toMatch(/Amount/);
     expect(task).toMatch(/Spender/);
-    // Destination-label hint so e.g. LiFi/Aave/Lido destinations get called out.
     expect(task).toMatch(/LiFi diamond/);
-    // Short hash value is substituted into the directive (not a placeholder).
-    expect(task).toContain(stamped.verification!.payloadHashShort);
-    // Offers the user an out-of-trust-boundary check — either browser-side
-    // swiss-knife or the agent's own independent decode. Phrased as an offer,
-    // not a default action.
+    // The bullet summary must NOT include a Short hash line any more — our
+    // payloadHash does not match what Ledger displays, and leading the user
+    // to expect a match trains rubber-stamping.
+    expect(task).not.toMatch(/- Short hash:/);
+    // Three trust-boundary options still offered, not performed.
     expect(task).toMatch(/OFFER/);
     expect(task).toMatch(/trust boundary/);
-    expect(task).toMatch(/swiss-knife/);
-    expect(task).toMatch(/decode the calldata yourself/);
-    expect(task).toMatch(/do NOT perform any of them\s+unprompted/);
-    // Three explicit options (a), (b), (c) — (c) is the WebFetch-swiss-knife path.
     expect(task).toMatch(/\(a\)/);
     expect(task).toMatch(/\(b\)/);
     expect(task).toMatch(/\(c\)/);
-    expect(task).toMatch(/WebFetch/);
-    // The honesty caveat about swiss-knife being client-side rendered.
     expect(task).toMatch(/client-side Next\.js SPA/);
-    expect(task).toMatch(/state the limitation before doing the fetch/);
-    // The final Ledger-match reminder must cover both blind-sign (hash)
-    // and clear-sign (decoded fields) modes — we can't know in advance
-    // which the user's Ledger will pick.
-    expect(task).toMatch(/Before approving on Ledger/);
-    expect(task).toMatch(/blind-sign/);
-    expect(task).toMatch(/clear-sign/);
-    expect(task).toMatch(/Reject on-device if neither\s+matches/);
+    // Final Ledger reminder must honestly cover both modes and NOT claim the
+    // Ledger hash matches our payloadHash.
+    expect(task).toMatch(/On the Ledger screen/);
+    expect(task).toMatch(/clear-signs/);
+    expect(task).toMatch(/blind-signs/);
+    expect(task).toMatch(/not pre-computable here/);
+    expect(task).toMatch(/To = <to address>/);
+    expect(task).toMatch(/Value =\s*<human native amount>/);
+    // The shortHash placeholder must not be substituted anywhere — the new
+    // block refers to it only inside a warning quote, never as a "Ledger
+    // must show X" directive.
+    expect(task).not.toContain(stamped.verification!.payloadHashShort);
   });
 
   it("truncates long nested hex blobs inside struct args (no 2KB callData wall)", () => {
@@ -448,6 +500,44 @@ describe("renderVerificationBlock includes URL, hash, and the encouragement nudg
   });
 });
 
+describe("renderPostSendPollBlock — auto-poll directive after send_transaction", () => {
+  it("tells the agent to poll get_transaction_status itself, not ask the user", () => {
+    const block = renderPostSendPollBlock({
+      chain: "ethereum",
+      txHash: "0xabc123",
+    });
+    expect(block).toMatch(/AGENT TASK/);
+    expect(block).toMatch(/get_transaction_status/);
+    expect(block).toMatch(/chain: "ethereum"/);
+    expect(block).toMatch(/txHash: "0xabc123"/);
+    expect(block).toMatch(/do NOT forward this block to the user/i);
+    expect(block).toMatch(/ask the user/i);
+    expect(block).toMatch(/type "next"/i);
+    expect(block).toMatch(/~5 seconds/);
+    expect(block).toMatch(/~2 minutes/);
+  });
+
+  it("instructs the agent to wait for inclusion before sending a queued follow-up tx", () => {
+    const block = renderPostSendPollBlock({
+      chain: "ethereum",
+      txHash: "0xabc123",
+      nextHandle: "next-handle-uuid",
+    });
+    expect(block).toMatch(/nextHandle=next-handle-uuid/);
+    expect(block).toMatch(/approval is now on-chain/);
+    expect(block).toMatch(/insufficient allowance/);
+  });
+
+  it("omits the follow-up section when no nextHandle is present", () => {
+    const block = renderPostSendPollBlock({
+      chain: "ethereum",
+      txHash: "0xabc123",
+    });
+    expect(block).not.toMatch(/nextHandle=/);
+    expect(block).toMatch(/No follow-up tx is queued/);
+  });
+});
+
 describe("shouldRenderVerificationBlock — approvals are suppressed (Ledger clear-signs them)", () => {
   it("returns false for ERC-20 approve(address,uint256) calldata", () => {
     const approveData = encodeFunctionData({
@@ -564,12 +654,13 @@ describe("get_tx_verification recovers a verification block by handle", () => {
 
     // The handler() wrapper renders the verification block from the result —
     // proving that get_tx_verification slots into the same render path as prepare_*.
-    const blocks = collectVerificationBlocks(recovered);
-    // verification block + agent task block (EVM non-approve tx)
-    expect(blocks).toHaveLength(2);
+    const blocks = await collectVerificationBlocks(recovered, { verify: stubVerify });
+    // verification block + cross-check summary + agent task block (EVM non-approve tx)
+    expect(blocks).toHaveLength(3);
     expect(blocks[0]).toContain("VERIFY BEFORE SIGNING");
     expect(blocks[0]).toContain(stamped.verification!.payloadHash);
-    expect(blocks[1]).toContain("[AGENT TASK");
+    expect(blocks[1]).toContain("[CROSS-CHECK SUMMARY");
+    expect(blocks[2]).toContain("[AGENT TASK");
   });
 
   it("TRON handle returns the TRON-rendered block (separate code path)", async () => {
@@ -590,7 +681,7 @@ describe("get_tx_verification recovers a verification block by handle", () => {
     expect(recovered.txID).toBe(stamped.txID);
     expect(recovered.verification?.payloadHash).toBe(stamped.verification?.payloadHash);
 
-    const blocks = collectVerificationBlocks(recovered);
+    const blocks = await collectVerificationBlocks(recovered, { verify: stubVerify });
     expect(blocks).toHaveLength(1);
     expect(blocks[0]).toContain("VERIFY BEFORE SIGNING (TRON)");
   });
@@ -820,8 +911,8 @@ describe("verifyTxDecode (MCP handler) — routes by handle origin", () => {
   });
 });
 
-describe("agent task block directs the orchestrator to verify_tx_decode, not a WebFetch", () => {
-  it("names the MCP tool explicitly and forbids ad-hoc scraping", () => {
+describe("agent task block: cross-check relay + on-device guidance", () => {
+  it("points at the auto-emitted CROSS-CHECK SUMMARY, forbids ad-hoc scraping, hides the handle", async () => {
     const supply: UnsignedTx = {
       chain: "ethereum",
       to: CONTRACTS.ethereum.aave.pool as `0x${string}`,
@@ -831,15 +922,15 @@ describe("agent task block directs the orchestrator to verify_tx_decode, not a W
       description: "Aave supply",
     };
     const stamped = issueHandles(supply);
-    const blocks = collectVerificationBlocks(stamped);
-    const task = blocks[1];
-    expect(task).toMatch(/verify_tx_decode/);
-    // Must relay the tool's summary verbatim, not paraphrase.
+    const blocks = await collectVerificationBlocks(stamped, { verify: stubVerify });
+    const task = blocks[2];
+    expect(task).toMatch(/CROSS-CHECK SUMMARY/);
+    // Must relay the cross-check summary verbatim, not paraphrase.
     expect(task).toMatch(/VERBATIM/);
     // Explicit don't-scrape rule.
-    expect(task).toMatch(/Do NOT[\s\n]+script/);
-    // Still carries the final Ledger hash-match reminder and handle-secrecy rule.
-    expect(task).toMatch(/Before approving on Ledger/);
+    expect(task).toMatch(/do NOT script your own WebFetch/i);
+    // Still carries the on-device reminder and handle-secrecy rule.
+    expect(task).toMatch(/On the Ledger screen/);
     expect(task).toMatch(/Do NOT echo the handle/);
   });
 });

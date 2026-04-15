@@ -133,10 +133,9 @@ export function renderVerificationBlock(
  * suppressed (Ledger clear-signs approves natively).
  */
 export function renderAgentTaskBlock(
-  tx: Pick<UnsignedTx, "data" | "handle"> & { verification: TxVerification },
+  tx: Pick<UnsignedTx, "data">,
 ): string | null {
   if (!shouldRenderVerificationBlock(tx)) return null;
-  const shortHash = tx.verification.payloadHashShort;
   const lines = [
     "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
     `Replace the VERIFY-BEFORE-SIGNING block above with a COMPACT bullet`,
@@ -146,20 +145,17 @@ export function renderAgentTaskBlock(
     `Ledger short hash; that's the real security story.`,
     ``,
     `Do this, in order:`,
-    `  1. Call the MCP tool verify_tx_decode with { handle: "<the handle`,
-    `     field from this same prepared-tx response>" }. The server runs the`,
-    `     same algorithm swiss-knife uses in-browser (fetch the function`,
-    `     signature from 4byte.directory, decode via viem, re-encode to prove`,
-    `     bytes round-trip losslessly) but server-side, so the user sees the`,
-    `     result in chat without opening a browser. Do NOT script your own`,
-    `     WebFetch to 4byte or swiss-knife here; always call this tool so the`,
-    `     check runs through one auditable code path.`,
-    `  2. Copy the tool's "summary" field VERBATIM as the FIRST line(s) of`,
-    `     your reply. Keep the "✓" / "✗" prefix unchanged. If status is`,
-    `     "mismatch", say "DO NOT SEND" and stop. If status is "error",`,
-    `     "no-signature", or "not-applicable", still relay the summary — it`,
-    `     tells the user why no independent check was possible — then proceed.`,
-    `  3. Produce a COMPACT bullet summary of the prepared tx, NOT a verbatim`,
+    `  1. The server already ran the independent 4byte.directory cross-check`,
+    `     and emitted a block marked "[CROSS-CHECK SUMMARY — RELAY VERBATIM`,
+    `     TO USER ...]" above. Copy that summary VERBATIM as the FIRST line(s)`,
+    `     of your reply. Keep the "✓" / "✗" prefix unchanged. If it says`,
+    `     "DO NOT SEND" (mismatch), stop and do not produce the bullet summary`,
+    `     — refusing is the correct action. If it says "error", "no-signature",`,
+    `     or "not-applicable", still relay it so the user knows why there is no`,
+    `     independent check this turn — then proceed. Do NOT skip this relay;`,
+    `     do NOT script your own WebFetch to 4byte or swiss-knife to duplicate`,
+    `     the check; do NOT fabricate a "✓ cross-check passed" line.`,
+    `  2. Produce a COMPACT bullet summary of the prepared tx, NOT a verbatim`,
     `     relay of the VERIFY-BEFORE-SIGNING block. Required shape:`,
     `       - Headline: "Prepared <action> — <one-line human summary>"`,
     `       - From: <sender address>`,
@@ -167,7 +163,6 @@ export function renderAgentTaskBlock(
     `         pool", "Lido stETH">)`,
     `       - Value: <human> (<wei>)`,
     `       - Function: <function name / signature>`,
-    `       - Short hash: ${shortHash}`,
     `     Then append the tx-specific field that actually matters for THIS`,
     `     flow (pick the right one — not all flows are swaps):`,
     `       - swaps: "Min out: <human amount>"`,
@@ -178,7 +173,7 @@ export function renderAgentTaskBlock(
     `     Do NOT echo the handle UUID — it is opaque internal state used only`,
     `     by send_transaction / verify_tx_decode. Just say "Reply 'send' to`,
     `     forward to Ledger" or similar.`,
-    `  4. After the bullet summary, OFFER the user a further check in a`,
+    `  3. After the bullet summary, OFFER the user a further check in a`,
     `     trust boundary outside the MCP server. The MCP's verify_tx_decode`,
     `     and the local ABI decode both run on the same server code, so a`,
     `     compromised server could in principle lie in both. Present THREE`,
@@ -200,21 +195,76 @@ export function renderAgentTaskBlock(
     `           user named, but still a different code path. If the user`,
     `           picks (c), state the limitation before doing the fetch so`,
     `           they can redirect to (b) if they prefer.`,
-    `  5. End your reply with the final Ledger-match reminder. You can't`,
-    `     know in advance which mode Ledger will use — blind-sign (shows a`,
-    `     hash) vs. clear-sign (shows decoded fields via an app/plugin like`,
-    `     Lido, Aave, 1inch, LiFi, etc.) — so cover BOTH cases in one`,
-    `     sentence. Use this exact shape (substitute the short hash and the`,
-    `     one or two fields that matter most for this flow — the function`,
-    `     name plus the same key amount you put in the bullet summary):`,
-    `       "Before approving on Ledger: if the device shows a hash, it must`,
-    `        be ${shortHash}; if it clear-signs with decoded fields, confirm`,
+    `  4. End your reply with the Ledger-screen reminder. DO NOT tell the`,
+    `     user "the hash on Ledger must be <shortHash>" — our payloadHash is`,
+    `     over {chain, to, value, data} only, but Ledger's blind-sign hash`,
+    `     is over the full RLP including nonce + fee fields that Ledger Live`,
+    `     chooses at send time. Those hashes will not match, and claiming`,
+    `     they will train the user to rubber-stamp a real mismatch. Instead,`,
+    `     cover both on-device modes honestly in one sentence:`,
+    `       "On the Ledger screen: if the device clear-signs with decoded`,
+    `        fields (Aave / Lido / 1inch / LiFi / approve plugin), confirm`,
     `        <function> + <key field, e.g. 'Min out 0.04 ETH' for a swap or`,
-    `        'Spender + Cap' for an approve>. Reject on-device if neither`,
-    `        matches."`,
-    `     This is the final tamper check — the bytes we previewed are the`,
-    `     bytes we will forward to WalletConnect, and send_transaction`,
-    `     re-derives the hash from those exact bytes before broadcasting.`,
+    `        'Spender + Cap' for an approve>. If the device blind-signs`,
+    `        (shows only a hash), the hash is not pre-computable here — the`,
+    `        checks you CAN do on-screen are: To = <to address> and Value =`,
+    `        <human native amount>. Reject on-device if either doesn't match."`,
+    `     Fill in <to address> and <human native amount> from the bullet`,
+    `     summary above so the user has exact values to eyeball.`,
+  ];
+  return lines.join("\n");
+}
+
+/**
+ * Emitted as a second content block on every successful `send_transaction`
+ * response. Tells the agent to poll `get_transaction_status` itself instead
+ * of asking the user to type "next" — waiting on human turn-taking for a
+ * routine inclusion poll is UX friction the user has to break out of.
+ *
+ * The cadence (~5s between polls, ~2min total) matches typical L1/L2
+ * inclusion times without paging the RPC unnecessarily. If inclusion is
+ * slow, the agent reports `pending` and the user can decide to keep waiting.
+ *
+ * For approve→action chains (`nextHandle` present), the agent must wait for
+ * the approval receipt BEFORE re-simulating or sending the next step —
+ * otherwise the dependent simulation fails with "insufficient allowance"
+ * against pre-inclusion state.
+ */
+export function renderPostSendPollBlock(args: {
+  chain: string;
+  txHash: string;
+  nextHandle?: string;
+}): string {
+  const { chain, txHash, nextHandle } = args;
+  const lines = [
+    "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
+    `The tx was forwarded to Ledger and broadcast; a txHash is above. Do NOT`,
+    `stop and ask the user to type "next" or "check status" — poll inclusion`,
+    `yourself and only speak again when you have a real outcome.`,
+    ``,
+    `Do this, in order:`,
+    `  1. Call get_transaction_status({ chain: "${chain}", txHash: "${txHash}" })`,
+    `     every ~5 seconds until status is "success" or "failed", or until`,
+    `     you have polled for ~2 minutes (~24 polls). If status stays`,
+    `     "pending" / "unknown" past that budget, stop polling and tell the`,
+    `     user the tx is still pending with the hash so they can watch it`,
+    `     on a block explorer.`,
+    `  2. On "success": one short line to the user — what confirmed, the`,
+    `     short hash or an explorer link, and (if relevant) the updated`,
+    `     state (e.g. new allowance, new supplied balance). Do NOT re-dump`,
+    `     the full tx bullet summary.`,
+    `  3. On "failed": one short line naming the failure and the hash, then`,
+    `     stop — do not auto-retry.`,
+    nextHandle
+      ? `  4. On "success", a follow-up tx is queued (nextHandle=${nextHandle}).` +
+        ` Proceed with the normal prepare/send flow for that handle — the` +
+        ` approval is now on-chain so the dependent simulation will pass.` +
+        ` Do NOT send the nextHandle before confirmation; a pre-inclusion` +
+        ` simulate reverts with "insufficient allowance".`
+      : `  4. No follow-up tx is queued; end your turn after reporting.`,
+    ``,
+    `Between polls, stay silent — no "still waiting..." chatter. The user`,
+    `only needs to hear from you when the status actually changes.`,
   ];
   return lines.join("\n");
 }

@@ -153,11 +153,14 @@ import { requestCapability, requestCapabilityInput } from "./modules/feedback/in
 import { issueHandles } from "./signing/tx-store.js";
 import {
   renderAgentTaskBlock,
+  renderPostSendPollBlock,
   renderTronVerificationBlock,
   renderVerificationBlock,
   shouldRenderVerificationBlock,
 } from "./signing/render-verification.js";
-import type { TxVerification, UnsignedTronTx, UnsignedTx } from "./types/index.js";
+import { verifyEvmCalldata, type VerifyDecodeResult } from "./signing/verify-decode.js";
+import type { SupportedChain, TxVerification, UnsignedTronTx, UnsignedTx } from "./types/index.js";
+import type { SendTransactionArgs } from "./modules/execution/schemas.js";
 
 import { readUserConfig } from "./config/user-config.js";
 
@@ -167,10 +170,24 @@ import { readUserConfig } from "./config/user-config.js";
  * block so the user can cross-check every hash they will sign — never a
  * single aggregated block that conflates two separate signatures.
  *
+ * Runs the independent 4byte.directory cross-check inline so its summary
+ * is ALWAYS emitted, regardless of whether the agent remembers to call
+ * `verify_tx_decode`. A compromised agent could previously skip the tool
+ * and fabricate a "✓ cross-check passed" line; now the server emits the
+ * real result adjacent to the verification block.
+ *
  * Unknown shapes return an empty array (non-prepare tools have no
  * verification field).
  */
-export function collectVerificationBlocks(result: unknown): string[] {
+export async function collectVerificationBlocks(
+  result: unknown,
+  opts?: {
+    verify?: (
+      tx: UnsignedTx & { verification: TxVerification },
+    ) => Promise<VerifyDecodeResult>;
+  },
+): Promise<string[]> {
+  const verify = opts?.verify ?? verifyEvmCalldata;
   if (!result || typeof result !== "object") return [];
   const blocks: string[] = [];
   // EVM path: UnsignedTx has `chain` / `to` / `data` / `value` / `verification` + optional `.next`.
@@ -188,14 +205,30 @@ export function collectVerificationBlocks(result: unknown): string[] {
     // (the send-time payload-hash guard still runs, using tx.verification).
     if (shouldRenderVerificationBlock(tx)) {
       blocks.push(renderVerificationBlock(tx));
-      // Per-call agent directives (cross-check the selector via 4byte.directory,
-      // hide the handle UUID from the user). Adjacent to the verification block
-      // so the model is far more likely to act on it than on the session-level
+      // Auto-emit the independent 4byte.directory cross-check. If the network
+      // call fails, verifyEvmCalldata returns an "error" summary — we still
+      // emit it so the agent surfaces the degraded state to the user rather
+      // than silently skipping.
+      try {
+        const cross = await verify(tx);
+        blocks.push(
+          `[CROSS-CHECK SUMMARY — RELAY VERBATIM TO USER AS THE FIRST LINE OF YOUR REPLY]\n${cross.summary}`,
+        );
+      } catch (e) {
+        blocks.push(
+          `[CROSS-CHECK SUMMARY — RELAY VERBATIM TO USER AS THE FIRST LINE OF YOUR REPLY]\n` +
+            `Could not run the independent calldata cross-check this turn (${e instanceof Error ? e.message : String(e)}). ` +
+            `The local ABI decode above is still shown; open the swiss-knife decoder URL in a browser for a manual check.`,
+        );
+      }
+      // Per-call agent directives (compact bullet summary, three trust-boundary
+      // options, Ledger-match reminder). Adjacent to the verification block so
+      // the model is far more likely to act on it than on the session-level
       // instructions field, which it tends to ignore after the first few turns.
       const taskBlock = renderAgentTaskBlock(tx);
       if (taskBlock) blocks.push(taskBlock);
     }
-    if (r.next) blocks.push(...collectVerificationBlocks(r.next));
+    if (r.next) blocks.push(...(await collectVerificationBlocks(r.next, opts)));
   }
   return blocks;
 }
@@ -219,7 +252,7 @@ function handler<T, R>(fn: (args: T) => Promise<R> | R) {
       const content: { type: "text"; text: string }[] = [
         { type: "text", text: JSON.stringify(result, bigintReplacer, 2) },
       ];
-      for (const block of collectVerificationBlocks(result)) {
+      for (const block of await collectVerificationBlocks(result)) {
         content.push({ type: "text", text: block });
       }
       return { content };
@@ -242,6 +275,45 @@ function handler<T, R>(fn: (args: T) => Promise<R> | R) {
  */
 function txHandler<T>(fn: (args: T) => Promise<UnsignedTx> | UnsignedTx) {
   return handler(async (args: T) => issueHandles(await fn(args)));
+}
+
+/**
+ * Handler wrapper for `send_transaction`. Appends a per-call agent task
+ * block instructing the agent to poll `get_transaction_status` itself
+ * instead of waiting for the user to ask. The session-level instructions
+ * tend to drift out of attention after a few hundred tokens, so we put
+ * the directive adjacent to the txHash it refers to.
+ */
+function sendTransactionHandler(
+  fn: (args: SendTransactionArgs) => Promise<{
+    txHash: `0x${string}` | string;
+    chain: SupportedChain | "tron";
+    nextHandle?: string;
+  }>,
+) {
+  return async (args: SendTransactionArgs) => {
+    try {
+      const result = await fn(args);
+      const content: { type: "text"; text: string }[] = [
+        { type: "text", text: JSON.stringify(result, bigintReplacer, 2) },
+        {
+          type: "text",
+          text: renderPostSendPollBlock({
+            chain: String(result.chain),
+            txHash: String(result.txHash),
+            ...(result.nextHandle ? { nextHandle: result.nextHandle } : {}),
+          }),
+        },
+      ];
+      return { content };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: "text" as const, text: `Error: ${message}` }],
+        isError: true,
+      };
+    }
+  };
 }
 
 /** JSON.stringify replacer that converts bigint to decimal string. */
@@ -305,14 +377,18 @@ async function main() {
         "4. Show the decoded preview to the user and get explicit confirmation.",
         "5. Call `send_transaction` with the handle and `confirmed: true` — Ledger Live will",
         "   prompt the user to review and physically sign on the device.",
-        "6. Optionally poll `get_transaction_status` for inclusion.",
+        "6. After `send_transaction` returns a txHash, poll `get_transaction_status`",
+        "   YOURSELF every ~5s until status is `success` or `failed` (budget ~2min).",
+        "   Do NOT stop and wait for the user to type \"next\" — the per-call AGENT",
+        "   TASK block emitted alongside the txHash prescribes the exact cadence.",
         "",
         "TWO-STEP ALLOWANCE FLOWS: when a `prepare_*` tool returns an approval tx alongside",
         "the main tx (supply, repay, swap, etc.), submit the approval via `send_transaction`",
-        "FIRST, then POLL `get_transaction_status` until the approval is included (status",
-        "`confirmed`). Only AFTER that, simulate or send the main tx. Simulating the main tx",
-        "against pre-approval state fails with \"insufficient allowance\" / ERC20 reverts and",
-        "looks like a builder bug — it is not, the allowance just isn't on-chain yet.",
+        "FIRST. The post-send auto-poll (step 6) is how you wait for the approval to be",
+        "included — do not ask the user to confirm inclusion. Only AFTER status flips to",
+        "`success`, simulate or send the main tx. Simulating against pre-approval state",
+        "fails with \"insufficient allowance\" / ERC20 reverts and looks like a builder bug",
+        "— it is not, the allowance just isn't on-chain yet.",
         "",
         "READ-ONLY TOOLS need no pairing and can be called freely: get_lending_positions,",
         "get_lp_positions, get_compound_positions, get_morpho_positions, get_staking_positions,",
@@ -334,49 +410,47 @@ async function main() {
         "10/day, dedup'd for 7 days). Never substitute this for completing the task.",
         "",
         "TRANSACTION VERIFICATION (CRITICAL — DO NOT SKIP): most `prepare_*` tools return",
-        "a SECOND text content element, after the JSON, that begins with the line",
-        "\"VERIFY BEFORE SIGNING\". Do NOT relay that block to the user verbatim — it is a",
-        "wall of hex/struct data that drowns the sentence that actually matters. Instead,",
-        "produce a COMPACT bullet summary of the tx for the user: a headline",
+        "MULTIPLE text content elements after the JSON. The order is: (1) the VERIFY-",
+        "BEFORE-SIGNING block; (2) the [CROSS-CHECK SUMMARY] block produced by the server's",
+        "4byte.directory independent decode; (3) the [AGENT TASK] block with per-call",
+        "directives. Do NOT relay the raw VERIFY-BEFORE-SIGNING block to the user — it is",
+        "a wall of hex/struct data that drowns the sentence that matters. Instead, relay",
+        "the CROSS-CHECK SUMMARY text VERBATIM as your first line(s), keep the ✓/✗ prefix",
+        "unchanged, then produce a COMPACT bullet summary of the tx: a headline",
         "(\"Prepared <action> — <one-line summary>\"), then From / To (with a destination",
         "label when known, e.g. \"LiFi diamond\", \"Aave pool\") / Value (human + wei) /",
-        "Function / Short hash, plus the tx-specific field that matters for this flow",
-        "(Min out for swaps, Amount for supplies/withdraws/sends, Spender+Cap for",
-        "approves). The per-call AGENT TASK block emitted alongside the verification block",
-        "prescribes the exact shape — follow it. The server still EMITS the VERIFY-BEFORE-",
-        "SIGNING block for clients that don't summarize, but agent clients must replace it",
-        "with the bullet form so the cryptographic guarantees (short hash, cross-check",
-        "summary) stay visible without the hex dump. You may label chain steps",
-        "(\"STEP 1 — Approval\" / \"STEP 2 — Swap\"). ERC-20 approvals",
-        "clear-sign natively on Ledger's Ethereum app, so the server intentionally does",
-        "NOT emit a block for those — you'll only see a block for the main action on",
-        "approve→action chains. That is expected, not a bug. The send-time payload-hash",
-        "guard still runs on every tx. FOR APPROVAL STEPS, tell the user exactly what to",
-        "eyeball on their Ledger screen: (1) the spender address matches the protocol",
-        "they intended to authorize (LiFi diamond for swaps, the Aave/Compound/Morpho",
-        "pool for lending, etc. — state the address and the protocol name), and (2) the",
-        "approved amount matches the amount they asked for (in human units, not wei).",
-        "If either differs from what the device shows, they MUST reject on-device. DO NOT",
-        "append a \"confirm short hash X on Ledger\" reminder for approvals — the device",
-        "clear-signs them and does not display a hash, so that reminder is wrong for this",
-        "flow. The spender + amount eyeball check above IS the Ledger-match check here.",
-        "For all OTHER txs (non-approve), the end-of-reply Ledger reminder must cover both",
-        "modes: blind-sign (device shows a hash → must match the short hash we previewed)",
-        "AND clear-sign (device shows decoded fields via an app/plugin → must match the",
-        "function name and the key amount from the bullet summary). Never assume one mode",
-        "— we can't know in advance which the user's Ledger will pick.",
+        "Function, plus the tx-specific field that matters for this flow (Min out for",
+        "swaps, Amount for supplies/withdraws/sends, Spender+Cap for approves). Do NOT",
+        "include a \"Short hash\" line in the bullet summary — our payloadHash does not",
+        "match what Ledger displays on-device (Ledger hashes the full RLP including",
+        "nonce + gas fields that Ledger Live picks at send time), and showing the short",
+        "hash trains the user to rubber-stamp a real mismatch. The per-call AGENT TASK",
+        "block prescribes the exact shape — follow it. You may label chain steps",
+        "(\"STEP 1 — Approval\" / \"STEP 2 — Swap\"). ERC-20 approvals clear-sign natively on",
+        "Ledger's Ethereum app, so the server intentionally does NOT emit a VERIFY /",
+        "CROSS-CHECK / AGENT TASK block for those — you'll only see blocks for the main",
+        "action on approve→action chains. That is expected, not a bug. The send-time",
+        "payload-hash guard still runs on every tx. FOR APPROVAL STEPS, tell the user",
+        "exactly what to eyeball on their Ledger screen: (1) the spender address matches",
+        "the protocol they intended to authorize (LiFi diamond for swaps, the Aave /",
+        "Compound / Morpho pool for lending, etc. — state the address and the protocol",
+        "name), and (2) the approved amount matches the amount they asked for (in human",
+        "units, not wei). If either differs, they MUST reject on-device. For all OTHER",
+        "txs (non-approve), the end-of-reply Ledger reminder must cover both on-device",
+        "modes honestly: CLEAR-SIGN (device shows decoded fields via a plugin — confirm",
+        "function + key field from the bullet summary) AND BLIND-SIGN (device shows only",
+        "a hash we cannot pre-compute — the user's on-screen checks are To = <to address>",
+        "and Value = <human native amount>; reject if either doesn't match). Never claim",
+        "the Ledger hash must equal our payloadHash.",
         "",
-        "INDEPENDENT CROSS-CHECK: for every prepared EVM tx, call the `verify_tx_decode`",
-        "MCP tool with the prepared-tx handle BEFORE asking the user to confirm. That tool",
-        "fetches an independent function signature from 4byte.directory, decodes the",
-        "calldata against it, and proves the signature re-encodes the exact calldata bytes",
-        "losslessly — a full-argument cross-check, not just a selector lookup. It returns",
-        "a `summary` string pre-written for end-user consumption; relay it verbatim as the",
-        "FIRST line(s) of your reply, before the verification block. Do NOT script your own",
-        "WebFetch to 4byte.directory or swiss-knife.xyz — swiss-knife is a client-side",
-        "Next.js SPA so WebFetch would return only the JS shell, and any ad-hoc 4byte",
-        "scraping bypasses the auditable code path. Always use `verify_tx_decode`. The",
-        "per-call agent-task block emitted next to each verification block restates this.",
+        "INDEPENDENT CROSS-CHECK: the server now runs the 4byte.directory decode",
+        "automatically for every prepared EVM tx and emits the result as a [CROSS-CHECK",
+        "SUMMARY] text block in the response. You do NOT need to call `verify_tx_decode`",
+        "separately — just relay the summary text verbatim. Do NOT script your own",
+        "WebFetch to 4byte.directory or swiss-knife.xyz to duplicate the check — that",
+        "bypasses the auditable code path and the summary text will disagree with the",
+        "canonical one. `verify_tx_decode` is kept as a tool only for re-running the",
+        "check against a still-open handle (e.g. after context compaction).",
         "",
         "RECOVERING A LOST VERIFICATION BLOCK: if the original prepare_* tool result has",
         "dropped out of your context (compaction, long session, multi-agent handoff),",
@@ -650,7 +724,7 @@ async function main() {
         "For TRON handles, `pair_ledger_tron` must have been called at least once per session (so the TRON app has been opened on the device) and the Ledger must still be plugged in with the TRON app open at send time.",
       inputSchema: sendTransactionInput.shape,
     },
-    handler(sendTransaction)
+    sendTransactionHandler(sendTransaction)
   );
 
   server.registerTool(
