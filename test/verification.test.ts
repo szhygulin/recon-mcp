@@ -196,6 +196,7 @@ describe("renderVerificationBlock includes URL, hash, and the encouragement nudg
       stamped as UnsignedTx & { verification: NonNullable<UnsignedTx["verification"]> },
     );
     expect(rendered).toContain("VERIFY BEFORE SIGNING");
+    expect(rendered).toContain("SHOW THIS ENTIRE BLOCK TO THE USER VERBATIM");
     expect(rendered).toContain("open the decoder URL");
     expect(rendered).toContain(stamped.verification!.decoderUrl);
     expect(rendered).toContain(stamped.verification!.payloadHash);
@@ -219,6 +220,7 @@ describe("renderVerificationBlock includes URL, hash, and the encouragement nudg
       stamped as UnsignedTronTx & { verification: NonNullable<UnsignedTronTx["verification"]> },
     );
     expect(rendered).toContain("TRON");
+    expect(rendered).toContain("SHOW THIS ENTIRE BLOCK TO THE USER VERBATIM");
     expect(rendered).toContain("no browser decoder URL");
     expect(rendered).toContain("tronscan");
     expect(rendered).toContain(stamped.verification!.payloadHash);

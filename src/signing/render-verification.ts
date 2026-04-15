@@ -41,6 +41,13 @@ export function renderVerificationBlock(
     : `  Function:    ${v.humanDecode.functionName}`;
 
   return [
+    "⚠️ SECURITY-CRITICAL — SHOW THIS ENTIRE BLOCK TO THE USER VERBATIM.",
+    "Do not summarize, paraphrase, or omit any field. The decoder URL, the",
+    "full payload hash, and the REJECT guidance MUST reach the user before",
+    "they approve on their Ledger. Forwarding an AI summary of this block",
+    "defeats the verification.",
+    "",
+    "════════════════════════════════════════════════════════════════════",
     "VERIFY BEFORE SIGNING — please open the decoder URL in your browser and",
     "compare its decoded output against what's shown below. Approve on your",
     "Ledger only if the function + arguments match.",
@@ -68,6 +75,12 @@ export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification:
   const v = tx.verification;
   const argsBlock = formatArgs(v);
   return [
+    "⚠️ SECURITY-CRITICAL — SHOW THIS ENTIRE BLOCK TO THE USER VERBATIM.",
+    "Do not summarize, paraphrase, or omit any field. The full payload hash",
+    "and the decoded action MUST reach the user before they approve on their",
+    "Ledger. Forwarding an AI summary of this block defeats the verification.",
+    "",
+    "════════════════════════════════════════════════════════════════════",
     "VERIFY BEFORE SIGNING (TRON) — no browser decoder URL is available for",
     "TRON; please read the decoded action + arguments below carefully and",
     "approve on your Ledger only if they match what you intended.",
