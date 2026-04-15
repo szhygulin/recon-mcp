@@ -118,6 +118,19 @@ export function notApplicableForTron(): VerifyDecodeResult {
   };
 }
 
+/**
+ * ERC-20 `approve(address,uint256)` selector. Clear-signed natively on
+ * Ledger's Ethereum app (device shows spender + amount), so the whole
+ * verification-block + agent-task-block pair is suppressed at render
+ * time. This tool short-circuits on the same selector for two reasons:
+ * (1) consistency with that suppression, and (2) 4byte.directory has
+ * notorious collision spam here (e.g. `watch_tg_invmru_*(address,address)`)
+ * that shares the (address, 32-byte) calldata layout — any 64-byte
+ * payload round-trips bijectively through both, so the cross-check
+ * would produce a false mismatch on a universally-known selector.
+ */
+const ERC20_APPROVE_SELECTOR = "0x095ea7b3";
+
 export async function verifyEvmCalldata(
   tx: Pick<UnsignedTx, "data" | "verification">,
   fetchFn: FetchLike = defaultFetch,
@@ -134,6 +147,19 @@ export async function verifyEvmCalldata(
   }
 
   const selector = data.slice(0, 10).toLowerCase();
+
+  if (selector === ERC20_APPROVE_SELECTOR) {
+    return {
+      status: "not-applicable",
+      selector,
+      summary:
+        "ERC-20 approve is clear-signed natively on Ledger's Ethereum app — the device shows the spender " +
+        "and amount directly, so an independent cross-check adds no security. (4byte.directory also carries " +
+        "known spam collisions on this selector, so a cross-check here produces false mismatches.) Verify on " +
+        "the device that the spender address matches the protocol you meant to authorize and the amount " +
+        "matches what you asked for.",
+    };
+  }
   const localDecode = tx.verification?.humanDecode;
   const localFunctionName =
     localDecode && localDecode.source === "local-abi" ? localDecode.functionName : undefined;
@@ -168,7 +194,18 @@ export async function verifyEvmCalldata(
     };
   }
 
-  let chosen: { signature: string; args: readonly unknown[]; abiItem: AbiFunction } | null = null;
+  // Collect EVERY candidate that round-trips losslessly, then pick among
+  // them — selector collisions are real (registry spam, or genuinely
+  // identical calldata layouts like `(address, uint256)` vs
+  // `(address, address)` where any 64-byte payload is bijective between
+  // them). Breaking on the first pass would let the earliest-registered
+  // candidate win arbitrarily, including spam entries that shadow the
+  // canonical signature.
+  const losslessMatches: {
+    signature: string;
+    args: readonly unknown[];
+    abiItem: AbiFunction;
+  }[] = [];
   let decodedButReencodeFailed: string | null = null;
 
   for (const sig of signatures) {
@@ -197,14 +234,23 @@ export async function verifyEvmCalldata(
         args: args as never,
       });
       if (reencoded.toLowerCase() === data.toLowerCase()) {
-        chosen = { signature: sig, args, abiItem };
-        break;
+        losslessMatches.push({ signature: sig, args, abiItem });
+      } else if (!decodedButReencodeFailed) {
+        decodedButReencodeFailed = sig;
       }
-      if (!decodedButReencodeFailed) decodedButReencodeFailed = sig;
     } catch {
       continue;
     }
   }
+
+  // Prefer the candidate whose function name matches the local decode —
+  // that's the whole point of a cross-check. If multiple 4byte entries
+  // decode the same bytes losslessly but only one names the function
+  // the way our local ABI does, they corroborate each other; the others
+  // are registry noise with coincidentally-compatible argument layouts.
+  const chosen = losslessMatches.find(
+    (m) => localFunctionName && funcName(m.signature) === localFunctionName,
+  ) ?? losslessMatches[0] ?? null;
 
   if (!chosen) {
     const extra = decodedButReencodeFailed

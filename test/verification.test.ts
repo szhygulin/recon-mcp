@@ -735,6 +735,55 @@ describe("verifyEvmCalldata — independent cross-check via 4byte.directory", ()
     expect(result.status).toBe("match");
     expect(result.independentSignature).toBe("transfer(address,uint256)");
   });
+
+  it("short-circuits on the ERC-20 approve selector (0x095ea7b3) — clear-signed on Ledger, notorious 4byte spam collisions", async () => {
+    const { verifyEvmCalldata } = await import("../src/signing/verify-decode.js");
+    const approveTx: UnsignedTx = {
+      chain: "ethereum",
+      to: USDC,
+      data: encodeFunctionData({
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [getAddress("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE"), 100_000_000n],
+      }),
+      value: "0",
+      from: SENDER,
+      description: "Approve USDC to LiFi",
+    };
+    // fetchFn must not be called — assert by handing it a throwing impl.
+    const shouldNotCall: MockFetch = async () => {
+      throw new Error("fetch should not be called for approve selector");
+    };
+    const result = await verifyEvmCalldata(issueHandles(approveTx), shouldNotCall);
+    expect(result.status).toBe("not-applicable");
+    expect(result.selector).toBe("0x095ea7b3");
+    expect(result.summary).toMatch(/clear-sign/);
+    expect(result.summary).toMatch(/spender/);
+  });
+
+  it("prefers the 4byte candidate whose function name matches the local decode when multiple candidates re-encode losslessly (fixes approve-selector spam-collision false mismatch)", async () => {
+    const { verifyEvmCalldata } = await import("../src/signing/verify-decode.js");
+    // Use `transfer(address,uint256)` bytes as the test payload — it shares
+    // the exact (address, 32-byte) calldata layout with spam collisions like
+    // `watch_tg_invmru_*(address,address)`. Any 64-byte payload round-trips
+    // bijectively through both, so breaking on the first re-encode match
+    // would pick whichever candidate the registry returned first — arbitrary
+    // noise. The fix prefers the candidate whose name agrees with the local
+    // ABI decode.
+    const tx = issueHandles(usdcTransferTx(1_000_000n));
+    const result = await verifyEvmCalldata(
+      tx,
+      // Spam-style collision listed FIRST, canonical signature SECOND —
+      // mirrors the real-world 4byte response ordering.
+      mockFetch([
+        "watch_tg_invmru_abcdef12(address,address)",
+        "transfer(address,uint256)",
+      ]),
+    );
+    expect(result.status).toBe("match");
+    expect(result.independentSignature).toBe("transfer(address,uint256)");
+    expect(result.independentFunctionName).toBe("transfer");
+  });
 });
 
 describe("verifyTxDecode (MCP handler) — routes by handle origin", () => {
