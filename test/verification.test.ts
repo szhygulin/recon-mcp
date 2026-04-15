@@ -169,14 +169,18 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     };
     const stamped = issueHandles(approve);
     const blocks = collectVerificationBlocks(stamped);
-    expect(blocks).toHaveLength(1);
-    // The single block is the swap, not the approval.
+    // One verification block + one agent-task directive block for the swap.
+    // The approve node is suppressed entirely (both blocks).
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toContain("VERIFY BEFORE SIGNING");
     expect(blocks[0]).not.toContain("approve(address,uint256)");
-    // Still contains the swap destination in the Raw line.
     expect(blocks[0]).toContain("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE");
+    expect(blocks[1]).toContain("[AGENT TASK");
+    expect(blocks[1]).toContain("4byte.directory");
+    expect(blocks[1]).toContain("0x2c57e884");
   });
 
-  it("renders the single block when there is no chain (supply without approval)", () => {
+  it("renders the single tx with its verification block + agent task block", () => {
     const supply: UnsignedTx = {
       chain: "ethereum",
       to: CONTRACTS.ethereum.aave.pool as `0x${string}`,
@@ -187,7 +191,28 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     };
     const stamped = issueHandles(supply);
     const blocks = collectVerificationBlocks(stamped);
-    expect(blocks).toHaveLength(1);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toContain("VERIFY BEFORE SIGNING");
+    expect(blocks[1]).toContain("[AGENT TASK");
+    expect(blocks[1]).toContain("0x617ba037");
+  });
+
+  it("suppresses the agent task block for ERC-20 approves (verification block also suppressed)", () => {
+    const approveOnly: UnsignedTx = {
+      chain: "ethereum",
+      to: USDC,
+      data: encodeFunctionData({
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [getAddress("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE"), 100_000_000n],
+      }),
+      value: "0",
+      from: SENDER,
+      description: "Approve USDC to LiFi",
+    };
+    const stamped = issueHandles(approveOnly);
+    const blocks = collectVerificationBlocks(stamped);
+    expect(blocks).toHaveLength(0);
   });
 });
 
@@ -449,9 +474,11 @@ describe("get_tx_verification recovers a verification block by handle", () => {
     // The handler() wrapper renders the verification block from the result —
     // proving that get_tx_verification slots into the same render path as prepare_*.
     const blocks = collectVerificationBlocks(recovered);
-    expect(blocks).toHaveLength(1);
+    // verification block + agent task block (EVM non-approve tx)
+    expect(blocks).toHaveLength(2);
     expect(blocks[0]).toContain("VERIFY BEFORE SIGNING");
     expect(blocks[0]).toContain(stamped.verification!.payloadHash);
+    expect(blocks[1]).toContain("[AGENT TASK");
   });
 
   it("TRON handle returns the TRON-rendered block (separate code path)", async () => {

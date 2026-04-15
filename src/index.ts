@@ -151,6 +151,7 @@ import { requestCapability, requestCapabilityInput } from "./modules/feedback/in
 
 import { issueHandles } from "./signing/tx-store.js";
 import {
+  renderAgentTaskBlock,
   renderTronVerificationBlock,
   renderVerificationBlock,
   shouldRenderVerificationBlock,
@@ -186,6 +187,12 @@ export function collectVerificationBlocks(result: unknown): string[] {
     // (the send-time payload-hash guard still runs, using tx.verification).
     if (shouldRenderVerificationBlock(tx)) {
       blocks.push(renderVerificationBlock(tx));
+      // Per-call agent directives (cross-check the selector via 4byte.directory,
+      // hide the handle UUID from the user). Adjacent to the verification block
+      // so the model is far more likely to act on it than on the session-level
+      // instructions field, which it tends to ignore after the first few turns.
+      const taskBlock = renderAgentTaskBlock(tx);
+      if (taskBlock) blocks.push(taskBlock);
     }
     if (r.next) blocks.push(...collectVerificationBlocks(r.next));
   }

@@ -96,6 +96,43 @@ export function renderVerificationBlock(
   ].join("\n");
 }
 
+/**
+ * Per-tx instructions for the orchestrator agent — deliberately short, with the
+ * 4-byte selector pre-filled so the agent doesn't have to compute it. Returned
+ * as a SEPARATE content block so the agent processes it as a directive while
+ * the user-facing verification block stays clean.
+ *
+ * Why this lives in the response (not just the server-level instructions field):
+ * server-level instructions load once at session start and tend to be ignored
+ * after a few hundred tokens of unrelated turns. Per-call task hints arrive
+ * adjacent to the data they describe, so the model is far more likely to act
+ * on them. We accept the per-call token cost as the price of reliability.
+ *
+ * NOTE: ERC-20 approvals suppress this block too — the signature is universally
+ * known, the cross-check would be noise, and the verification block itself is
+ * suppressed (Ledger clear-signs approves natively).
+ */
+export function renderAgentTaskBlock(
+  tx: Pick<UnsignedTx, "data" | "handle">,
+): string | null {
+  if (!shouldRenderVerificationBlock(tx)) return null;
+  const selector = tx.data.slice(0, 10).toLowerCase(); // "0x" + 8 hex chars
+  const fourByteUrl = `https://www.4byte.directory/signatures/?bytes4_signature=${selector}`;
+  const lines = [
+    "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
+    `Before relaying the verification block above and asking the user to confirm:`,
+    `  1. WebFetch ${fourByteUrl} and confirm the function name in the Call: line`,
+    `     above appears in the results. Prepend ONE LINE to your reply:`,
+    `       "Cross-check (4byte.directory): ✓ <function-name>"  on match, or`,
+    `       "Cross-check (4byte.directory): ✗ MISMATCH — DO NOT SEND" on mismatch.`,
+    `     If WebFetch fails, say so honestly and proceed (don't fabricate ✓).`,
+    `  2. Do NOT echo the handle UUID to the user — it is opaque internal state`,
+    `     used only by send_transaction. Just say "Reply 'send' to forward to`,
+    `     Ledger" or similar.`,
+  ];
+  return lines.join("\n");
+}
+
 export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification: TxVerification }): string {
   const v = tx.verification;
   return [
