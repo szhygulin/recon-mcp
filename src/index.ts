@@ -56,6 +56,7 @@ import {
   prepareEigenLayerDeposit,
   prepareNativeSend,
   prepareTokenSend,
+  previewSend,
   sendTransaction,
   getTransactionStatus,
   getTxVerification,
@@ -74,6 +75,7 @@ import {
   prepareEigenLayerDepositInput,
   prepareNativeSendInput,
   prepareTokenSendInput,
+  previewSendInput,
   sendTransactionInput,
   getTransactionStatusInput,
   getTxVerificationInput,
@@ -154,6 +156,7 @@ import { issueHandles } from "./signing/tx-store.js";
 import {
   renderAgentTaskBlock,
   renderLedgerHashBlock,
+  renderPostBroadcastBlock,
   renderPostSendPollBlock,
   renderTronVerificationBlock,
   renderVerificationBlock,
@@ -279,11 +282,62 @@ function txHandler<T>(fn: (args: T) => Promise<UnsignedTx> | UnsignedTx) {
 }
 
 /**
- * Handler wrapper for `send_transaction`. Appends a per-call agent task
- * block instructing the agent to poll `get_transaction_status` itself
- * instead of waiting for the user to ask. The session-level instructions
- * tend to drift out of attention after a few hundred tokens, so we put
- * the directive adjacent to the txHash it refers to.
+ * Handler wrapper for `preview_send`. Appends the user-facing LEDGER BLIND-
+ * SIGN HASH block so the agent relays the hash verbatim BEFORE calling
+ * `send_transaction` — which is the whole point of the preview step: the
+ * user must see the hash on their screen before the Ledger device prompt
+ * fires, since a single MCP tool call cannot emit content between pinning
+ * and signing.
+ */
+function previewSendHandler(
+  fn: (args: { handle: string }) => Promise<{
+    handle: string;
+    chain: SupportedChain;
+    to: `0x${string}`;
+    valueWei: string;
+    preSignHash: `0x${string}`;
+    pinned: {
+      nonce: number;
+      maxFeePerGas: string;
+      maxPriorityFeePerGas: string;
+      gas: string;
+    };
+  }>,
+) {
+  return async (args: { handle: string }) => {
+    try {
+      const result = await fn(args);
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, bigintReplacer, 2) },
+          {
+            type: "text" as const,
+            text: renderLedgerHashBlock({
+              preSignHash: result.preSignHash,
+              to: result.to,
+              valueWei: result.valueWei,
+            }),
+          },
+        ],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: "text" as const, text: `Error: ${message}` }],
+        isError: true,
+      };
+    }
+  };
+}
+
+/**
+ * Handler wrapper for `send_transaction`. Emits a user-facing post-broadcast
+ * block with the txHash + explorer link (so the agent cannot silently drop
+ * the hash from the chat — a live-test regression that motivated this
+ * block), followed by an agent-task block directing self-polling via
+ * `get_transaction_status`. The session-level instructions tend to drift out
+ * of attention after a few hundred tokens, so we put the directive adjacent
+ * to the txHash it refers to.
  */
 function sendTransactionHandler(
   fn: (args: SendTransactionArgs) => Promise<{
@@ -291,12 +345,6 @@ function sendTransactionHandler(
     chain: SupportedChain | "tron";
     nextHandle?: string;
     preSignHash?: `0x${string}`;
-    pinned?: {
-      nonce: number;
-      maxFeePerGas: string;
-      maxPriorityFeePerGas: string;
-      gas: string;
-    };
     to?: `0x${string}`;
     valueWei?: string;
   }>,
@@ -306,28 +354,23 @@ function sendTransactionHandler(
       const result = await fn(args);
       const content: { type: "text"; text: string }[] = [
         { type: "text", text: JSON.stringify(result, bigintReplacer, 2) },
-      ];
-      // EVM sends: surface the EIP-1559 pre-sign hash so the user can match it
-      // against Ledger's blind-sign screen. TRON sends don't go through
-      // WalletConnect/Ledger blind-sign, so no hash block.
-      if (result.preSignHash && result.to && result.valueWei) {
-        content.push({
+        {
           type: "text",
-          text: renderLedgerHashBlock({
-            preSignHash: result.preSignHash,
-            to: result.to,
-            valueWei: result.valueWei,
+          text: renderPostBroadcastBlock({
+            chain: String(result.chain),
+            txHash: String(result.txHash),
+            ...(result.preSignHash ? { preSignHash: result.preSignHash } : {}),
           }),
-        });
-      }
-      content.push({
-        type: "text",
-        text: renderPostSendPollBlock({
-          chain: String(result.chain),
-          txHash: String(result.txHash),
-          ...(result.nextHandle ? { nextHandle: result.nextHandle } : {}),
-        }),
-      });
+        },
+        {
+          type: "text",
+          text: renderPostSendPollBlock({
+            chain: String(result.chain),
+            txHash: String(result.txHash),
+            ...(result.nextHandle ? { nextHandle: result.nextHandle } : {}),
+          }),
+        },
+      ];
       return { content };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -398,20 +441,27 @@ async function main() {
         "3. Call a `prepare_*` tool to build the unsigned transaction (this returns a handle",
         "   plus a human-readable decoded preview; no calldata is exposed to the agent).",
         "4. Show the decoded preview to the user and get explicit confirmation.",
-        "5. Call `send_transaction` with the handle and `confirmed: true` — Ledger Live will",
-        "   prompt the user to review and physically sign on the device.",
-        "6. After `send_transaction` returns a txHash, poll `get_transaction_status`",
-        "   YOURSELF every ~5s until status is `success` or `failed` (budget ~2min).",
-        "   Do NOT stop and wait for the user to type \"next\" — the per-call AGENT",
-        "   TASK block emitted alongside the txHash prescribes the exact cadence.",
+        "5. FOR EVM HANDLES ONLY: call `preview_send(handle)` BEFORE `send_transaction`. It pins",
+        "   nonce + EIP-1559 fees server-side and returns a LEDGER BLIND-SIGN HASH content block.",
+        "   Relay that block VERBATIM to the user so the hash is on-screen when the Ledger device",
+        "   prompt later appears. Skip this step for TRON handles — they use USB-HID signing with",
+        "   native clear-sign screens, no WalletConnect hash.",
+        "6. Call `send_transaction` with the handle and `confirmed: true` — Ledger Live will",
+        "   prompt the user to review and physically sign on the device. For EVM handles this",
+        "   reads the pin from step 5; if you skipped preview_send it throws \"Missing pinned gas\".",
+        "7. After `send_transaction` returns a txHash, relay the TRANSACTION BROADCAST block",
+        "   VERBATIM to the user (it carries the hash + explorer link — do NOT drop it), THEN",
+        "   poll `get_transaction_status` YOURSELF every ~5s until status is `success` or",
+        "   `failed` (budget ~2min). Do NOT stop and wait for the user to type \"next\" — the",
+        "   per-call AGENT TASK block emitted alongside the txHash prescribes the exact cadence.",
         "",
         "TWO-STEP ALLOWANCE FLOWS: when a `prepare_*` tool returns an approval tx alongside",
-        "the main tx (supply, repay, swap, etc.), submit the approval via `send_transaction`",
-        "FIRST. The post-send auto-poll (step 6) is how you wait for the approval to be",
-        "included — do not ask the user to confirm inclusion. Only AFTER status flips to",
-        "`success`, simulate or send the main tx. Simulating against pre-approval state",
-        "fails with \"insufficient allowance\" / ERC20 reverts and looks like a builder bug",
-        "— it is not, the allowance just isn't on-chain yet.",
+        "the main tx (supply, repay, swap, etc.), submit the approval FIRST via preview_send",
+        "→ send_transaction. The post-send auto-poll (step 7) is how you wait for the approval",
+        "to be included — do not ask the user to confirm inclusion. Only AFTER status flips to",
+        "`success`, call preview_send on the nextHandle and then send the main tx. Simulating",
+        "or previewing against pre-approval state fails with \"insufficient allowance\" / ERC20",
+        "reverts and looks like a builder bug — it is not, the allowance just isn't on-chain yet.",
         "",
         "READ-ONLY TOOLS need no pairing and can be called freely: get_lending_positions,",
         "get_lp_positions, get_compound_positions, get_morpho_positions, get_staking_positions,",
@@ -468,14 +518,28 @@ async function main() {
         "payloadHashShort equals the Ledger hash — those are different preimages. The",
         "send-time block is the authoritative source.",
         "",
-        "LEDGER BLIND-SIGN HASH (POST-SEND): on every EVM send_transaction, the server",
-        "pins nonce + EIP-1559 fees and emits a content block titled \"LEDGER BLIND-SIGN",
-        "HASH — RELAY VERBATIM TO USER; THEY MATCH ON-DEVICE\". Forward that block",
-        "VERBATIM to the user — do not collapse it into a summary. The Edit-gas warning",
-        "inside it is load-bearing: if the user taps \"Edit gas\" / \"Edit fees\" in Ledger",
-        "Live, the on-device hash will legitimately diverge from the one we predict, and",
-        "the user should reject and re-run send_transaction to pick up fresh fees. This",
-        "block only exists for EVM sends; TRON goes through a different signing flow.",
+        "LEDGER BLIND-SIGN HASH (PRE-SIGN, via preview_send): a single MCP tool call cannot",
+        "emit content WHILE the Ledger device prompt is open, so the hash must be surfaced in",
+        "a separate step. For every EVM send, call `preview_send(handle)` BEFORE calling",
+        "`send_transaction`. preview_send pins nonce + EIP-1559 fees server-side, stashes them",
+        "on the handle, computes the EIP-1559 pre-sign RLP hash, and returns a \"LEDGER BLIND-",
+        "SIGN HASH — RELAY VERBATIM TO USER; THEY MATCH ON-DEVICE\" content block. Forward",
+        "that block VERBATIM — do not collapse it into a summary. Only after the user has",
+        "seen the hash should you call send_transaction (which then reads the pin and forwards",
+        "it via WalletConnect). The Edit-gas paragraph in the block is load-bearing: if the",
+        "user taps \"Edit gas\" / \"Edit fees\" in Ledger Live, the on-device hash will",
+        "legitimately diverge. The block lets the user decide — they may accept the divergence",
+        "(at which point the server's hash-match guarantee no longer applies and they are",
+        "signing without the calldata-integrity check), or reject and call preview_send again",
+        "for a fresh pin. Do NOT rewrite that paragraph as a flat \"you must reject\" — the",
+        "user's choice is part of the contract. If send_transaction throws \"Missing pinned",
+        "gas\", you skipped preview_send — call it and retry. This step is EVM-only; TRON uses",
+        "USB-HID clear-signing with no hash block.",
+        "",
+        "POST-BROADCAST (after send_transaction): the server emits a \"TRANSACTION BROADCAST —",
+        "RELAY VERBATIM TO USER\" block carrying the txHash + block-explorer link. Forward it",
+        "VERBATIM — a live-test regression showed the agent sometimes dropped the hash from",
+        "the chat, forcing the user to dig through Ledger Live. Never summarize away the hash.",
         "",
         "INDEPENDENT CROSS-CHECK: the server now runs the 4byte.directory decode",
         "automatically for every prepared EVM tx and emits the result as a [CROSS-CHECK",
@@ -750,12 +814,32 @@ async function main() {
   );
 
   server.registerTool(
+    "preview_send",
+    {
+      description:
+        "EVM-only: finalize an already-prepared transaction for signing by pinning the nonce, " +
+        "EIP-1559 fees (maxFeePerGas, maxPriorityFeePerGas), and gas limit server-side, then computing " +
+        "the EIP-1559 pre-sign RLP hash Ledger will display in blind-sign mode. Returns a LEDGER " +
+        "BLIND-SIGN HASH content block the user reads BEFORE you call send_transaction — the Ledger " +
+        "device prompt blocks the MCP tool call, so the hash must be surfaced now, not after. The " +
+        "pinned tuple is stashed against the handle and forwarded verbatim on send_transaction so the " +
+        "on-device hash is deterministic. If gas conditions drift while the user reviews, call " +
+        "preview_send again on the same handle to refresh the pin (overwrites the prior one). " +
+        "send_transaction will throw a clear error if called without a prior preview_send. Not " +
+        "applicable to TRON handles (USB HID signing flow, no WalletConnect).",
+      inputSchema: previewSendInput.shape,
+    },
+    previewSendHandler(previewSend),
+  );
+
+  server.registerTool(
     "send_transaction",
     {
       description:
         "Forward an already-prepared transaction to the Ledger device for user signing. Routes on the handle's origin: EVM handles (prepare_aave_*, prepare_compound_*, prepare_swap, prepare_native_send, ...) go through Ledger Live via WalletConnect; TRON handles (prepare_tron_*) go through the directly-connected Ledger over USB HID and are broadcast via TronGrid. In both cases the user must review and physically approve the tx on the Ledger screen; this call blocks until the user signs or rejects. " +
-        "You MUST pass `confirmed: true` — the agent is affirming that the user has seen and acknowledged the decoded preview. " +
-        "For TRON handles, `pair_ledger_tron` must have been called at least once per session (so the TRON app has been opened on the device) and the Ledger must still be plugged in with the TRON app open at send time.",
+        "EVM handles REQUIRE a prior preview_send(handle) call in the same session — send_transaction reads the pinned nonce + fees + gas stashed on the handle and will throw a clear error if the pin is missing. The split exists so the LEDGER BLIND-SIGN HASH is surfaced to the user BEFORE the blocking device prompt. " +
+        "You MUST pass `confirmed: true` — the agent is affirming that the user has seen and acknowledged the decoded preview AND the LEDGER BLIND-SIGN HASH emitted by preview_send. " +
+        "For TRON handles, `pair_ledger_tron` must have been called at least once per session (so the TRON app has been opened on the device) and the Ledger must still be plugged in with the TRON app open at send time; preview_send is skipped (TRON has its own clear-sign UX on-device).",
       inputSchema: sendTransactionInput.shape,
     },
     sendTransactionHandler(sendTransaction)

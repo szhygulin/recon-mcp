@@ -19,9 +19,30 @@ import { buildVerification } from "./verification.js";
  */
 const TX_TTL_MS = 15 * 60_000;
 
+/**
+ * Nonce + EIP-1559 fees + gas limit the server pinned at `preview_send` time,
+ * plus the EIP-1559 pre-sign RLP hash derived from them. Stashed on the handle
+ * so `send_transaction` can forward the EXACT same tuple the user already
+ * matched on-device, keeping the on-device hash deterministic.
+ *
+ * `pinnedAt` is a Date.now() timestamp — if you want a staleness check
+ * (e.g. "pin older than 90s, refuse"), use this. For now we don't, relying on
+ * the 15-minute handle TTL plus the bumped fee multiplier (2x baseFee) to
+ * keep fees live enough.
+ */
+export interface StashedPin {
+  nonce: number;
+  maxFeePerGas: bigint;
+  maxPriorityFeePerGas: bigint;
+  gas: bigint;
+  preSignHash: `0x${string}`;
+  pinnedAt: number;
+}
+
 interface StoredTx {
   tx: UnsignedTx;
   expiresAt: number;
+  pin?: StashedPin;
 }
 
 const store = new Map<string, StoredTx>();
@@ -99,6 +120,39 @@ export function consumeHandle(handle: string): UnsignedTx {
  */
 export function retireHandle(handle: string): void {
   store.delete(handle);
+}
+
+/**
+ * Attach a pinned gas tuple + its pre-sign hash to the handle. Called by
+ * `preview_send` after fetching current nonce/fees/gas from the chain. The
+ * tuple is what `send_transaction` must forward to WalletConnect verbatim —
+ * if it doesn't, the hash the user matched on-device will not equal Ledger's
+ * on-device hash and the user will reject.
+ *
+ * Overwrites any prior pin on the same handle (user may call preview_send
+ * twice if they paused for minutes and want fresh fees).
+ */
+export function attachPinnedGas(handle: string, pin: StashedPin): void {
+  prune();
+  const entry = store.get(handle);
+  if (!entry) {
+    throw new Error(
+      "Unknown or expired tx handle. Prepared transactions expire after 15 minutes. " +
+        "Re-run the prepare_* tool to get a fresh handle.",
+    );
+  }
+  entry.pin = pin;
+}
+
+/**
+ * Read a previously-stashed pin. Returns undefined if the handle was never
+ * preview_send'd — callers in the signing path must treat that as an error
+ * ("call preview_send first") rather than silently fall back to an unpinned
+ * send, which would leave the on-device hash unpredictable.
+ */
+export function getPinnedGas(handle: string): StashedPin | undefined {
+  prune();
+  return store.get(handle)?.pin;
 }
 
 /** Test-only: true if `handle` is still active (not retired, not expired). */

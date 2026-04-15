@@ -81,21 +81,25 @@ describe("renderLedgerHashBlock", () => {
     // Blind-sign vs clear-sign branches both honestly addressed.
     expect(block).toMatch(/BLIND-SIGNS/);
     expect(block).toMatch(/CLEAR-SIGNS/);
-    // Edit-gas warning is load-bearing; without it the user would see a hash
-    // mismatch after tapping Edit gas and wrongly suspect a compromised MCP.
+    // Edit-gas paragraph is load-bearing; without it the user would see a
+    // hash mismatch after tapping Edit gas and wrongly suspect a compromised
+    // MCP. The paragraph gives the user a choice (accept divergence without
+    // the hash-match guarantee, or reject and re-preview) — not a flat "you
+    // must reject".
     expect(block).toMatch(/Edit gas/i);
-    expect(block).toMatch(/Reject on the device/);
+    expect(block).toMatch(/Reject on the device if they differ/);
+    expect(block).toMatch(/hash-match guarantee no longer applies/);
     // Eyeball values in scope.
     expect(block).toContain("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
     expect(block).toContain("500000000000000000");
   });
 });
 
-describe("send_transaction surfaces pin + hash through the handler", () => {
+describe("preview_send surfaces pin + hash; send_transaction consumes them", () => {
   beforeEach(() => vi.resetModules());
   afterEach(() => vi.restoreAllMocks());
 
-  it("throws if send-time fee estimation fails (no silent fallback to unpinned)", async () => {
+  it("preview_send throws if priority-fee RPC fails (no silent fallback to unpinned)", async () => {
     const requestSendMock = vi.fn().mockResolvedValue("0xabc");
     vi.doMock("../src/signing/walletconnect.js", () => ({
       requestSendTransaction: requestSendMock,
@@ -107,7 +111,8 @@ describe("send_transaction surfaces pin + hash through the handler", () => {
       getClient: () => ({
         call: vi.fn().mockResolvedValue({ data: "0x" }),
         getTransactionCount: vi.fn().mockResolvedValue(1),
-        estimateFeesPerGas: vi
+        getBlock: vi.fn().mockResolvedValue({ baseFeePerGas: 10_000_000_000n }),
+        estimateMaxPriorityFeePerGas: vi
           .fn()
           .mockRejectedValue(new Error("fee history RPC down")),
         estimateGas: vi.fn().mockResolvedValue(21_000n),
@@ -128,12 +133,12 @@ describe("send_transaction surfaces pin + hash through the handler", () => {
       from: "0x8F9dE85C01070D2762d29A6Dd7ffEcC965b34361",
       description: "test",
     });
-    const { sendTransaction } = await import(
+    const { previewSend } = await import(
       "../src/modules/execution/index.js"
     );
-    await expect(
-      sendTransaction({ handle: stamped.handle!, confirmed: true }),
-    ).rejects.toThrow(/fee history RPC down/);
+    await expect(previewSend({ handle: stamped.handle! })).rejects.toThrow(
+      /fee history RPC down/,
+    );
     // Critically: no WalletConnect request is made — we'd rather fail loudly
     // than submit with Ledger-Live-picked fees and lose the hash-match check.
     expect(requestSendMock).not.toHaveBeenCalled();

@@ -195,26 +195,31 @@ export function renderAgentTaskBlock(
     `           user named, but still a different code path. If the user`,
     `           picks (c), state the limitation before doing the fetch so`,
     `           they can redirect to (b) if they prefer.`,
-    `  4. End your reply with the Ledger-screen reminder. DO NOT equate our`,
-    `     prepare-time payloadHashShort with Ledger's on-device hash — those`,
-    `     are different preimages and claiming they match would train the`,
-    `     user to rubber-stamp a real mismatch. What the user SHOULD match`,
-    `     on-device is surfaced separately at SEND time: send_transaction`,
-    `     pins nonce + EIP-1559 fees server-side and emits a block titled`,
-    `     "LEDGER BLIND-SIGN HASH — RELAY VERBATIM TO USER; THEY MATCH`,
-    `     ON-DEVICE". That block is authoritative — forward it verbatim when`,
-    `     it appears on the send response. At PREPARE time (this turn), the`,
-    `     hash does not exist yet, so your reminder here just sets`,
-    `     expectations:`,
+    `  4. After the user confirms, call preview_send(handle) BEFORE calling`,
+    `     send_transaction. preview_send pins nonce + EIP-1559 fees server-`,
+    `     side, computes the EIP-1559 pre-sign RLP hash Ledger will display`,
+    `     in blind-sign mode, and returns a content block titled "LEDGER`,
+    `     BLIND-SIGN HASH — RELAY VERBATIM TO USER; THEY MATCH ON-DEVICE".`,
+    `     Forward that block verbatim — the user reads it BEFORE calling`,
+    `     send_transaction, so the hash is on-screen when the Ledger device`,
+    `     prompt appears. Only then call send_transaction, which forwards`,
+    `     the pinned tuple through WalletConnect so the on-device hash is`,
+    `     deterministic. If send_transaction returns "Missing pinned gas",`,
+    `     you forgot preview_send — call it now.`,
+    `  5. End your prepare-turn reply with the Ledger-screen reminder. DO`,
+    `     NOT equate our prepare-time payloadHashShort with Ledger's on-`,
+    `     device hash — those are different preimages and claiming they`,
+    `     match would train the user to rubber-stamp a real mismatch. The`,
+    `     blind-sign hash the user will match comes from preview_send (step`,
+    `     4 above), not from this prepare turn. Reminder template:`,
     `       "On the Ledger screen: if the device clear-signs with decoded`,
     `        fields (Aave / Lido / 1inch / LiFi / approve plugin), confirm`,
     `        <function> + <key field, e.g. 'Min out 0.04 ETH' for a swap or`,
     `        'Spender + Cap' for an approve>. If the device blind-signs`,
     `        (shows only a hash), match the hash you will see in the`,
-    `        LEDGER BLIND-SIGN HASH block printed after send_transaction,`,
-    `        and additionally verify To = <to address> and Value =`,
-    `        <human native amount>. Reject on-device if anything doesn't`,
-    `        match."`,
+    `        LEDGER BLIND-SIGN HASH block printed by preview_send, and`,
+    `        additionally verify  To = <to address>  and  Value = <human native amount>.`,
+    `        Reject on-device if anything doesn't match."`,
     `     Fill in <to address> and <human native amount> from the bullet`,
     `     summary above so the user has exact values to eyeball.`,
   ];
@@ -222,17 +227,23 @@ export function renderAgentTaskBlock(
 }
 
 /**
- * User-facing block emitted on every successful EVM `send_transaction`.
- * Surfaces the EIP-1559 pre-sign RLP hash we predict Ledger will display in
- * blind-sign mode, given the nonce/fee/gas fields we pinned and forwarded via
- * WalletConnect. This closes the calldata-integrity gap at the device
- * boundary — in the old world the on-device hash was unpredictable (Ledger
- * Live picked nonce + fees) so the user could only eyeball To + Value.
+ * User-facing block emitted on every successful EVM `preview_send`. Surfaces
+ * the EIP-1559 pre-sign RLP hash we predict Ledger will display in blind-sign
+ * mode, given the nonce/fee/gas fields the server pinned and will forward via
+ * WalletConnect on the subsequent `send_transaction`. This closes the
+ * calldata-integrity gap at the device boundary — in the old world the
+ * on-device hash was unpredictable (Ledger Live picked nonce + fees) so the
+ * user could only eyeball To + Value.
+ *
+ * Emitted at PREVIEW time (before send_transaction) so the user sees the hash
+ * BEFORE the Ledger device prompt appears. Single MCP tool calls cannot
+ * interleave content with the blocking device prompt, so the preview → send
+ * split is the only way to guarantee ordering.
  *
  * Marked for VERBATIM relay to the user — the orchestrator agent must NOT
  * collapse this into its bullet summary. The "Edit gas / Edit fees" warning
  * is load-bearing: if the user taps that in Ledger Live, the hash diverges
- * and they should reject on-device and re-run send_transaction.
+ * and they should reject on-device and re-run preview_send + send_transaction.
  */
 export function renderLedgerHashBlock(args: {
   preSignHash: string;
@@ -242,6 +253,10 @@ export function renderLedgerHashBlock(args: {
   return [
     "LEDGER BLIND-SIGN HASH — RELAY VERBATIM TO USER; THEY MATCH ON-DEVICE",
     `  Hash: ${args.preSignHash}`,
+    "",
+    "Read this hash NOW, before you call send_transaction. When Ledger prompts",
+    "on-device you will have seconds to compare — having the value on screen",
+    "already saves a lot of squinting.",
     "",
     "If your Ledger device BLIND-SIGNS (shows only a hash), the hash on-device",
     "MUST equal the value above. Reject on the device if they differ.",
@@ -253,8 +268,58 @@ export function renderLedgerHashBlock(args: {
     `On-device you can always additionally verify:  To = ${args.to}   Value = ${args.valueWei} wei`,
     "",
     "If you tap \"Edit gas\" / \"Edit fees\" in Ledger Live, the hash WILL NOT",
-    "match (you changed a field that feeds the hash). Reject on the device and",
-    "re-run send_transaction to pick up fresh fees.",
+    "match the value above (you changed a field that feeds the hash). You may",
+    "still approve on-device if you accept that tradeoff — but the server's",
+    "hash-match guarantee no longer applies, so you are signing without the",
+    "end-to-end calldata-integrity check. If you want that check back, reject",
+    "on-device and call preview_send again for a fresh pin + hash, then send.",
+  ].join("\n");
+}
+
+/**
+ * Block explorer URL template per supported chain. Only the mainnet chains
+ * the server supports today — kept inline because centralizing this in a
+ * helper would be premature for four entries that rarely change.
+ */
+const EXPLORER_TX_URL: Record<string, (hash: string) => string> = {
+  ethereum: (h) => `https://etherscan.io/tx/${h}`,
+  arbitrum: (h) => `https://arbiscan.io/tx/${h}`,
+  polygon: (h) => `https://polygonscan.com/tx/${h}`,
+  base: (h) => `https://basescan.org/tx/${h}`,
+  tron: (h) => `https://tronscan.org/#/transaction/${h}`,
+};
+
+/**
+ * User-facing block emitted immediately after a successful broadcast. The
+ * orchestrator must relay it VERBATIM so the txHash and explorer link land
+ * in the user's chat BEFORE the polling block (which is an agent directive,
+ * not user content). A live-test regression showed the agent sometimes
+ * collapsed the raw JSON result and never surfaced the hash — this block
+ * makes the hash impossible to miss and gives the user a one-click cross-
+ * check while polling runs in the background.
+ */
+export function renderPostBroadcastBlock(args: {
+  chain: string;
+  txHash: string;
+  preSignHash?: string;
+}): string {
+  const explorer = EXPLORER_TX_URL[args.chain];
+  const explorerLine = explorer
+    ? `  Explorer: [view on block explorer](${explorer(args.txHash)})`
+    : `  Explorer: (open the tx hash on your chain's block explorer)`;
+  const hashMatchLine = args.preSignHash
+    ? `  Signed hash: ${args.preSignHash}  (same value you matched on-device at preview)`
+    : null;
+  return [
+    "TRANSACTION BROADCAST — RELAY VERBATIM TO USER",
+    `  Chain: ${args.chain}`,
+    `  Tx hash: ${args.txHash}`,
+    explorerLine,
+    ...(hashMatchLine ? [hashMatchLine] : []),
+    "",
+    "The tx was accepted by the relay and is now propagating. Inclusion polling",
+    "continues below — you don't need to do anything; the agent will report the",
+    "outcome when it confirms or times out.",
   ].join("\n");
 }
 
