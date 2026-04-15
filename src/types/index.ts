@@ -485,6 +485,66 @@ export interface UnsignedTronTx {
   feeLimitSun?: string;
   /** Opaque handle — see tron-tx-store.ts. Phase 3 signer consumes this. */
   handle?: string;
+  /**
+   * Pre-sign verification payload, stamped by `issueTronHandle` on every
+   * prepared TRON tx. Optional during rollout; flipped to required after
+   * all call sites are updated.
+   */
+  verification?: TxVerification;
+}
+
+/**
+ * Per-argument decode from the calldata — one entry per ABI input field.
+ * `valueHuman` is populated only when we can apply decimals + symbol (known
+ * ERC-20 tokens via `TOKEN_META`). For everything else, `value` is the raw
+ * stringified bigint / address / bytes and callers render that directly.
+ */
+export interface DecodedArg {
+  name: string;
+  type: string;
+  value: string;
+  valueHuman?: string;
+}
+
+/**
+ * Local decode of the exact calldata that will be signed. Built from the
+ * static ABI registry in `src/abis/*` via viem's `decodeFunctionData`. Never
+ * calls a network — if the destination isn't in our registry, `source` is
+ * `"none"` and the user is told to rely entirely on the swiss-knife URL.
+ */
+export interface HumanDecode {
+  /** Function name (`"supply"`), or `"nativeTransfer"` / `"unknown"`. */
+  functionName: string;
+  /** Full signature like `supply(address,uint256,address,uint16)`. */
+  signature?: string;
+  args: DecodedArg[];
+  /** `"local-abi"` when decoded from our ABI registry, `"native"` for pure ETH sends, `"none"` when unknown destination. */
+  source: "local-abi" | "native" | "none";
+}
+
+/**
+ * Pre-sign verification payload — attached to EVERY prepared transaction
+ * unconditionally. The user is expected to open `decoderUrl` in a browser,
+ * compare what swiss-knife.xyz decodes against `humanDecode` in chat, and
+ * only approve on Ledger if the two agree. The `payloadHash` is a
+ * domain-tagged keccak256 that can be recomputed independently from the
+ * swiss-knife URL params and is re-checked at send time against the exact
+ * bytes forwarded to WalletConnect (the bytes-we-previewed == bytes-we-sign
+ * proof).
+ */
+export interface TxVerification {
+  /** keccak256 of `("VaultPilot-txverify-v1:" ‖ chainId ‖ to ‖ value ‖ data)` for EVM; `("VaultPilot-txverify-v1:tron:" ‖ rawDataHex)` for TRON. */
+  payloadHash: `0x${string}`;
+  /** First 8 hex chars (no `0x`) of `payloadHash` — short enough to read off a Ledger screen and eyeball-match. */
+  payloadHashShort: string;
+  /** swiss-knife.xyz decoder URL with calldata, address, chainId preloaded. EVM only; absent when calldata is too large to fit or on TRON. */
+  decoderUrl?: string;
+  /** Fallback when `decoderUrl` can't be built — short instructions telling the user to paste calldata/address/chainId manually. */
+  decoderPasteInstructions?: string;
+  /** Local decode of the calldata (viem + ABI registry). */
+  humanDecode: HumanDecode;
+  /** Canonical comparison string `<chainId>:<to>:<value>:<data>` — exactly the four fields fed into the fingerprint. */
+  comparisonString: string;
 }
 
 /** Unsigned transaction, ready to be sent to Ledger Live for signing. */
@@ -525,6 +585,13 @@ export interface UnsignedTx {
    * the prompt-injection → arbitrary-signing path.
    */
   handle?: string;
+  /**
+   * Pre-sign verification payload — decoder URL, local decode, and a
+   * domain-tagged payload hash. Stamped by `issueHandles` on every prepared
+   * EVM tx. Optional during rollout; flipped to required once all call
+   * sites are updated.
+   */
+  verification?: TxVerification;
 }
 
 /** Shape of ~/.vaultpilot-mcp/config.json. */

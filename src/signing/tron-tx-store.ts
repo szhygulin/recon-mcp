@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { UnsignedTronTx } from "../types/index.js";
+import { buildTronVerification } from "./verification.js";
 
 /**
  * In-memory registry of prepared TRON transactions. Parallel to
@@ -30,7 +31,8 @@ function prune(now = Date.now()): void {
 export function issueTronHandle(tx: UnsignedTronTx): UnsignedTronTx {
   prune();
   const handle = randomUUID();
-  const withHandle: UnsignedTronTx = { ...tx, handle };
+  const verification = tx.verification ?? buildTronVerification(tx);
+  const withHandle: UnsignedTronTx = { ...tx, handle, verification };
   const { handle: _h, ...stored } = withHandle;
   store.set(handle, { tx: stored as UnsignedTronTx, expiresAt: Date.now() + TX_TTL_MS });
   return withHandle;

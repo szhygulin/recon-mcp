@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { UnsignedTx } from "../types/index.js";
+import { buildVerification } from "./verification.js";
 
 /**
  * In-memory registry of prepared transactions keyed by an opaque handle.
@@ -46,9 +47,17 @@ export function issueHandles(tx: UnsignedTx): UnsignedTx {
 
   const nextWithHandles = tx.next ? issueHandles(tx.next) : undefined;
   const handle = randomUUID();
+  // Stamp verification metadata unconditionally — every tx carries a
+  // payloadHash, a swiss-knife decoder URL (when calldata fits), and a
+  // local decode. The send-time guard in execution/index.ts re-hashes the
+  // exact bytes handed to WalletConnect and asserts equality with this
+  // `verification.payloadHash`, giving the user end-to-end certainty that
+  // what they preview is what they sign.
+  const verification = tx.verification ?? buildVerification(tx);
   const withHandle: UnsignedTx = {
     ...tx,
     handle,
+    verification,
     ...(nextWithHandles ? { next: nextWithHandles } : {}),
   };
   // Store a copy without `handle` on the stored value itself (not needed at

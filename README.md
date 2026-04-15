@@ -32,6 +32,34 @@ This is an **agent-driven portfolio management** tool, not a wallet replacement.
 - **Execution** — tx preparation for Aave, Compound, Morpho, Lido, EigenLayer, native/token sends, swaps; signing via Ledger Live (WalletConnect) for EVM chains
 - **Utilities** — ENS forward/reverse resolution, token balances, transaction status
 
+## Transaction verification before signing
+
+Every `prepare_*` response ends with a **VERIFY BEFORE SIGNING** block that gives the user three independent ways to cross-check what they are about to approve on their Ledger:
+
+1. **`decoderUrl`** — a preloaded `https://calldata.swiss-knife.xyz/decoder?calldata=…&address=…&chainId=…` link. Open it in a browser; swiss-knife pulls the destination's ABI from Etherscan and re-decodes the calldata independently of this server. If what swiss-knife shows differs from the function + arguments in chat, reject on the device. On TRON the decoder URL is absent (swiss-knife is EVM-only); the decoded action + args from the local decoder is what the user verifies against.
+2. **Local decode in chat** — produced from the static ABI registry under `src/abis/` via viem's `decodeFunctionData`. Two independent decoders (local + swiss-knife) reading the same bytes should agree.
+3. **`payloadHash`** — a domain-tagged `keccak256` fingerprint that the user can recompute independently from the URL params and the `value` shown in chat.
+
+At `send_transaction` time, the server re-hashes the EXACT `{chainId, to, value, data}` being forwarded to WalletConnect (or the rawDataHex on TRON) and refuses to submit if the hash drifted from the preview-time one. This is the "what-you-preview == what-you-sign" proof: identical inputs → identical hash, enforced at both ends.
+
+### Verifying `payloadHash` yourself
+
+EVM preimage: `"VaultPilot-txverify-v1:" ‖ chainId (32-byte BE) ‖ to (20 bytes) ‖ value (32-byte BE) ‖ data`.
+
+```sh
+# Paste calldata, address, and chainId from the swiss-knife URL; value is shown in chat.
+TAG=$(cast from-utf8 "VaultPilot-txverify-v1:")
+CHAIN=$(cast to-uint256 1)         # chainId
+TO=0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
+VALUE=$(cast to-uint256 0)         # wei, as shown in chat
+DATA=0xa9059cbb...                 # from swiss-knife ?calldata=
+cast keccak $(cast concat-hex "$TAG" "$CHAIN" "$TO" "$VALUE" "$DATA")
+```
+
+TRON preimage: `"VaultPilot-txverify-v1:tron:" ‖ rawDataHex`.
+
+If the recomputed hash equals the `Fingerprint:` line in chat (and the one echoed back at send time), the bytes you previewed are the bytes you signed.
+
 ## Supported chains
 
 EVM: Ethereum, Arbitrum, Polygon, Base.

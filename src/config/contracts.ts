@@ -164,3 +164,60 @@ export const NATIVE_SYMBOL: Record<SupportedChain, string> = {
   polygon: "MATIC",
   base: "ETH",
 };
+
+/**
+ * Token decimals by symbol for the tokens enumerated above. Used by the
+ * calldata decoder to render `valueHuman` on ERC-20 `amount` args ("1.0 USDC"
+ * instead of the raw uint256). Any token missing here falls through to the
+ * raw bigint string in the preview — unknown tokens never render a decimal.
+ *
+ * Lowercase symbol keys so address→symbol lookups in `TOKEN_META` compose
+ * cleanly. Values sourced from each token's on-chain `decimals()` — the
+ * canonical set on Ethereum mainnet, identical on every L2 for the same
+ * asset (USDC.e / USDbC inherit the native USDC's 6 decimals).
+ */
+const DECIMALS_BY_SYMBOL: Record<string, number> = {
+  usdc: 6,
+  "usdc.e": 6,
+  usdbc: 6,
+  usdt: 6,
+  "usdt.e": 6,
+  dai: 18,
+  weth: 18,
+  wbtc: 8,
+  link: 18,
+  uni: 18,
+  aave: 18,
+  ldo: 18,
+  arb: 18,
+  wmatic: 18,
+  cbeth: 18,
+};
+
+export interface TokenInfo {
+  symbol: string;
+  decimals: number;
+}
+
+function buildTokenMeta(): Record<SupportedChain, Record<string, TokenInfo>> {
+  const out = {} as Record<SupportedChain, Record<string, TokenInfo>>;
+  for (const chain of Object.keys(CONTRACTS) as SupportedChain[]) {
+    const chainTokens = (CONTRACTS[chain] as { tokens?: Record<string, string> }).tokens;
+    const entry: Record<string, TokenInfo> = {};
+    if (chainTokens) {
+      for (const [symbol, addr] of Object.entries(chainTokens)) {
+        const decimals = DECIMALS_BY_SYMBOL[symbol.toLowerCase()];
+        if (decimals === undefined) continue;
+        entry[addr.toLowerCase()] = { symbol, decimals };
+      }
+    }
+    out[chain] = entry;
+  }
+  return out;
+}
+
+/**
+ * Lower-cased-address → `{ symbol, decimals }` map, indexed per chain.
+ * `TOKEN_META.ethereum["0xa0b8...eb48"]` → `{ symbol: "USDC", decimals: 6 }`.
+ */
+export const TOKEN_META: Record<SupportedChain, Record<string, TokenInfo>> = buildTokenMeta();

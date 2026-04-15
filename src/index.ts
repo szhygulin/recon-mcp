@@ -148,27 +148,67 @@ import { simulateTransactionInput } from "./modules/simulation/schemas.js";
 import { requestCapability, requestCapabilityInput } from "./modules/feedback/index.js";
 
 import { issueHandles } from "./signing/tx-store.js";
-import type { UnsignedTx } from "./types/index.js";
+import {
+  renderTronVerificationBlock,
+  renderVerificationBlock,
+} from "./signing/render-verification.js";
+import type { TxVerification, UnsignedTronTx, UnsignedTx } from "./types/index.js";
 
 import { readUserConfig } from "./config/user-config.js";
+
+/**
+ * Collect rendered verification blocks from a result, walking `.next` for
+ * EVM approve→action chains. Each prepared tx in the chain gets its own
+ * block so the user can cross-check every hash they will sign — never a
+ * single aggregated block that conflates two separate signatures.
+ *
+ * Unknown shapes return an empty array (non-prepare tools have no
+ * verification field).
+ */
+function collectVerificationBlocks(result: unknown): string[] {
+  if (!result || typeof result !== "object") return [];
+  const blocks: string[] = [];
+  // EVM path: UnsignedTx has `chain` / `to` / `data` / `value` / `verification` + optional `.next`.
+  const r = result as Record<string, unknown>;
+  const verification = r.verification as TxVerification | undefined;
+  if (!verification) return blocks;
+  const chain = r.chain as string | undefined;
+  if (chain === "tron" && typeof r.rawDataHex === "string") {
+    blocks.push(renderTronVerificationBlock(result as UnsignedTronTx & { verification: TxVerification }));
+    return blocks;
+  }
+  if (typeof r.to === "string" && typeof r.data === "string" && typeof r.value === "string" && typeof chain === "string") {
+    blocks.push(
+      renderVerificationBlock(result as UnsignedTx & { verification: TxVerification }),
+    );
+    if (r.next) blocks.push(...collectVerificationBlocks(r.next));
+  }
+  return blocks;
+}
 
 /**
  * Wrap a plain async function into the shape MCP expects.
  * Returns `{ content: [{ type: "text", text }] }` on success,
  * `{ content, isError: true }` on failure.
+ *
+ * When the result carries a `verification` field (every `prepare_*` tool
+ * output does), a SECOND text content block is appended with the rendered
+ * "VERIFY BEFORE SIGNING" prose — decoder URL, local decode, comparison
+ * string, payload hash, and the nudge to open the URL before approving.
+ * The block lives next to the JSON so machine readers still get the
+ * structured data AND the user sees the verification prose verbatim.
  */
 function handler<T, R>(fn: (args: T) => Promise<R> | R) {
   return async (args: T) => {
     try {
       const result = await fn(args);
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify(result, bigintReplacer, 2),
-          },
-        ],
-      };
+      const content: { type: "text"; text: string }[] = [
+        { type: "text", text: JSON.stringify(result, bigintReplacer, 2) },
+      ];
+      for (const block of collectVerificationBlocks(result)) {
+        content.push({ type: "text", text: block });
+      }
+      return { content };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return {

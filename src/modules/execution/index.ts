@@ -17,6 +17,7 @@ import {
 } from "../../signing/tron-usb-signer.js";
 import { broadcastTronTx } from "../tron/broadcast.js";
 import { assertTransactionSafe } from "../../signing/pre-sign-check.js";
+import { payloadFingerprint, tronPayloadFingerprint } from "../../signing/verification.js";
 import { getClient, verifyChainId } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { simulateTx } from "../simulation/index.js";
@@ -348,6 +349,22 @@ async function sendTronTransaction(args: SendTransactionArgs): Promise<{
   chain: "tron";
 }> {
   const tx: UnsignedTronTx = consumeTronHandle(args.handle);
+  // Proof-of-identity guard: recompute the domain-tagged hash of the EXACT
+  // rawDataHex that the USB signer is about to hand to the Ledger, and
+  // require equality with the hash the user previewed. A drift here means
+  // tx state mutated between handle issuance and send — should never
+  // happen, but the invariant is cheap to enforce and exactly what turns
+  // "trust me" into "same bytes, same hash".
+  if (tx.verification) {
+    const rehash = tronPayloadFingerprint(tx.rawDataHex);
+    if (rehash !== tx.verification.payloadHash) {
+      throw new Error(
+        `TRON payload hash mismatch at send time. Previewed ${tx.verification.payloadHash}, ` +
+          `about to sign ${rehash}. The rawDataHex changed between preview and send — refusing ` +
+          `to forward to the Ledger.`,
+      );
+    }
+  }
   // If the user paired this `from` via `pair_ledger_tron`, use the path they
   // paired on (covers non-default account slots). If we have no paired entry
   // for `from`, fall through to the signer's default path — the device
@@ -428,6 +445,23 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
         `Pre-sign check: tx.from (${tx.from}) is not one of the accounts exposed by the paired ` +
           `WalletConnect session (${accounts.join(", ")}). Refusing to submit. If this is a ` +
           `different Ledger account, re-pair with that account unlocked.`
+      );
+    }
+  }
+  // Proof-of-identity guard: recompute the domain-tagged hash of the exact
+  // `{chainId, to, value, data}` that are about to be forwarded to WalletConnect
+  // (`requestSendTransaction` consumes these four fields, see
+  // src/signing/walletconnect.ts). Equality with `tx.verification.payloadHash`
+  // is the "what-you-preview == what-you-sign" proof. If they diverge, the
+  // request is refused — a mismatch would only be possible if tx state was
+  // mutated in-process between handle issuance and the send call.
+  if (tx.verification) {
+    const rehash = payloadFingerprint({ chain: tx.chain, to: tx.to, value: tx.value, data: tx.data });
+    if (rehash !== tx.verification.payloadHash) {
+      throw new Error(
+        `Payload hash mismatch at send time. Previewed ${tx.verification.payloadHash}, ` +
+          `about to send ${rehash}. The transaction bytes changed between preview and send — ` +
+          `refusing to forward to WalletConnect.`,
       );
     }
   }
