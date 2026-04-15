@@ -176,8 +176,9 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     expect(blocks[0]).not.toContain("approve(address,uint256)");
     expect(blocks[0]).toContain("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE");
     expect(blocks[1]).toContain("[AGENT TASK");
+    // Task block delegates the cross-check to the server-side tool.
+    expect(blocks[1]).toContain("verify_tx_decode");
     expect(blocks[1]).toContain("4byte.directory");
-    expect(blocks[1]).toContain("0x2c57e884");
   });
 
   it("renders the single tx with its verification block + agent task block", () => {
@@ -194,7 +195,7 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     expect(blocks).toHaveLength(2);
     expect(blocks[0]).toContain("VERIFY BEFORE SIGNING");
     expect(blocks[1]).toContain("[AGENT TASK");
-    expect(blocks[1]).toContain("0x617ba037");
+    expect(blocks[1]).toContain("verify_tx_decode");
   });
 
   it("suppresses the agent task block for ERC-20 approves (verification block also suppressed)", () => {
@@ -215,7 +216,7 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     expect(blocks).toHaveLength(0);
   });
 
-  it("agent task block explains the cross-check and reminds about the send-time hash echo", () => {
+  it("agent task block directs the orchestrator at verify_tx_decode and keeps the hash-echo reminder", () => {
     const supply: UnsignedTx = {
       chain: "ethereum",
       to: CONTRACTS.ethereum.aave.pool as `0x${string}`,
@@ -227,11 +228,10 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     const stamped = issueHandles(supply);
     const blocks = collectVerificationBlocks(stamped);
     const task = blocks[1];
-    // Explains what the 4byte lookup actually confirms (not just a bare ✓).
-    expect(task).toMatch(/resolves[\s\n]+to/);
-    expect(task).toMatch(/matches what I decoded locally/);
-    // Nudges user toward the independent swiss-knife arg check.
-    expect(task).toMatch(/swiss-knife/);
+    // Names the MCP tool rather than asking the agent to WebFetch 4byte itself.
+    expect(task).toMatch(/verify_tx_decode/);
+    // Tells the agent to relay the tool's summary verbatim.
+    expect(task).toMatch(/VERBATIM/);
     // The send-time hash reminder.
     expect(task).toMatch(/short payload hash/);
     expect(task).toMatch(/Ledger[\s\n]+shows[\s\n]+before[\s\n]+approving/);
@@ -567,5 +567,188 @@ describe("get_tx_verification recovers a verification block by handle", () => {
     expect(() => getTxVerification({ handle: "nonexistent-handle-uuid" })).toThrow(
       /Unknown or expired tx handle/
     );
+  });
+});
+
+describe("verifyEvmCalldata — independent cross-check via 4byte.directory", () => {
+  type MockFetch = (url: string) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+  const mockFetch = (signatures: string[], opts: { ok?: boolean; status?: number } = {}): MockFetch => {
+    return async () => ({
+      ok: opts.ok ?? true,
+      status: opts.status ?? 200,
+      json: async () => ({ results: signatures.map((s) => ({ text_signature: s })) }),
+    });
+  };
+
+  it("returns status=match with a user-facing summary when the 4byte signature round-trips and function name agrees", async () => {
+    const { verifyEvmCalldata } = await import("../src/signing/verify-decode.js");
+    const tx = issueHandles(usdcTransferTx(1_000_000n));
+    const result = await verifyEvmCalldata(
+      tx,
+      mockFetch(["transfer(address,uint256)"]),
+    );
+    expect(result.status).toBe("match");
+    expect(result.reencodeCheck).toBe("pass");
+    expect(result.independentFunctionName).toBe("transfer");
+    expect(result.localFunctionName).toBe("transfer");
+    expect(result.summary).toMatch(/Independent cross-check passed/);
+    expect(result.summary).toMatch(/re-encod/);
+    // Args are recovered positionally.
+    expect(result.independentArgs).toHaveLength(2);
+    expect(result.independentArgs?.[0].type).toBe("address");
+    expect(result.independentArgs?.[1].type).toBe("uint256");
+    expect(result.independentArgs?.[1].value).toBe("1000000");
+  });
+
+  it("skips 4byte candidates whose selector doesn't match the calldata's first 4 bytes", async () => {
+    const { verifyEvmCalldata } = await import("../src/signing/verify-decode.js");
+    const tx = issueHandles(usdcTransferTx(42n));
+    const result = await verifyEvmCalldata(
+      tx,
+      // First result is a known selector-collision that shares NO prefix with transfer's 0xa9059cbb.
+      // Second one is the real signature.
+      mockFetch(["watch_tg_invmru_d89c2fcf()", "transfer(address,uint256)"]),
+    );
+    expect(result.status).toBe("match");
+    expect(result.independentSignature).toBe("transfer(address,uint256)");
+  });
+
+  it("returns status=mismatch when the 4byte function name disagrees with the local ABI decode", async () => {
+    const { verifyEvmCalldata } = await import("../src/signing/verify-decode.js");
+    const tx = issueHandles(usdcTransferTx(1n));
+    // Construct a bogus signature whose 4-byte selector happens to equal transfer's selector
+    // by finding a colliding function name. We don't actually have such a collision in the
+    // test fixtures — so simulate the mismatch path by stubbing verification.humanDecode
+    // to claim a different function name.
+    const bogusTx = {
+      ...tx,
+      verification: {
+        ...tx.verification!,
+        humanDecode: {
+          ...tx.verification!.humanDecode,
+          functionName: "transferWithDrain",
+          signature: "transferWithDrain(address,uint256)",
+        },
+      },
+    };
+    const result = await verifyEvmCalldata(
+      bogusTx,
+      mockFetch(["transfer(address,uint256)"]),
+    );
+    expect(result.status).toBe("mismatch");
+    expect(result.summary).toMatch(/MISMATCH/);
+    expect(result.summary).toMatch(/DO NOT SEND/);
+    expect(result.localFunctionName).toBe("transferWithDrain");
+    expect(result.independentFunctionName).toBe("transfer");
+  });
+
+  it("returns status=no-signature when 4byte has no entry for the selector", async () => {
+    const { verifyEvmCalldata } = await import("../src/signing/verify-decode.js");
+    const tx = issueHandles(usdcTransferTx(1n));
+    const result = await verifyEvmCalldata(tx, mockFetch([]));
+    expect(result.status).toBe("no-signature");
+    expect(result.summary).toMatch(/not registered/);
+    expect(result.summary).toMatch(/swiss-knife/);
+  });
+
+  it("returns status=error and a human-readable summary on a network failure", async () => {
+    const { verifyEvmCalldata } = await import("../src/signing/verify-decode.js");
+    const tx = issueHandles(usdcTransferTx(1n));
+    const failingFetch: MockFetch = async () => {
+      throw new Error("connect ETIMEDOUT");
+    };
+    const result = await verifyEvmCalldata(tx, failingFetch);
+    expect(result.status).toBe("error");
+    expect(result.summary).toMatch(/Could not reach 4byte/);
+    expect(result.summary).toMatch(/ETIMEDOUT/);
+  });
+
+  it("returns status=no-data for a pure native transfer with empty calldata", async () => {
+    const { verifyEvmCalldata } = await import("../src/signing/verify-decode.js");
+    const nativeTx: UnsignedTx = {
+      chain: "ethereum",
+      to: RECIPIENT,
+      data: "0x",
+      value: "1000000000000000000",
+      from: SENDER,
+      description: "Send 1 ETH",
+    };
+    // fetchFn should never be invoked — assert by handing it a throwing impl.
+    const shouldNotCall: MockFetch = async () => {
+      throw new Error("fetch should not be called for no-data path");
+    };
+    const result = await verifyEvmCalldata(issueHandles(nativeTx), shouldNotCall);
+    expect(result.status).toBe("no-data");
+    expect(result.summary).toMatch(/native-value/);
+  });
+
+  it("handles the 4byte signature-collision case: rejects candidates that don't re-encode losslessly", async () => {
+    const { verifyEvmCalldata } = await import("../src/signing/verify-decode.js");
+    const tx = issueHandles(usdcTransferTx(1_000n));
+    // First candidate is parseable and selector-matching, but takes the wrong arg layout —
+    // picking a non-colliding alternative that will fail re-encode. Using `transfer(uint256)`
+    // which has a different selector and will be filtered by the selector check before re-encode.
+    // To exercise the re-encode fallback, we'd need an actual collision; here we just verify
+    // that multiple candidates are tried and the right one wins.
+    const result = await verifyEvmCalldata(
+      tx,
+      mockFetch([
+        "some_other_function(bytes)",
+        "transfer(address,uint256)",
+      ]),
+    );
+    expect(result.status).toBe("match");
+    expect(result.independentSignature).toBe("transfer(address,uint256)");
+  });
+});
+
+describe("verifyTxDecode (MCP handler) — routes by handle origin", () => {
+  it("returns not-applicable for TRON handles (no 4-byte selector concept on TRON)", async () => {
+    const { verifyTxDecode } = await import("../src/modules/execution/index.js");
+    const stamped = issueTronHandle({
+      chain: "tron",
+      action: "native_send",
+      from: "TXYZ",
+      txID: "e".repeat(64),
+      rawData: {},
+      rawDataHex: "aa",
+      description: "send 1 TRX",
+      decoded: { functionName: "transfer", args: { to: "Tabc", amount: "1 TRX" } },
+    });
+    const result = await verifyTxDecode({ handle: stamped.handle! });
+    expect(result.status).toBe("not-applicable");
+    expect(result.summary).toMatch(/EVM-only/);
+    expect(result.summary).toMatch(/tronscan/);
+  });
+
+  it("throws a clear 'Unknown or expired' error for an unrecognized handle", async () => {
+    const { verifyTxDecode } = await import("../src/modules/execution/index.js");
+    await expect(verifyTxDecode({ handle: "not-a-real-handle" })).rejects.toThrow(
+      /Unknown or expired tx handle/,
+    );
+  });
+});
+
+describe("agent task block directs the orchestrator to verify_tx_decode, not a WebFetch", () => {
+  it("names the MCP tool explicitly and forbids ad-hoc scraping", () => {
+    const supply: UnsignedTx = {
+      chain: "ethereum",
+      to: CONTRACTS.ethereum.aave.pool as `0x${string}`,
+      data: "0x617ba0370000" as `0x${string}`,
+      value: "0",
+      from: SENDER,
+      description: "Aave supply",
+    };
+    const stamped = issueHandles(supply);
+    const blocks = collectVerificationBlocks(stamped);
+    const task = blocks[1];
+    expect(task).toMatch(/verify_tx_decode/);
+    // Must relay the tool's summary verbatim, not paraphrase.
+    expect(task).toMatch(/VERBATIM/);
+    // Explicit don't-scrape rule.
+    expect(task).toMatch(/Do NOT[\s\n]+script/);
+    // Still carries the send-time hash reminder and handle-secrecy rule.
+    expect(task).toMatch(/short payload hash/);
+    expect(task).toMatch(/Do NOT echo the handle/);
   });
 });

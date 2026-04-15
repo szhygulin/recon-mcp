@@ -52,6 +52,11 @@ import type { SupportedChain, UnsignedTx, UnsignedTronTx } from "../../types/ind
 import { hasTronHandle } from "../../signing/tron-tx-store.js";
 import { hasHandle } from "../../signing/tx-store.js";
 import { round } from "../../data/format.js";
+import {
+  notApplicableForTron,
+  verifyEvmCalldata,
+  type VerifyDecodeResult,
+} from "../../signing/verify-decode.js";
 
 /** Render a QR code as an ASCII string (returns promise with the string). */
 function qrString(uri: string): Promise<string> {
@@ -541,4 +546,29 @@ export function getTxVerification(args: GetTxVerificationArgs): UnsignedTx | Uns
       `15 minutes after issue and are deleted on successful submission. Re-run the ` +
       `prepare_* tool to get a fresh handle.`
   );
+}
+
+/**
+ * Server-side independent cross-check of a prepared EVM tx's calldata.
+ *
+ * Pipeline: fetch candidate function signatures for the 4-byte selector from
+ * 4byte.directory, decode + re-encode the calldata against each, and report
+ * which (if any) round-trips losslessly. Result is a `VerifyDecodeResult`
+ * with a human-readable `summary` field — the orchestrator agent is
+ * expected to relay that summary to the user verbatim.
+ *
+ * This exists so the agent does NOT have to script ad-hoc WebFetches to
+ * verify arguments, and does NOT have to pretend it read swiss-knife's
+ * client-rendered SPA output. One MCP tool = one auditable code path.
+ */
+export async function verifyTxDecode(args: GetTxVerificationArgs): Promise<VerifyDecodeResult> {
+  if (hasTronHandle(args.handle)) return notApplicableForTron();
+  if (!hasHandle(args.handle)) {
+    throw new Error(
+      `Unknown or expired tx handle '${args.handle}'. Prepared transactions live for ` +
+        `15 minutes after issue. Re-run the prepare_* tool to get a fresh handle.`
+    );
+  }
+  const tx = consumeHandle(args.handle);
+  return verifyEvmCalldata(tx);
 }

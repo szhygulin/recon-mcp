@@ -59,6 +59,7 @@ import {
   sendTransaction,
   getTransactionStatus,
   getTxVerification,
+  verifyTxDecode,
 } from "./modules/execution/index.js";
 import {
   pairLedgerLiveInput,
@@ -351,24 +352,17 @@ async function main() {
         "approved amount matches the amount they asked for (in human units, not wei).",
         "If either differs from what the device shows, they MUST reject on-device.",
         "",
-        "INDEPENDENT CROSS-CHECK (in addition to forwarding the block): after rendering",
-        "the verification block, you MUST run your own check and report the result to the",
-        "user in 1-2 lines. Do at least one of (in order of preference):",
-        "  (a) Look up the 4-byte selector at https://www.4byte.directory/signatures/?bytes4_signature=<0xSELECTOR>",
-        "      (server-rendered, WebFetch works) and confirm the function name printed in",
-        "      the verification block's `Call:` line appears in the results. Note: 4byte",
-        "      can return multiple collisions; cite the matching one.",
-        "  (b) Independently decode the calldata using your own ABI knowledge (e.g. ERC-20",
-        "      transfer/approve, LiFi Diamond entrypoints, Aave pool methods) and confirm",
-        "      it matches the `Args:` shown locally — call out any mismatch loudly.",
-        "  (c) Confirm the destination address resolves to a contract you recognize",
-        "      (LiFi Diamond 0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE on EVM, Aave V3",
-        "      Pool, Compound III Comet, Lido stETH, etc.) and state which.",
-        "Do NOT claim to have fetched the swiss-knife URL itself — it's a client-side",
-        "Next.js SPA and WebFetch returns only the JS shell, not the decoded calldata. If",
-        "you fetch it, say so honestly: \"swiss-knife renders client-side, so I cannot",
-        "verify its output programmatically — please open the link in a browser.\" The",
-        "user can lie-detect you, so be precise about what you actually checked.",
+        "INDEPENDENT CROSS-CHECK: for every prepared EVM tx, call the `verify_tx_decode`",
+        "MCP tool with the prepared-tx handle BEFORE asking the user to confirm. That tool",
+        "fetches an independent function signature from 4byte.directory, decodes the",
+        "calldata against it, and proves the signature re-encodes the exact calldata bytes",
+        "losslessly — a full-argument cross-check, not just a selector lookup. It returns",
+        "a `summary` string pre-written for end-user consumption; relay it verbatim as the",
+        "FIRST line(s) of your reply, before the verification block. Do NOT script your own",
+        "WebFetch to 4byte.directory or swiss-knife.xyz — swiss-knife is a client-side",
+        "Next.js SPA so WebFetch would return only the JS shell, and any ad-hoc 4byte",
+        "scraping bypasses the auditable code path. Always use `verify_tx_decode`. The",
+        "per-call agent-task block emitted next to each verification block restates this.",
         "",
         "RECOVERING A LOST VERIFICATION BLOCK: if the original prepare_* tool result has",
         "dropped out of your context (compaction, long session, multi-agent handoff),",
@@ -663,6 +657,28 @@ async function main() {
       inputSchema: getTxVerificationInput.shape,
     },
     handler(getTxVerification)
+  );
+
+  server.registerTool(
+    "verify_tx_decode",
+    {
+      description:
+        "Independent server-side cross-check of a prepared EVM tx's calldata. Fetches the function " +
+        "signature(s) registered for the 4-byte selector on 4byte.directory (a public registry), " +
+        "re-decodes the calldata via viem against each candidate, and re-encodes to prove the signature " +
+        "describes the exact calldata bytes losslessly. Returns a VerifyDecodeResult whose `summary` " +
+        "field is pre-written for end-user consumption — the orchestrator should relay it verbatim. " +
+        "Status values: `match` (independent decode agrees with local ABI), `mismatch` (function-name " +
+        "disagreement — DO NOT SEND), `no-signature` / `error` / `not-applicable` (no independent check " +
+        "possible; fall back to the swiss-knife URL). On TRON, returns `not-applicable` — TRON " +
+        "transactions carry no 4-byte selector so this cross-check doesn't apply. Handle is the same " +
+        "opaque ID returned by any prepare_* tool. NEVER do this check by scripting ad-hoc WebFetches " +
+        "to 4byte or swiss-knife; always call this tool so the check runs through a single auditable " +
+        "code path. This is deliberately more expensive than a 4byte-selector lookup — it proves the " +
+        "FULL calldata (not just the function name) is consistent with the independent signature.",
+      inputSchema: getTxVerificationInput.shape,
+    },
+    handler(verifyTxDecode)
   );
 
   server.registerTool(
