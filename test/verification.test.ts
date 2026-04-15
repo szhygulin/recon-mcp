@@ -232,6 +232,19 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     expect(task).toMatch(/verify_tx_decode/);
     // Tells the agent to relay the tool's summary verbatim.
     expect(task).toMatch(/VERBATIM/);
+    // Prescribes a compact bullet summary INSTEAD of verbatim VERIFY-BEFORE-
+    // SIGNING relay — the validated UX pattern.
+    expect(task).toMatch(/COMPACT bullet summary/);
+    expect(task).toMatch(/do NOT relay it verbatim/i);
+    expect(task).toMatch(/Headline:/);
+    // Tx-specific field hints for the common flows.
+    expect(task).toMatch(/Min out/);
+    expect(task).toMatch(/Amount/);
+    expect(task).toMatch(/Spender/);
+    // Destination-label hint so e.g. LiFi/Aave/Lido destinations get called out.
+    expect(task).toMatch(/LiFi diamond/);
+    // Short hash value is substituted into the directive (not a placeholder).
+    expect(task).toContain(stamped.verification!.payloadHashShort);
     // Offers the user an out-of-trust-boundary check — either browser-side
     // swiss-knife or the agent's own independent decode. Phrased as an offer,
     // not a default action.
@@ -248,9 +261,9 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     // The honesty caveat about swiss-knife being client-side rendered.
     expect(task).toMatch(/client-side Next\.js SPA/);
     expect(task).toMatch(/state the limitation before doing the fetch/);
-    // The send-time hash reminder.
-    expect(task).toMatch(/short payload hash/);
-    expect(task).toMatch(/Ledger[\s\n]+shows[\s\n]+before[\s\n]+approving/);
+    // The final Ledger hash-match reminder.
+    expect(task).toMatch(/Before approving on Ledger/);
+    expect(task).toMatch(/reject if it doesn't match/);
   });
 
   it("truncates long nested hex blobs inside struct args (no 2KB callData wall)", () => {
@@ -769,8 +782,8 @@ describe("agent task block directs the orchestrator to verify_tx_decode, not a W
     expect(task).toMatch(/VERBATIM/);
     // Explicit don't-scrape rule.
     expect(task).toMatch(/Do NOT[\s\n]+script/);
-    // Still carries the send-time hash reminder and handle-secrecy rule.
-    expect(task).toMatch(/short payload hash/);
+    // Still carries the final Ledger hash-match reminder and handle-secrecy rule.
+    expect(task).toMatch(/Before approving on Ledger/);
     expect(task).toMatch(/Do NOT echo the handle/);
   });
 });
