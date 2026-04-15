@@ -214,6 +214,64 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     const blocks = collectVerificationBlocks(stamped);
     expect(blocks).toHaveLength(0);
   });
+
+  it("agent task block explains the cross-check and reminds about the send-time hash echo", () => {
+    const supply: UnsignedTx = {
+      chain: "ethereum",
+      to: CONTRACTS.ethereum.aave.pool as `0x${string}`,
+      data: "0x617ba0370000" as `0x${string}`,
+      value: "0",
+      from: SENDER,
+      description: "Aave supply",
+    };
+    const stamped = issueHandles(supply);
+    const blocks = collectVerificationBlocks(stamped);
+    const task = blocks[1];
+    // Explains what the 4byte lookup actually confirms (not just a bare ✓).
+    expect(task).toMatch(/resolves[\s\n]+to/);
+    expect(task).toMatch(/matches what I decoded locally/);
+    // Nudges user toward the independent swiss-knife arg check.
+    expect(task).toMatch(/swiss-knife/);
+    // The send-time hash reminder.
+    expect(task).toMatch(/short payload hash/);
+    expect(task).toMatch(/Ledger[\s\n]+shows[\s\n]+before[\s\n]+approving/);
+  });
+
+  it("truncates long nested hex blobs inside struct args (no 2KB callData wall)", () => {
+    // 1 KB of hex (2048 chars after 0x) — emulates LiFi _swapData[].callData.
+    const longHex = "0x" + "ab".repeat(1024);
+    const v = {
+      chainId: 1,
+      signature: "foo(tuple[] data)",
+      humanDecode: {
+        source: "local-abi",
+        functionName: "foo",
+        signature: "foo(tuple[] data)",
+        args: [
+          {
+            name: "data",
+            type: "tuple[]",
+            value: `[{callData: ${longHex}}]`,
+          },
+        ],
+      },
+      payloadHash: "0x" + "0".repeat(64),
+      payloadHashShort: "00000000",
+      decoderUrl: "https://calldata.swiss-knife.xyz/decoder?calldata=0xabcd",
+      decoderPasteInstructions: "paste",
+    } as const;
+    const rendered = renderVerificationBlock({
+      chain: "ethereum",
+      to: getAddress("0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE"),
+      value: "0",
+      data: "0x617ba0370000" as `0x${string}`,
+      verification: v as never,
+    });
+    // The raw 2 KB hex must not leak verbatim.
+    expect(rendered).not.toContain(longHex);
+    // Instead we get a head…tail (N bytes) preview.
+    expect(rendered).toMatch(/0x(?:ab)+…(?:ab)+ \(1024 bytes\)/);
+  });
 });
 
 describe("issueHandles stamps verification on every node of approve→action chains", () => {

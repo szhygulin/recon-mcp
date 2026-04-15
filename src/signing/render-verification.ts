@@ -37,6 +37,26 @@ function dataByteLen(data: string): number {
   return Math.floor(normalized.length / 2);
 }
 
+/**
+ * Collapse embedded hex blobs inside a rendered arg. Nested struct args
+ * (e.g. LiFi `_swapData[].callData`) carry the wrapped-DEX calldata as a
+ * 0x… hex run — a single struct-arg can be 2 KB of hex. stringifyArg
+ * emits it verbatim; we replace those runs with a head…tail (N bytes)
+ * preview so the chat stays scannable.
+ *
+ * Threshold is 32 bytes (66 chars including "0x"): addresses are 42 chars
+ * (already short), bytes32 hashes fit in 66, and anything longer is
+ * almost certainly a nested calldata / encoded-params blob the user
+ * doesn't want to eyeball here anyway.
+ */
+const HEX_BLOB_RE = /0x[0-9a-fA-F]{67,}/g;
+function truncateNestedHex(s: string): string {
+  return s.replace(HEX_BLOB_RE, (m) => {
+    const byteLen = Math.floor((m.length - 2) / 2);
+    return `${m.slice(0, 14)}…${m.slice(-8)} (${byteLen} bytes)`;
+  });
+}
+
 function formatArgs(v: TxVerification): string[] {
   if (v.humanDecode.source === "none") {
     // No local ABI — lean on swiss-knife. Skip the "Args:" line entirely
@@ -48,7 +68,7 @@ function formatArgs(v: TxVerification): string[] {
   }
   return [
     "  Args:",
-    ...v.humanDecode.args.map((a) => `    - ${a.name}: ${a.valueHuman ?? a.value}`),
+    ...v.humanDecode.args.map((a) => `    - ${a.name}: ${truncateNestedHex(a.valueHuman ?? a.value)}`),
   ];
 }
 
@@ -121,14 +141,24 @@ export function renderAgentTaskBlock(
   const lines = [
     "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
     `Before relaying the verification block above and asking the user to confirm:`,
-    `  1. WebFetch ${fourByteUrl} and confirm the function name in the Call: line`,
-    `     above appears in the results. Prepend ONE LINE to your reply:`,
-    `       "Cross-check (4byte.directory): ✓ <function-name>"  on match, or`,
-    `       "Cross-check (4byte.directory): ✗ MISMATCH — DO NOT SEND" on mismatch.`,
+    `  1. WebFetch ${fourByteUrl}. This resolves the 4-byte function selector`,
+    `     (${selector}) against a public registry so the user can see that the`,
+    `     name I decoded locally from the ABI isn't fabricated. Prepend ONE`,
+    `     sentence to your reply, phrased so the user understands what was`,
+    `     checked, for example:`,
+    `       "I looked up selector ${selector} on 4byte.directory and it resolves`,
+    `        to <function-name> — matches what I decoded locally. This only`,
+    `        confirms the function name; please still open the swiss-knife`,
+    `        decoder URL to eyeball the arguments."`,
+    `     On mismatch, say "✗ MISMATCH — DO NOT SEND" and stop.`,
     `     If WebFetch fails, say so honestly and proceed (don't fabricate ✓).`,
     `  2. Do NOT echo the handle UUID to the user — it is opaque internal state`,
     `     used only by send_transaction. Just say "Reply 'send' to forward to`,
     `     Ledger" or similar.`,
+    `  3. End your reply with a one-line reminder that send_transaction will`,
+    `     echo the short payload hash (the "short …" value in the Hash: line`,
+    `     above) and the user MUST compare it against the hash their Ledger`,
+    `     shows before approving on-device — that is the final tamper check.`,
   ];
   return lines.join("\n");
 }
