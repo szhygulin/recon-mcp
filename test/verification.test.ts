@@ -261,9 +261,13 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     // The honesty caveat about swiss-knife being client-side rendered.
     expect(task).toMatch(/client-side Next\.js SPA/);
     expect(task).toMatch(/state the limitation before doing the fetch/);
-    // The final Ledger hash-match reminder.
+    // The final Ledger-match reminder must cover both blind-sign (hash)
+    // and clear-sign (decoded fields) modes — we can't know in advance
+    // which the user's Ledger will pick.
     expect(task).toMatch(/Before approving on Ledger/);
-    expect(task).toMatch(/reject if it doesn't match/);
+    expect(task).toMatch(/blind-sign/);
+    expect(task).toMatch(/clear-sign/);
+    expect(task).toMatch(/Reject on-device if neither\s+matches/);
   });
 
   it("truncates long nested hex blobs inside struct args (no 2KB callData wall)", () => {
@@ -759,6 +763,9 @@ describe("verifyEvmCalldata — independent cross-check via 4byte.directory", ()
     expect(result.selector).toBe("0x095ea7b3");
     expect(result.summary).toMatch(/clear-sign/);
     expect(result.summary).toMatch(/spender/);
+    // Summary must stay short — no 4byte tangent for end users.
+    expect(result.summary.length).toBeLessThan(200);
+    expect(result.summary).not.toMatch(/4byte/);
   });
 
   it("prefers the 4byte candidate whose function name matches the local decode when multiple candidates re-encode losslessly (fixes approve-selector spam-collision false mismatch)", async () => {

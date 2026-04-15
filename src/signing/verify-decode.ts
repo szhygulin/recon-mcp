@@ -153,11 +153,8 @@ export async function verifyEvmCalldata(
       status: "not-applicable",
       selector,
       summary:
-        "ERC-20 approve is clear-signed natively on Ledger's Ethereum app — the device shows the spender " +
-        "and amount directly, so an independent cross-check adds no security. (4byte.directory also carries " +
-        "known spam collisions on this selector, so a cross-check here produces false mismatches.) Verify on " +
-        "the device that the spender address matches the protocol you meant to authorize and the amount " +
-        "matches what you asked for.",
+        "ERC-20 approve — Ledger clear-signs this natively. Verify on the device that the spender and " +
+        "amount match what you asked for.",
     };
   }
   const localDecode = tx.verification?.humanDecode;
