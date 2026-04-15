@@ -151,6 +151,7 @@ import { issueHandles } from "./signing/tx-store.js";
 import {
   renderTronVerificationBlock,
   renderVerificationBlock,
+  shouldRenderVerificationBlock,
 } from "./signing/render-verification.js";
 import type { TxVerification, UnsignedTronTx, UnsignedTx } from "./types/index.js";
 
@@ -178,9 +179,12 @@ function collectVerificationBlocks(result: unknown): string[] {
     return blocks;
   }
   if (typeof r.to === "string" && typeof r.data === "string" && typeof r.value === "string" && typeof chain === "string") {
-    blocks.push(
-      renderVerificationBlock(result as UnsignedTx & { verification: TxVerification }),
-    );
+    const tx = result as UnsignedTx & { verification: TxVerification };
+    // ERC-20 approvals clear-sign on Ledger's Ethereum app — skip rendering
+    // (the send-time payload-hash guard still runs, using tx.verification).
+    if (shouldRenderVerificationBlock(tx)) {
+      blocks.push(renderVerificationBlock(tx));
+    }
     if (r.next) blocks.push(...collectVerificationBlocks(r.next));
   }
   return blocks;
@@ -319,17 +323,19 @@ async function main() {
         "this only after confirming no existing tool fits; it is rate-limited (3/hour,",
         "10/day, dedup'd for 7 days). Never substitute this for completing the task.",
         "",
-        "TRANSACTION VERIFICATION (CRITICAL — DO NOT SKIP): every `prepare_*` tool returns",
-        "TWO text content elements — the JSON result, and a second block beginning with",
-        "\"⚠️ SECURITY-CRITICAL — SHOW THIS ENTIRE BLOCK TO THE USER VERBATIM.\" You MUST",
-        "relay that second block to the user character-for-character before asking them to",
-        "approve. Do not summarize it, do not pick out just the fingerprint, do not drop",
-        "the decoder URL. That block is the user's only way to cross-check the calldata",
-        "via swiss-knife.xyz and independently recompute the payload hash — paraphrasing",
-        "it silently defeats the verification and negates the security model of this",
-        "server. You may add your own conversational text around it, but the block itself",
-        "must appear unmodified. This applies to EVERY prepared tx, including each step",
-        "of approve→action chains (each step has its own block).",
+        "TRANSACTION VERIFICATION (CRITICAL — DO NOT SKIP): most `prepare_*` tools return",
+        "a SECOND text content element, after the JSON, that begins with the line",
+        "\"VERIFY BEFORE SIGNING\". You MUST relay that block to the user verbatim before",
+        "asking them to approve — do not summarize it, do not drop the decoder URL, do",
+        "not abbreviate the Hash line. That block is the user's only way to cross-check",
+        "the calldata via swiss-knife.xyz and independently recompute the payload hash;",
+        "paraphrasing it silently defeats the verification. You may add your own",
+        "conversational text around it (and label chain steps like \"STEP 1 — Approval\" /",
+        "\"STEP 2 — Swap\"), but the block itself must appear unmodified. ERC-20 approvals",
+        "clear-sign natively on Ledger's Ethereum app, so the server intentionally does",
+        "NOT emit a block for those — you'll only see a block for the main action on",
+        "approve→action chains. That is expected, not a bug. The send-time payload-hash",
+        "guard still runs on every tx.",
         "",
         "SECURITY: the `wallet` / `peerUrl` returned by `get_ledger_status` is self-reported",
         "by the paired WalletConnect peer. Before the FIRST `send_transaction` of a session,",

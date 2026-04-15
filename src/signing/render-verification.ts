@@ -3,28 +3,44 @@ import type { SupportedChain, TxVerification, UnsignedTronTx, UnsignedTx } from 
 
 /**
  * Render the VERIFY-BEFORE-SIGNING text block that every `prepare_*` tool
- * ends with. Returned as a separate MCP content element so the prose is
- * visible to the user verbatim — we don't rely on the model to re-summarize
- * it and accidentally drop the URL, the hash, or the nudge.
+ * ends with. Returned as a separate MCP content element; the server-level
+ * `instructions` field tells orchestrator agents to forward it verbatim.
  */
 
-function truncateCalldata(data: `0x${string}`): string {
-  if (data.length <= 26) return data;
-  const head = data.slice(0, 14);
-  const tail = data.slice(-8);
-  const byteLen = (data.length - 2) / 2;
-  return `${head}…${tail}  (${byteLen} bytes)`;
+/**
+ * ERC-20 `approve(address,uint256)` selector. Ledger's Ethereum app
+ * clear-signs approvals natively (showing spender + amount on-device), so
+ * the swiss-knife cross-check adds no security here and just lengthens
+ * the chat. The send-time payload-hash guard still runs — only the
+ * user-visible block is suppressed.
+ */
+const ERC20_APPROVE_SELECTOR = "0x095ea7b3";
+
+/** Returns false for txs whose verification block should be suppressed. */
+export function shouldRenderVerificationBlock(
+  tx: Pick<UnsignedTx, "data">,
+): boolean {
+  return !tx.data.toLowerCase().startsWith(ERC20_APPROVE_SELECTOR);
+}
+
+function truncateHex(data: string, bytelenLabel: boolean): string {
+  const normalized = data.startsWith("0x") ? data : `0x${data}`;
+  if (normalized.length <= 26) return normalized;
+  const head = normalized.slice(0, 14);
+  const tail = normalized.slice(-8);
+  const byteLen = Math.floor((normalized.length - 2) / 2);
+  return bytelenLabel ? `${head}…${tail} (${byteLen} bytes)` : `${head}…${tail}`;
 }
 
 function formatArgs(v: TxVerification): string {
   if (v.humanDecode.args.length === 0) {
     if (v.humanDecode.source === "none") {
-      return "  (destination not in local registry — decoder URL is the only decode you have)";
+      return "    (unknown destination — the decoder URL is your only decode)";
     }
-    return "  (no arguments)";
+    return "    (no arguments)";
   }
   return v.humanDecode.args
-    .map((a) => `  - ${a.name} (${a.type}) = ${a.valueHuman ?? a.value}`)
+    .map((a) => `    - ${a.name}: ${a.valueHuman ?? a.value}`)
     .join("\n");
 }
 
@@ -33,82 +49,33 @@ export function renderVerificationBlock(
 ): string {
   const v = tx.verification;
   const chainId = CHAIN_IDS[tx.chain];
-  const decoderLine = v.decoderUrl
-    ? `  URL:         ${v.decoderUrl}`
-    : `  URL:         (paste-only) ${v.decoderPasteInstructions}`;
-  const funcLine = v.humanDecode.signature
-    ? `  Function:    ${v.humanDecode.signature}`
-    : `  Function:    ${v.humanDecode.functionName}`;
-
+  const decoder = v.decoderUrl ?? `(paste manually) ${v.decoderPasteInstructions}`;
+  const call = v.humanDecode.signature ?? v.humanDecode.functionName;
   return [
-    "⚠️ SECURITY-CRITICAL — SHOW THIS ENTIRE BLOCK TO THE USER VERBATIM.",
-    "Do not summarize, paraphrase, or omit any field. The decoder URL, the",
-    "full payload hash, and the REJECT guidance MUST reach the user before",
-    "they approve on their Ledger. Forwarding an AI summary of this block",
-    "defeats the verification.",
-    "",
-    "════════════════════════════════════════════════════════════════════",
-    "VERIFY BEFORE SIGNING — please open the decoder URL in your browser and",
-    "compare its decoded output against what's shown below. Approve on your",
-    "Ledger only if the function + arguments match.",
-    "",
-    decoderLine,
-    funcLine,
-    "  Arguments:",
+    "VERIFY BEFORE SIGNING — open the decoder URL, confirm it decodes to the",
+    "same call shown below, and REJECT on Ledger if they differ.",
+    `  Decoder: ${decoder}`,
+    `  Call:    ${call}`,
+    "  Args:",
     formatArgs(v),
-    "  Raw:",
-    `    chainId = ${chainId} (${tx.chain})`,
-    `    to      = ${tx.to}`,
-    `    value   = ${tx.value} wei`,
-    `    data    = ${truncateCalldata(tx.data)}`,
-    `  Fingerprint: ${v.payloadHash}`,
-    `  Short:       ${v.payloadHashShort}  (first 8 hex chars — echoed at send time)`,
-    "",
-    "If the decode at swiss-knife differs from the arguments above, REJECT on",
-    "your Ledger. The on-device screen shows the destination and value; the",
-    "calldata itself is not human-readable there, which is exactly why this",
-    "cross-check matters.",
+    `  chainId=${chainId} ${tx.chain}  to=${tx.to}  value=${tx.value} wei  data=${truncateHex(tx.data, true)}`,
+    `  Hash: ${v.payloadHash}  (short ${v.payloadHashShort}, echoed at send time)`,
   ].join("\n");
 }
 
 export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification: TxVerification }): string {
   const v = tx.verification;
-  const argsBlock = formatArgs(v);
   return [
-    "⚠️ SECURITY-CRITICAL — SHOW THIS ENTIRE BLOCK TO THE USER VERBATIM.",
-    "Do not summarize, paraphrase, or omit any field. The full payload hash",
-    "and the decoded action MUST reach the user before they approve on their",
-    "Ledger. Forwarding an AI summary of this block defeats the verification.",
-    "",
-    "════════════════════════════════════════════════════════════════════",
-    "VERIFY BEFORE SIGNING (TRON) — no browser decoder URL is available for",
-    "TRON; please read the decoded action + arguments below carefully and",
-    "approve on your Ledger only if they match what you intended.",
-    "",
-    `  Action:      ${tx.action}`,
-    `  Function:    ${v.humanDecode.functionName}`,
-    "  Arguments:",
-    argsBlock,
-    "  Raw:",
-    `    from        = ${tx.from}`,
-    `    txID        = ${tx.txID}`,
-    `    rawDataHex  = ${truncateRawHex(tx.rawDataHex)}`,
-    `  Fingerprint: ${v.payloadHash}`,
-    `  Short:       ${v.payloadHashShort}  (first 8 hex chars — echoed at send time)`,
-    "",
-    "After signing you can paste the txID into https://tronscan.org to cross-",
-    "check the network's interpretation of the call.",
+    "VERIFY BEFORE SIGNING (TRON) — no browser decoder URL; confirm the",
+    "action + args below match what you intended, else REJECT on Ledger.",
+    `  Action:  ${tx.action}`,
+    `  Call:    ${v.humanDecode.functionName}`,
+    "  Args:",
+    formatArgs(v),
+    `  from=${tx.from}  txID=${tx.txID}  rawData=${truncateHex(tx.rawDataHex, true)}`,
+    `  Hash: ${v.payloadHash}  (short ${v.payloadHashShort}, echoed at send time)`,
+    "  After signing, paste txID into https://tronscan.org to cross-check.",
   ].join("\n");
 }
 
-function truncateRawHex(hex: string): string {
-  const normalized = hex.startsWith("0x") ? hex : `0x${hex}`;
-  if (normalized.length <= 26) return normalized;
-  const head = normalized.slice(0, 14);
-  const tail = normalized.slice(-8);
-  const byteLen = Math.floor((normalized.length - 2) / 2);
-  return `${head}…${tail}  (${byteLen} bytes)`;
-}
-
-// SupportedChain re-exported only for the chain annotation in the block.
 export type { SupportedChain };

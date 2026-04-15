@@ -51,13 +51,15 @@ export function tronPayloadFingerprint(rawDataHex: string): `0x${string}` {
 const SWISS_KNIFE_BASE = "https://calldata.swiss-knife.xyz/decoder";
 
 /**
- * Max URL length we'll emit. Browsers accept much more (Chrome caps around
- * 32 KB) but the MCP chat transport and common terminals truncate long
- * lines, so we fall back to paste-instructions well before any hard limit.
- * Typical DeFi calldata fits comfortably under 4 KB; LiFi cross-chain calls
- * can spike past this and legitimately fall through.
+ * Max URL length we'll emit. swiss-knife.xyz is a client-side Next.js SPA
+ * hosted on Vercel (practical request-line limit ~14 KB per Vercel docs);
+ * all modern browsers accept at least 32 KB. 12 000 chars leaves margin
+ * while comfortably covering typical LiFi intra-chain swap calldata
+ * (~2 KB ≈ 4 300 hex chars) that used to fall back to paste-only under
+ * the previous 3 500 budget. Cross-chain LiFi hops can still exceed this
+ * and legitimately fall through to paste instructions.
  */
-const SWISS_KNIFE_URL_CHAR_BUDGET = 3500;
+const SWISS_KNIFE_URL_CHAR_BUDGET = 12000;
 
 /**
  * Build a swiss-knife.xyz decoder URL preloaded with the calldata, destination

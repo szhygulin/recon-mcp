@@ -12,6 +12,7 @@ import { decodeCalldata } from "../src/signing/decode-calldata.js";
 import {
   renderTronVerificationBlock,
   renderVerificationBlock,
+  shouldRenderVerificationBlock,
 } from "../src/signing/render-verification.js";
 import { issueHandles } from "../src/signing/tx-store.js";
 import { issueTronHandle } from "../src/signing/tron-tx-store.js";
@@ -72,11 +73,21 @@ describe("swissKnifeDecoderUrl", () => {
   });
 
   it("falls back to paste-instructions when calldata is too large to fit", () => {
-    const bigCalldata = `0x${"aa".repeat(4000)}` as `0x${string}`;
+    // 7 000 bytes = 14 000 hex chars, comfortably past the 12 000-char URL budget.
+    const bigCalldata = `0x${"aa".repeat(7000)}` as `0x${string}`;
     const out = swissKnifeDecoderUrl(1, USDC, bigCalldata);
     expect(out.decoderUrl).toBeUndefined();
     expect(out.decoderPasteInstructions).toBeDefined();
     expect(out.decoderPasteInstructions).toContain("calldata");
+  });
+
+  it("fits typical LiFi intra-chain swap calldata (~2 kB) into a preloaded URL", () => {
+    // Regression: under the old 3 500-char budget, 2 kB calldata fell back
+    // to paste-only. A 12 000-char budget comfortably covers it.
+    const realisticLifiSwap = `0x${"bc".repeat(2200)}` as `0x${string}`;
+    const out = swissKnifeDecoderUrl(1, USDC, realisticLifiSwap);
+    expect(out.decoderUrl).toBeDefined();
+    expect(out.decoderPasteInstructions).toBeUndefined();
   });
 });
 
@@ -196,13 +207,15 @@ describe("renderVerificationBlock includes URL, hash, and the encouragement nudg
       stamped as UnsignedTx & { verification: NonNullable<UnsignedTx["verification"]> },
     );
     expect(rendered).toContain("VERIFY BEFORE SIGNING");
-    expect(rendered).toContain("SHOW THIS ENTIRE BLOCK TO THE USER VERBATIM");
-    expect(rendered).toContain("open the decoder URL");
     expect(rendered).toContain(stamped.verification!.decoderUrl);
     expect(rendered).toContain(stamped.verification!.payloadHash);
     expect(rendered).toContain(stamped.verification!.payloadHashShort);
     expect(rendered).toContain("REJECT");
     expect(rendered).toContain("transfer(address,uint256)");
+    // Short template: no more agent-facing preamble bleeding into user text.
+    expect(rendered).not.toContain("SHOW THIS ENTIRE BLOCK TO THE USER VERBATIM");
+    // Eight-ish lines, keeps the chat uncluttered.
+    expect(rendered.split("\n").length).toBeLessThanOrEqual(10);
   });
 
   it("TRON block tells the user there's no browser decoder URL and points at Tronscan", () => {
@@ -220,10 +233,34 @@ describe("renderVerificationBlock includes URL, hash, and the encouragement nudg
       stamped as UnsignedTronTx & { verification: NonNullable<UnsignedTronTx["verification"]> },
     );
     expect(rendered).toContain("TRON");
-    expect(rendered).toContain("SHOW THIS ENTIRE BLOCK TO THE USER VERBATIM");
     expect(rendered).toContain("no browser decoder URL");
     expect(rendered).toContain("tronscan");
     expect(rendered).toContain(stamped.verification!.payloadHash);
+    expect(rendered).not.toContain("SHOW THIS ENTIRE BLOCK TO THE USER VERBATIM");
+  });
+});
+
+describe("shouldRenderVerificationBlock — approvals are suppressed (Ledger clear-signs them)", () => {
+  it("returns false for ERC-20 approve(address,uint256) calldata", () => {
+    const approveData = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [RECIPIENT, 1_000_000n],
+    });
+    expect(shouldRenderVerificationBlock({ data: approveData })).toBe(false);
+  });
+
+  it("returns true for ERC-20 transfer (not approve)", () => {
+    const transferData = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "transfer",
+      args: [RECIPIENT, 1_000_000n],
+    });
+    expect(shouldRenderVerificationBlock({ data: transferData })).toBe(true);
+  });
+
+  it("is case-insensitive on the selector", () => {
+    expect(shouldRenderVerificationBlock({ data: "0x095EA7B3deadbeef" as `0x${string}` })).toBe(false);
   });
 });
 
