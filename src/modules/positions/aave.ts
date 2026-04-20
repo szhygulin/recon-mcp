@@ -35,6 +35,9 @@ interface ReserveData {
   priceInMarketReferenceCurrency: bigint;
   liquidityIndex: bigint;
   variableBorrowIndex: bigint;
+  isActive: boolean;
+  isFrozen: boolean;
+  isPaused: boolean;
 }
 
 interface BaseCurrencyInfo {
@@ -140,11 +143,12 @@ async function readAaveLendingPosition(
 
   const collateral: TokenAmount[] = [];
   const debt: TokenAmount[] = [];
+  const warnings: string[] = [];
 
   // Skip per-reserve breakdown if the UiPoolDataProvider call failed — aggregate totals above
   // are still returned.
   if (!baseCurrencyRaw) {
-    return buildPosition(chain, agg, collateral, debt);
+    return buildPosition(chain, agg, collateral, debt, warnings);
   }
 
   // Unit-of-account price = USD price with `networkBaseTokenPriceDecimals` decimals
@@ -190,16 +194,31 @@ async function readAaveLendingPosition(
         valueUsd: round(amount * tokenPriceUsd, 2),
       });
     }
+
+    // Only emit a warning if the user actually has exposure (collateral OR debt) on this
+    // reserve. A frozen reserve the user isn't in isn't a surprise for their position.
+    if (aTokenBalance > 0n || totalDebt > 0n) {
+      if (reserve.isPaused) {
+        warnings.push(
+          `${reserve.symbol}: paused — all supply/borrow/withdraw/repay disabled on this reserve until Aave governance unpauses`
+        );
+      } else if (reserve.isFrozen) {
+        warnings.push(
+          `${reserve.symbol}: frozen — no new supplies or borrows; existing withdraws/repays still allowed`
+        );
+      }
+    }
   }
 
-  return buildPosition(chain, agg, collateral, debt);
+  return buildPosition(chain, agg, collateral, debt, warnings);
 }
 
 function buildPosition(
   chain: SupportedChain,
   agg: AggregateData,
   collateral: TokenAmount[],
-  debt: TokenAmount[]
+  debt: TokenAmount[],
+  warnings: string[]
 ): LendingPosition {
   const totalCollateralUsd = Number(formatUnits(agg.totalCollateralBase, BASE_DECIMALS));
   const totalDebtUsd = Number(formatUnits(agg.totalDebtBase, BASE_DECIMALS));
@@ -219,6 +238,7 @@ function buildPosition(
     healthFactor: hf === Number.POSITIVE_INFINITY ? 1e18 : round(hf, 4),
     liquidationThreshold: Number(agg.currentLiquidationThreshold),
     ltv: Number(agg.ltv),
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
 

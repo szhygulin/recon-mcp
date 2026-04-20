@@ -13,6 +13,13 @@ import { SUPPORTED_CHAINS } from "../../types/index.js";
  * `baseSupplied` and `baseBorrowed` are mutually exclusive at the Comet level — an
  * account either has a positive base balance or a nonzero borrow balance, never both.
  */
+export type CometPausedAction =
+  | "supply"
+  | "transfer"
+  | "withdraw"
+  | "absorb"
+  | "buy";
+
 export interface CompoundPosition {
   protocol: "compound-v3";
   chain: SupportedChain;
@@ -25,6 +32,52 @@ export interface CompoundPosition {
   totalDebtUsd: number;
   totalSuppliedUsd: number;
   netValueUsd: number;
+  /**
+   * Governance-paused actions on this Comet market. Omitted when nothing is
+   * paused so the JSON shape of healthy positions doesn't change. Catches
+   * situations like Apr-2026 cUSDCv3 where withdraw was frozen in response to
+   * the rsETH exploit — the user's funds were still there but unable to be
+   * withdrawn, and there was no previous way to surface that without a failed
+   * prepare_compound_withdraw.
+   */
+  pausedActions?: CometPausedAction[];
+}
+
+/**
+ * Reads all five Comet pause flags in a single multicall and returns the subset
+ * that are currently `true`. Split out from readMarketPosition so:
+ *   (a) a failed pause-read never masks a position; worst case it returns [].
+ *   (b) the get_compound_market_info tool can reuse it without duplicating ABI.
+ */
+export async function readCometPausedActions(
+  client: ReturnType<typeof getClient>,
+  comet: `0x${string}`
+): Promise<CometPausedAction[]> {
+  const pauseSlots: [string, CometPausedAction][] = [
+    ["isSupplyPaused", "supply"],
+    ["isTransferPaused", "transfer"],
+    ["isWithdrawPaused", "withdraw"],
+    ["isAbsorbPaused", "absorb"],
+    ["isBuyPaused", "buy"],
+  ];
+  const results = await client.multicall({
+    contracts: pauseSlots.map(([fn]) => ({
+      address: comet,
+      abi: cometAbi,
+      functionName: fn as
+        | "isSupplyPaused"
+        | "isTransferPaused"
+        | "isWithdrawPaused"
+        | "isAbsorbPaused"
+        | "isBuyPaused",
+    })),
+    allowFailure: true,
+  });
+  const paused: CometPausedAction[] = [];
+  results.forEach((r, i) => {
+    if (r.status === "success" && r.result === true) paused.push(pauseSlots[i][1]);
+  });
+  return paused;
 }
 
 function listMarkets(chain: SupportedChain): { name: string; address: `0x${string}` }[] {
@@ -76,6 +129,13 @@ async function readMarketPosition(
   const borrowed = results[3].result;
   const baseAddr = baseToken as `0x${string}`;
   const n = results[1].status === "success" ? Number(results[1].result) : 0;
+
+  // Pause-flag reads are best-effort and completely detached from the
+  // position-critical reads above. If this multicall errors on the way in
+  // (older Comet forks without some of these selectors, rate-limit, or a
+  // client mock that doesn't expect the call), we silently omit pausedActions
+  // rather than failing the position read.
+  const pausedActions = await readCometPausedActions(client, comet).catch(() => [] as CometPausedAction[]);
 
   // Fetch base token metadata + enumerate collateral asset addresses. allowFailure:true
   // so one weird collateral (non-standard decimals/symbol, rate-limit) doesn't nuke the
@@ -191,6 +251,7 @@ async function readMarketPosition(
     totalDebtUsd: round(totalDebtUsd, 2),
     totalSuppliedUsd: round(totalSuppliedUsd, 2),
     netValueUsd: round(totalSuppliedUsd + totalCollateralUsd - totalDebtUsd, 2),
+    ...(pausedActions.length > 0 ? { pausedActions } : {}),
   };
 }
 

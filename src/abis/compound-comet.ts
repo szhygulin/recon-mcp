@@ -80,4 +80,98 @@ export const cometAbi = [
     ],
     outputs: [],
   },
+
+  // Pause flags — per-action, toggled by Comet governance pause guardian. Every
+  // governance pause we've seen in the wild flips one of these before the
+  // corresponding user-facing action starts reverting with Paused().
+  {
+    type: "function",
+    name: "isSupplyPaused",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "isTransferPaused",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "isWithdrawPaused",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "isAbsorbPaused",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "isBuyPaused",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+  },
+
+  // Market-level state: utilization + totals. Needed by get_compound_market_info
+  // (tool #2) and by the contagion report (tool #6).
+  {
+    type: "function",
+    name: "getUtilization",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "totalSupply",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "totalBorrow",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "totalsCollateral",
+    stateMutability: "view",
+    inputs: [{ name: "asset", type: "address" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "totalSupplyAsset", type: "uint128" },
+          { name: "_reserved", type: "uint128" },
+        ],
+      },
+    ],
+  },
+  // Interest-rate model reads (per-second rates, multiply by SECONDS_PER_YEAR then divide by 1e18 for APR).
+  {
+    type: "function",
+    name: "getSupplyRate",
+    stateMutability: "view",
+    inputs: [{ name: "utilization", type: "uint256" }],
+    outputs: [{ name: "", type: "uint64" }],
+  },
+  {
+    type: "function",
+    name: "getBorrowRate",
+    stateMutability: "view",
+    inputs: [{ name: "utilization", type: "uint256" }],
+    outputs: [{ name: "", type: "uint64" }],
+  },
 ] as const;

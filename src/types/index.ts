@@ -130,6 +130,14 @@ export interface LendingPosition {
   liquidationThreshold: number;
   /** Weighted average loan-to-value (bps). */
   ltv: number;
+  /**
+   * Per-asset warnings derived from reserve.isPaused / reserve.isFrozen. Scoped
+   * to assets the user actually holds or borrows — a pause on a market they
+   * aren't in isn't a surprise for their position. Paused = all ops blocked
+   * until governance unpauses; Frozen = no new supplies/borrows but existing
+   * positions can still withdraw/repay.
+   */
+  warnings?: string[];
 }
 
 /**
@@ -149,6 +157,12 @@ export interface CompoundLendingPosition {
   totalDebtUsd: number;
   totalSuppliedUsd: number;
   netValueUsd: number;
+  /**
+   * Governance-paused actions on this Comet market. Subset of
+   * {supply, transfer, withdraw, absorb, buy}. Omitted when nothing is paused
+   * so the JSON shape of healthy positions doesn't change.
+   */
+  pausedActions?: ("supply" | "transfer" | "withdraw" | "absorb" | "buy")[];
 }
 
 /**
