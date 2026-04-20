@@ -119,6 +119,8 @@ import {
 
 import { getCompoundPositions } from "./modules/compound/index.js";
 import { getCompoundMarketInfo } from "./modules/compound/market-info.js";
+import { getMarketIncidentStatus } from "./modules/incidents/index.js";
+import { getMarketIncidentStatusInput } from "./modules/incidents/schemas.js";
 import {
   buildCompoundSupply,
   buildCompoundWithdraw,
@@ -515,6 +517,7 @@ async function main() {
         "",
         "READ-ONLY TOOLS need no pairing and can be called freely: get_lending_positions,",
         "get_lp_positions, get_compound_positions, get_compound_market_info,",
+        "get_market_incident_status,",
         "get_morpho_positions, get_staking_positions,",
         "get_staking_rewards, estimate_staking_yield, get_portfolio_summary, get_swap_quote,",
         "get_token_balance, get_token_price, get_token_metadata, resolve_ens_name,",
@@ -1139,6 +1142,16 @@ async function main() {
       inputSchema: getCompoundMarketInfoInput.shape,
     },
     handler(getCompoundMarketInfo)
+  );
+
+  server.registerTool(
+    "get_market_incident_status",
+    {
+      description:
+        "Return an 'is anything on fire' snapshot across every registered market for a protocol + chain. For Compound V3, returns per-market pause flags, utilization, totalSupply, totalBorrow, and a `flagged` bit that's true when any pause is active or utilization ≥ 95% (borrowers trapped). Top-level `incident: true` if any market is flagged. Use this when you suspect a governance pause, a utilization cliff, or a multi-market contagion from a shared collateral exploit — it collapses what would otherwise take one get_compound_market_info call per market.",
+      inputSchema: getMarketIncidentStatusInput.shape,
+    },
+    handler(getMarketIncidentStatus)
   );
 
   server.registerTool(
