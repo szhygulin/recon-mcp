@@ -21,6 +21,13 @@ function morphoAddress(chain: SupportedChain): `0x${string}` {
   return addr as `0x${string}`;
 }
 
+// Intentionally no pre-flight pause/frozen check here. Morpho Blue core markets
+// are immutable — once created, MarketParams (lltv, oracle, irm, tokens) cannot
+// change and there is no governance pause at the core-protocol level. The only
+// "pause-shaped" surface is MetaMorpho vaults built on top of Blue, which these
+// prepare_morpho_* tools do not drive. resolveMarketParams already refuses
+// unknown market ids (loanToken=0x0).
+
 async function resolveMarketParams(
   chain: SupportedChain,
   marketId: `0x${string}`

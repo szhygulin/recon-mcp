@@ -179,9 +179,14 @@ describe("H1: USDT-style approve(0) reset in Aave action builder", () => {
     readContractMock.mockReset();
     // getAavePoolAddress issues `readContract({ functionName: "getPool" })`
     // then ensureApproval issues `readContract({ functionName: "allowance" })`.
+    // buildAaveSupply also pre-flights via getReserveData — return an
+    // active, non-paused, non-frozen reserve.
     readContractMock.mockImplementation(
       async ({ functionName }: { functionName: string }) => {
         if (functionName === "getPool") return POOL;
+        if (functionName === "getReserveData") {
+          return { configuration: { data: 1n << 56n } };
+        }
         if (functionName === "allowance") return 500n; // nonzero → triggers reset
         throw new Error(`unexpected readContract: ${functionName}`);
       }
@@ -241,6 +246,9 @@ describe("H1: USDT-style approve(0) reset in Aave action builder", () => {
     readContractMock.mockImplementation(
       async ({ functionName }: { functionName: string }) => {
         if (functionName === "getPool") return POOL;
+        if (functionName === "getReserveData") {
+          return { configuration: { data: 1n << 56n } };
+        }
         if (functionName === "allowance") return 0n;
         throw new Error(`unexpected readContract: ${functionName}`);
       }
@@ -281,7 +289,12 @@ describe("H2: Aave repay-max sizes approval against live debt", () => {
       async ({ functionName }: { functionName: string }) => {
         if (functionName === "getPool") return POOL;
         if (functionName === "getReserveData") {
-          return { variableDebtTokenAddress: V_DEBT };
+          // Reserve is active + non-paused + non-frozen AND exposes the
+          // variableDebtToken (the repay path still reads it).
+          return {
+            configuration: { data: 1n << 56n },
+            variableDebtTokenAddress: V_DEBT,
+          };
         }
         if (functionName === "balanceOf") return debt;
         if (functionName === "allowance") return 0n; // force an approve step
@@ -325,7 +338,10 @@ describe("H2: Aave repay-max sizes approval against live debt", () => {
       async ({ functionName }: { functionName: string }) => {
         if (functionName === "getPool") return POOL;
         if (functionName === "getReserveData") {
-          return { variableDebtTokenAddress: V_DEBT };
+          return {
+            configuration: { data: 1n << 56n },
+            variableDebtTokenAddress: V_DEBT,
+          };
         }
         if (functionName === "balanceOf") return 0n;
         throw new Error(`unexpected readContract: ${functionName}`);
