@@ -38,11 +38,44 @@ async function resolveBaseToken(
   })) as `0x${string}`;
 }
 
+/**
+ * Refuse to build a tx when the Comet pause-guardian has disabled the relevant
+ * action. The prior behavior was to happily encode the calldata and let the
+ * revert surface downstream during simulation or (worse) signing — that's the
+ * failure mode that bit cUSDCv3 on 2026-04-20. We read one flag per action (not
+ * all five) so this is a single extra eth_call on the prepare path.
+ *
+ * Only the "unambiguous" direction is checked per action: supply/repay need
+ * isSupplyPaused; withdraw/borrow need isWithdrawPaused. Transfer/absorb/buy
+ * aren't reachable through these four prepare_* tools.
+ */
+async function assertCometActionAllowed(
+  chain: SupportedChain,
+  market: `0x${string}`,
+  action: "supply" | "withdraw"
+): Promise<void> {
+  const fn = action === "supply" ? "isSupplyPaused" : "isWithdrawPaused";
+  const client = getClient(chain);
+  const paused = (await client.readContract({
+    address: market,
+    abi: cometAbi,
+    functionName: fn,
+  })) as boolean;
+  if (paused) {
+    throw new Error(
+      `Compound V3 market ${market} on ${chain} has ${action} paused by governance (${fn}=true). ` +
+        `Refusing to prepare the transaction — it would revert with Paused() on send. ` +
+        `Wait for governance to flip the pause flag off before retrying.`
+    );
+  }
+}
+
 export async function buildCompoundSupply(p: PrepareCompoundSupplyArgs): Promise<UnsignedTx> {
   const chain = p.chain as SupportedChain;
   const market = p.market as `0x${string}`;
   const asset = p.asset as `0x${string}`;
   const wallet = p.wallet as `0x${string}`;
+  await assertCometActionAllowed(chain, market, "supply");
   const meta = await resolveMeta(chain, asset);
   const amountWei = parseUnits(p.amount, meta.decimals);
   const { approvalAmount, display } = resolveApprovalCap(
@@ -88,6 +121,7 @@ export async function buildCompoundWithdraw(p: PrepareCompoundWithdrawArgs): Pro
   const market = p.market as `0x${string}`;
   const asset = p.asset as `0x${string}`;
   const wallet = p.wallet as `0x${string}`;
+  await assertCometActionAllowed(chain, market, "withdraw");
   const meta = await resolveMeta(chain, asset);
   const amountWei = p.amount === "max" ? maxUint256 : parseUnits(p.amount, meta.decimals);
   return {
@@ -110,6 +144,7 @@ export async function buildCompoundBorrow(p: PrepareCompoundBorrowArgs): Promise
   const chain = p.chain as SupportedChain;
   const market = p.market as `0x${string}`;
   const wallet = p.wallet as `0x${string}`;
+  await assertCometActionAllowed(chain, market, "withdraw");
   const baseToken = await resolveBaseToken(chain, market);
   const meta = await resolveMeta(chain, baseToken);
   const amountWei = parseUnits(p.amount, meta.decimals);
@@ -133,6 +168,7 @@ export async function buildCompoundRepay(p: PrepareCompoundRepayArgs): Promise<U
   const chain = p.chain as SupportedChain;
   const market = p.market as `0x${string}`;
   const wallet = p.wallet as `0x${string}`;
+  await assertCometActionAllowed(chain, market, "supply");
   const baseToken = await resolveBaseToken(chain, market);
   const meta = await resolveMeta(chain, baseToken);
   const amountWei = p.amount === "max" ? maxUint256 : parseUnits(p.amount, meta.decimals);
