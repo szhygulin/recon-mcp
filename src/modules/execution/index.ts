@@ -1,4 +1,4 @@
-import { encodeFunctionData, formatUnits, parseEther, parseUnits } from "viem";
+import { encodeFunctionData, formatUnits, isAddress, parseEther, parseUnits } from "viem";
 import qrcodeTerminal from "qrcode-terminal";
 import {
   initiatePairing,
@@ -266,10 +266,29 @@ export async function prepareEigenLayerDeposit(args: PrepareEigenLayerDepositArg
 
 // ----- Native + ERC-20 transfers -----
 
+/**
+ * Accept recipient addresses that are either all-lowercase hex (no checksum
+ * intent) or valid EIP-55 checksummed. Reject mixed-case with a wrong
+ * checksum — that is the class of error where a user pasted an address with
+ * a single-character case typo; viem's bare `as 0x${string}` cast would
+ * otherwise pass it through silently. viem's `isAddress(x, { strict: true })`
+ * encodes exactly this policy.
+ */
+function assertRecipient(addr: string): `0x${string}` {
+  if (!isAddress(addr, { strict: true })) {
+    throw new Error(
+      `Invalid recipient address ${addr}: failed EIP-55 checksum or malformed hex. ` +
+        `If you pasted a mixed-case address, a single-character case typo is the most ` +
+        `likely cause — re-check the source.`,
+    );
+  }
+  return addr as `0x${string}`;
+}
+
 export async function prepareNativeSend(args: PrepareNativeSendArgs): Promise<UnsignedTx> {
   const wallet = args.wallet as `0x${string}`;
   const chain = args.chain as SupportedChain;
-  const to = args.to as `0x${string}`;
+  const to = assertRecipient(args.to);
   const value = parseEther(args.amount);
   return enrichTx({
     chain,
@@ -286,7 +305,7 @@ export async function prepareTokenSend(args: PrepareTokenSendArgs): Promise<Unsi
   const wallet = args.wallet as `0x${string}`;
   const chain = args.chain as SupportedChain;
   const token = args.token as `0x${string}`;
-  const to = args.to as `0x${string}`;
+  const to = assertRecipient(args.to);
   const meta = await resolveTokenMeta(chain, token);
 
   let amountWei: bigint;
@@ -523,9 +542,13 @@ async function runEvmPreSignGuards(tx: UnsignedTx): Promise<void> {
  * appears. `send_transaction` then reads the stashed pin verbatim and
  * forwards it through WalletConnect, so the on-device hash is deterministic.
  *
- * Re-entrant: calling `previewSend` twice on the same handle overwrites the
- * prior pin. This is intentional — if the user pauses for minutes, gas
- * conditions drift and a fresh pin (with a fresh hash) is the right fix.
+ * Re-entrant with an explicit opt-in: calling `previewSend` a second time on
+ * the same handle returns the existing pin verbatim. Pass `refresh: true` to
+ * re-pin (e.g. if the user paused for minutes and wants fresh fees). Without
+ * this guard, a buggy or adversarial agent could silently swap the pre-sign
+ * hash between the moment the user reads it in chat and the moment Ledger
+ * displays it — the hash-match UX would still catch the change, but the
+ * guard makes the default deterministic.
  */
 export async function previewSend(args: PreviewSendArgs): Promise<{
   handle: string;
@@ -539,6 +562,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
     maxPriorityFeePerGas: string;
     gas: string;
   };
+  refreshed?: boolean;
 }> {
   if (hasTronHandle(args.handle)) {
     throw new Error(
@@ -548,6 +572,22 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
     );
   }
   const tx = consumeHandle(args.handle);
+  const existing = getPinnedGas(args.handle);
+  if (existing && !args.refresh) {
+    return {
+      handle: args.handle,
+      chain: tx.chain,
+      to: tx.to,
+      valueWei: tx.value,
+      preSignHash: existing.preSignHash,
+      pinned: {
+        nonce: existing.nonce,
+        maxFeePerGas: existing.maxFeePerGas.toString(),
+        maxPriorityFeePerGas: existing.maxPriorityFeePerGas.toString(),
+        gas: existing.gas.toString(),
+      },
+    };
+  }
   await runEvmPreSignGuards(tx);
   const from =
     tx.from ?? ((await getConnectedAccounts())[0] as `0x${string}` | undefined);
@@ -588,6 +628,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
       maxPriorityFeePerGas: pinned.maxPriorityFeePerGas.toString(),
       gas: pinned.gas.toString(),
     },
+    ...(existing ? { refreshed: true } : {}),
   };
 }
 

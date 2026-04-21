@@ -132,7 +132,17 @@ export const previewSendInput = z.object({
         "returns the LEDGER BLIND-SIGN HASH block so the user can see and confirm the " +
         "hash BEFORE the Ledger device prompt appears. A follow-up send_transaction " +
         "call forwards the pinned fields verbatim. Handles expire 15 minutes after " +
-        "prepare; a fresh preview_send call can be made to refresh the pin if fees drift."
+        "prepare. Once a pin exists, re-calling preview_send on the same handle returns " +
+        "the existing pin unchanged unless `refresh: true` is passed."
+    ),
+  refresh: z
+    .boolean()
+    .optional()
+    .describe(
+      "Set to true to re-pin nonce/fees/gas (e.g. after the user paused for minutes and " +
+        "wants fresh fees). Default is false: the existing pin and its pre-sign hash are " +
+        "returned verbatim, so the hash the user matched in chat cannot silently drift " +
+        "between preview and send."
     ),
 });
 

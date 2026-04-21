@@ -334,6 +334,26 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
     );
   }
 
+  // Exact-in invariant: the approval amount and the swap tx's transferFrom target
+  // are both derived from `quote.action.fromAmount`, while the preview text
+  // (description, decoded.args) echoes the user's `args.amount`. If LiFi returns
+  // a `fromAmount` different from what we asked for, those two values drift and
+  // the user signs bytes that pull more (or less) than the MCP preview shows.
+  // The existing `toUsd / fromUsd > 10` gate is asymmetric and does not catch
+  // proportional inflation. Refuse on any drift — we literally passed
+  // `fromAmount` in, any different value in the response is hostile or buggy.
+  if (!isExactOut) {
+    const quotedFromWei = BigInt(quote.action.fromAmount);
+    if (quotedFromWei !== BigInt(amountWei)) {
+      throw new Error(
+        `LiFi returned fromAmount=${quotedFromWei} for an exact-in quote of ${amountWei} ` +
+          `(${args.amount} ${quote.action.fromToken.symbol}). The approval and swap bytes ` +
+          `would pull a different amount than the MCP preview displays — refusing to return ` +
+          `calldata. Re-run get_swap_quote.`
+      );
+    }
+  }
+
   // Sanity-check the quote before returning signable calldata. LiFi has been observed
   // returning toAmount scaled wrong on certain aggregator integrations (e.g. 10 USDC →
   // ~4500 ETH). The calldata embeds the bogus minOut and won't execute, but we refuse

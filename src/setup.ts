@@ -240,7 +240,11 @@ async function pairLedgerLiveFlow(p: Prompt): Promise<void> {
       resolve();
     })
   );
-  console.log(`URI: ${pairing.uri}\n`);
+  // The URI carries the WalletConnect topic + a one-shot symmetric key. It
+  // isn't long-lived key material, but anyone who pairs with it first wins
+  // the session, so keep it out of long-lived logs and terminal scrollback
+  // shared with others.
+  console.log(`URI (sensitive — don't share; one-time pairing secret): ${pairing.uri}\n`);
   console.log("Waiting for you to approve the session in Ledger Live (Ctrl-C to cancel)...");
 
   try {

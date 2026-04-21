@@ -154,6 +154,30 @@ async function openTronApp() {
 }
 
 /**
+ * HID handles are exclusive — two concurrent attempts to open the Ledger USB
+ * transport race and the loser sees "cannot open device". That's only a DoS
+ * today (never a wrong-tx-signed), but it's a noisy failure the moment two
+ * MCP tools run in parallel (e.g. `get_ledger_status` refreshes while a sign
+ * is in flight). Serialize all transport-using calls through a module-local
+ * queue so a second caller waits for the first to finish closing instead of
+ * failing.
+ */
+let usbLock: Promise<void> = Promise.resolve();
+async function withUsbLock<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = usbLock;
+  let release!: () => void;
+  usbLock = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  try {
+    await prev;
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
+/**
  * Query the device for its TRON address at `path`. Used by `pair_ledger_tron`
  * to cache the address for subsequent sign calls, and as the identity check
  * before signing.
@@ -161,21 +185,23 @@ async function openTronApp() {
 export async function getTronLedgerAddress(
   path: string = DEFAULT_TRON_PATH
 ): Promise<{ address: string; publicKey: string; path: string; appVersion: string }> {
-  const { app, transport, appVersion } = await openTronApp();
-  try {
-    const { address, publicKey } = await app.getAddress(path, false);
-    if (!isTronAddress(address)) {
-      throw new Error(
-        `Ledger returned an address that doesn't look like a TRON mainnet address: "${address}". ` +
-          `Is the TRON (not Tron-classic / testnet) app open on the device?`
-      );
+  return withUsbLock(async () => {
+    const { app, transport, appVersion } = await openTronApp();
+    try {
+      const { address, publicKey } = await app.getAddress(path, false);
+      if (!isTronAddress(address)) {
+        throw new Error(
+          `Ledger returned an address that doesn't look like a TRON mainnet address: "${address}". ` +
+            `Is the TRON (not Tron-classic / testnet) app open on the device?`
+        );
+      }
+      return { address, publicKey, path, appVersion };
+    } catch (e) {
+      throw mapLedgerError(e, "getAddress");
+    } finally {
+      await transport.close().catch(() => {});
     }
-    return { address, publicKey, path, appVersion };
-  } catch (e) {
-    throw mapLedgerError(e, "getAddress");
-  } finally {
-    await transport.close().catch(() => {});
-  }
+  });
 }
 
 export interface TronSignRequest {
@@ -206,31 +232,33 @@ export async function signTronTxOnLedger(
   req: TronSignRequest
 ): Promise<{ signature: string; signerAddress: string }> {
   const path = req.path ?? DEFAULT_TRON_PATH;
-  const { app, transport } = await openTronApp();
-  try {
-    const { address } = await app.getAddress(path, false);
-    if (address !== req.expectedFrom) {
-      throw new Error(
-        `Ledger device address (${address}) does not match the prepared tx's \`from\` ` +
-          `(${req.expectedFrom}). Either connect the Ledger that holds keys for \`from\`, ` +
-          `or re-prepare the tx for the Ledger-derived address (\`pair_ledger_tron\`).`
+  return withUsbLock(async () => {
+    const { app, transport } = await openTronApp();
+    try {
+      const { address } = await app.getAddress(path, false);
+      if (address !== req.expectedFrom) {
+        throw new Error(
+          `Ledger device address (${address}) does not match the prepared tx's \`from\` ` +
+            `(${req.expectedFrom}). Either connect the Ledger that holds keys for \`from\`, ` +
+            `or re-prepare the tx for the Ledger-derived address (\`pair_ledger_tron\`).`
+        );
+      }
+      const signature = await app.signTransaction(
+        path,
+        req.rawDataHex,
+        req.tokenSignatures ?? []
       );
+      // Ledger returns the signature as a hex string (65 bytes: r || s || v).
+      if (!/^[0-9a-fA-F]{130}$/.test(signature)) {
+        throw new Error(
+          `Ledger returned an unexpected signature shape (length ${signature.length}). Expected 130 hex chars.`
+        );
+      }
+      return { signature, signerAddress: address };
+    } catch (e) {
+      throw mapLedgerError(e, "signTransaction");
+    } finally {
+      await transport.close().catch(() => {});
     }
-    const signature = await app.signTransaction(
-      path,
-      req.rawDataHex,
-      req.tokenSignatures ?? []
-    );
-    // Ledger returns the signature as a hex string (65 bytes: r || s || v).
-    if (!/^[0-9a-fA-F]{130}$/.test(signature)) {
-      throw new Error(
-        `Ledger returned an unexpected signature shape (length ${signature.length}). Expected 130 hex chars.`
-      );
-    }
-    return { signature, signerAddress: address };
-  } catch (e) {
-    throw mapLedgerError(e, "signTransaction");
-  } finally {
-    await transport.close().catch(() => {});
-  }
+  });
 }
