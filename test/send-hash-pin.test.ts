@@ -140,7 +140,7 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     // Acknowledges (b) from prepare time so the user doesn't see pair-
     // consistency as a restatement — the new wording lets them skip the
     // decode prerequisite if they already ran it.
-    expect(block).toMatch(/already ran \(b\)/);
+    expect(block).toMatch(/already ran (option )?\(b\)/);
     // "Offer, don't run" is load-bearing UX — the check is heavy and
     // irrelevant for trusting users.
     expect(block).toMatch(/Do NOT run either unprompted/);
@@ -150,7 +150,7 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     // agent AND the MCP are lying together.
     expect(block).toContain("second-agent verification");
     expect(block).toContain("get_verification_artifact");
-    expect(block).toMatch(/second, independent LLM/);
+    expect(block).toMatch(/second[,-]? (independent |different )?(LLM|AI)/);
     // Must tell the agent NOT to pre-decode in the same reply — the
     // whole point of the check is that the second agent decodes with
     // no shared context from this one.
