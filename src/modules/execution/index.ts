@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { encodeFunctionData, formatUnits, isAddress, parseEther, parseUnits } from "viem";
 import qrcodeTerminal from "qrcode-terminal";
 import {
@@ -563,6 +564,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
     maxPriorityFeePerGas: string;
     gas: string;
   };
+  previewToken: string;
   refreshed?: boolean;
 }> {
   if (hasTronHandle(args.handle)) {
@@ -587,6 +589,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
         maxPriorityFeePerGas: existing.maxPriorityFeePerGas.toString(),
         gas: existing.gas.toString(),
       },
+      previewToken: existing.previewToken,
     };
   }
   await runEvmPreSignGuards(tx);
@@ -608,6 +611,10 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
     value: BigInt(tx.value),
     data: tx.data,
   });
+  // Fresh pin → fresh token. If the caller re-pins (refresh: true), any token
+  // captured before this call is invalid — prevents replaying an old preview's
+  // "I already showed the user" claim against a tx with new fees/nonce/hash.
+  const previewToken = randomUUID();
   const pin: StashedPin = {
     nonce: pinned.nonce,
     maxFeePerGas: pinned.maxFeePerGas,
@@ -615,6 +622,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
     gas: pinned.gas,
     preSignHash,
     pinnedAt: Date.now(),
+    previewToken,
   };
   attachPinnedGas(args.handle, pin);
   return {
@@ -629,6 +637,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
       maxPriorityFeePerGas: pinned.maxPriorityFeePerGas.toString(),
       gas: pinned.gas.toString(),
     },
+    previewToken,
     ...(existing ? { refreshed: true } : {}),
   };
 }
@@ -671,6 +680,38 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
         "will display in blind-sign mode, and returns the LEDGER BLIND-SIGN HASH block for " +
         "the user to match BEFORE the Ledger device prompt appears. send_transaction then " +
         "forwards the exact pinned tuple so the on-device hash is deterministic.",
+    );
+  }
+  // Preview-gate enforcement: these two args are what prove the agent went
+  // through preview_send and actually surfaced the EXTRA CHECKS menu to the
+  // user. A missing/mismatched token means the agent either skipped preview
+  // entirely (token never issued) or collapsed preview_send + send_transaction
+  // into one step without pausing for the user's 'send' reply. Error text is
+  // detailed on purpose — the agent reads it and is expected to self-correct.
+  if (!args.previewToken) {
+    throw new Error(
+      "Missing `previewToken` arg on send_transaction. preview_send returned a `previewToken` " +
+        "field in its top-level JSON response — pass it back here verbatim. This is the " +
+        "schema-enforced proof that the preview step actually ran and that the EXTRA CHECKS " +
+        "YOU CAN RUN BEFORE REPLYING 'SEND' menu was surfaced to the user. If you skipped " +
+        "preview_send, call it first.",
+    );
+  }
+  if (args.userDecision !== "send") {
+    throw new Error(
+      "Missing `userDecision: \"send\"` arg on send_transaction. Set this AFTER presenting the " +
+        "EXTRA CHECKS menu from preview_send's agent-task block and receiving the user's " +
+        "explicit 'send' reply. The literal is what proves the preview-time gate was shown to " +
+        "the user rather than silently bypassed.",
+    );
+  }
+  if (args.previewToken !== stashed.previewToken) {
+    throw new Error(
+      "`previewToken` does not match the current pin on this handle. This usually means " +
+        "preview_send was re-called with `refresh: true` after you captured the token — the " +
+        "new pin has a new token (and a new preSignHash the user must re-match on-device). " +
+        "Call preview_send again, surface the fresh hash + EXTRA CHECKS menu to the user, and " +
+        "retry with the new token.",
     );
   }
   const tx = consumeHandle(args.handle);
