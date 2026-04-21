@@ -156,6 +156,17 @@ describe("buildTronTokenSend (network stubbed)", () => {
 
   beforeEach(() => {
     fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      // Pre-flight dry-run hits triggerconstantcontract first.
+      if (url === "https://api.trongrid.io/wallet/triggerconstantcontract") {
+        return new Response(
+          JSON.stringify({
+            result: { result: true },
+            energy_used: 14650, // USDT transfer ≈ 14.65k energy (≈6.15 TRX at 420 sun/energy)
+            constant_result: [""],
+          }),
+          { status: 200 }
+        );
+      }
       expect(url).toBe("https://api.trongrid.io/wallet/triggersmartcontract");
       const body = JSON.parse(init!.body as string);
       expect(body.owner_address).toBe(ADDR_FROM);
@@ -206,7 +217,13 @@ describe("buildTronTokenSend (network stubbed)", () => {
   });
 
   it("honours an explicit feeLimitTrx override", async () => {
-    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "https://api.trongrid.io/wallet/triggerconstantcontract") {
+        return new Response(
+          JSON.stringify({ result: { result: true }, energy_used: 14650, constant_result: [""] }),
+          { status: 200 }
+        );
+      }
       const body = JSON.parse(init!.body as string);
       expect(body.fee_limit).toBe(50_000_000); // 50 TRX override
       return new Response(
@@ -246,18 +263,63 @@ describe("buildTronTokenSend (network stubbed)", () => {
   });
 
   it("surfaces TronGrid triggersmartcontract failure from result.message", async () => {
-    fetchMock.mockImplementationOnce(
-      async () =>
-        new Response(
-          JSON.stringify({
-            result: { result: false, code: "CONTRACT_VALIDATE_ERROR", message: "insufficient balance" },
-          }),
+    // Override the shared mock: pre-flight passes, but the subsequent
+    // triggersmartcontract build rejects.
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://api.trongrid.io/wallet/triggerconstantcontract") {
+        return new Response(
+          JSON.stringify({ result: { result: true }, energy_used: 14650, constant_result: [""] }),
           { status: 200 }
-        )
-    );
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          result: { result: false, code: "CONTRACT_VALIDATE_ERROR", message: "insufficient balance" },
+        }),
+        { status: 200 }
+      );
+    });
     await expect(
       buildTronTokenSend({ from: ADDR_FROM, to: ADDR_TO, token: ADDR_USDT, amount: "2" })
     ).rejects.toThrow(/insufficient balance/);
+  });
+
+  it("refuses the handle when pre-flight triggerconstantcontract reverts", async () => {
+    // Encode a revert of Error("transfer amount exceeds balance").
+    const reason = "transfer amount exceeds balance";
+    const reasonHex = Buffer.from(reason, "utf8").toString("hex");
+    const lenHex = reason.length.toString(16).padStart(64, "0");
+    const offsetHex = (32).toString(16).padStart(64, "0");
+    const paddedReason = reasonHex.padEnd(Math.ceil(reasonHex.length / 64) * 64, "0");
+    const revertPayload = "08c379a0" + offsetHex + lenHex + paddedReason;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === "https://api.trongrid.io/wallet/triggerconstantcontract") {
+        return new Response(
+          JSON.stringify({
+            result: { result: true },
+            energy_used: 500,
+            constant_result: [revertPayload],
+          }),
+          { status: 200 }
+        );
+      }
+      throw new Error("pre-flight revert should short-circuit before triggersmartcontract");
+    });
+    await expect(
+      buildTronTokenSend({ from: ADDR_FROM, to: ADDR_TO, token: ADDR_USDT, amount: "2" })
+    ).rejects.toThrow(/transfer amount exceeds balance/);
+  });
+
+  it("populates estimatedEnergyUsed and estimatedEnergyCostSun from pre-flight", async () => {
+    const tx = await buildTronTokenSend({
+      from: ADDR_FROM,
+      to: ADDR_TO,
+      token: ADDR_USDT,
+      amount: "2",
+    });
+    expect(tx.estimatedEnergyUsed).toBe("14650");
+    // 14650 × 420 sun/energy = 6_153_000 sun = 6.153 TRX
+    expect(tx.estimatedEnergyCostSun).toBe("6153000");
   });
 });
 

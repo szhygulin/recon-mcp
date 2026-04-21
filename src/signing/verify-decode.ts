@@ -6,7 +6,7 @@ import {
   type AbiFunction,
 } from "viem";
 import { fetch4byteSignatures, type FetchLike } from "../data/apis/fourbyte.js";
-import type { UnsignedTx } from "../types/index.js";
+import type { UnsignedTx, UnsignedTronTx } from "../types/index.js";
 
 export type { FetchLike };
 
@@ -93,7 +93,28 @@ function stringifyRaw(value: unknown): string {
   return String(value);
 }
 
-export function notApplicableForTron(): VerifyDecodeResult {
+export function notApplicableForTron(tx?: UnsignedTronTx): VerifyDecodeResult {
+  if (tx) {
+    const argLines = Object.entries(tx.decoded.args)
+      .map(([k, v]) => `  ${k}: ${v}`)
+      .join("\n");
+    const feeLine =
+      tx.estimatedEnergyCostSun && tx.feeLimitSun
+        ? `\nFee: expected burn ~${(Number(tx.estimatedEnergyCostSun) / 1e6).toFixed(2)} TRX ` +
+          `(cap ${(Number(tx.feeLimitSun) / 1e6).toFixed(0)} TRX).`
+        : "";
+    return {
+      status: "not-applicable",
+      selector: "0x",
+      summary:
+        `TRON ${tx.action} — decoded preview:\n${tx.decoded.functionName}\n${argLines}${feeLine}\n\n` +
+        `The server verified at prepare time that the raw_data_hex TronGrid returned encodes exactly this ` +
+        `action (see assertTronRawDataMatches in verify-raw-data.ts). Ledger's TRON app clear-signs canonical ` +
+        `TRC-20 transfers natively; verify the recipient + amount on-device match the args above. For ` +
+        `non-clear-signable actions (freeze, vote), Ledger falls back to blind-sign and the payload-hash ` +
+        `match becomes the primary safety net.`,
+    };
+  }
   return {
     status: "not-applicable",
     selector: "0x",

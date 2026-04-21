@@ -94,6 +94,112 @@ interface TrongridTriggerResponse {
   };
 }
 
+interface TrongridConstantResponse {
+  result?: { result?: boolean; message?: string; code?: string };
+  energy_used?: number;
+  constant_result?: string[];
+}
+
+/**
+ * Mainnet energy price in sun-per-energy. Hardcoded at the October 2024
+ * governance value (420 sun/energy). If governance changes it, the estimate
+ * drifts; fee_limit (the cap) is still enforced by the network, so drift
+ * here just affects the preview string. A dynamic read via
+ * /wallet/getchainparameters is possible but not worth the extra round-trip
+ * for a preview-only number.
+ */
+const ENERGY_PRICE_SUN = 420n;
+
+/** Well-known solidity revert selector: Error(string) = 0x08c379a0. */
+const ERROR_STRING_SELECTOR = "08c379a0";
+
+/**
+ * Decode the revert payload from a triggerconstantcontract constant_result.
+ * The network returns ABI-encoded revert data: 4-byte Error(string) selector
+ * plus an ABI-encoded string. We crudely extract the string bytes without
+ * pulling in viem — this helper lives on the TRON path which is otherwise
+ * viem-free.
+ */
+function decodeRevertString(constantResult: string[] | undefined): string | undefined {
+  if (!constantResult || constantResult.length === 0) return undefined;
+  const hex = constantResult[0].replace(/^0x/, "");
+  if (!hex.startsWith(ERROR_STRING_SELECTOR)) return undefined;
+  const body = hex.slice(ERROR_STRING_SELECTOR.length);
+  // body = 32-byte offset (ignored) + 32-byte length + string bytes padded to 32.
+  if (body.length < 128) return undefined;
+  const lengthHex = body.slice(64, 128);
+  const length = parseInt(lengthHex, 16);
+  if (!Number.isFinite(length) || length <= 0 || length > body.length / 2) return undefined;
+  const stringHex = body.slice(128, 128 + length * 2);
+  try {
+    return Buffer.from(stringHex, "hex").toString("utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Dry-run a smart-contract call via /wallet/triggerconstantcontract. This is
+ * TRON's eth_call analogue — it executes the call against current state
+ * without building a broadcastable tx. We use it as a pre-flight before
+ * /wallet/triggersmartcontract so we refuse to hand out a handle for a tx
+ * that would revert on-chain (insufficient balance, paused token, blocked
+ * recipient). Returns the energy estimate for the preview.
+ */
+async function preflightConstantContract(
+  body: Record<string, unknown>,
+  apiKey: string | undefined
+): Promise<{ energyUsed: bigint }> {
+  const res = await trongridPost<TrongridConstantResponse>(
+    "/wallet/triggerconstantcontract",
+    body,
+    apiKey
+  );
+  if (res.result?.result === false) {
+    throw new Error(
+      `TronGrid pre-flight rejected the call: ${res.result.message ?? "unknown validation error"}`
+    );
+  }
+  const revert = decodeRevertString(res.constant_result);
+  if (revert) {
+    throw new Error(
+      `TronGrid pre-flight reverted: ${revert}. This tx would fail on-chain — refusing to prepare a handle.`
+    );
+  }
+  const energyUsed = BigInt(res.energy_used ?? 0);
+  return { energyUsed };
+}
+
+interface TrongridGetAccountResponse {
+  latest_withdraw_time?: number;
+}
+
+const CLAIM_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+async function readClaimCooldownRemaining(
+  owner: string,
+  apiKey: string | undefined
+): Promise<number | null> {
+  const res = await trongridPost<TrongridGetAccountResponse>(
+    "/wallet/getaccount",
+    { address: owner, visible: true },
+    apiKey
+  );
+  const last = res.latest_withdraw_time;
+  if (!last) return null;
+  const elapsed = Date.now() - last;
+  if (elapsed >= CLAIM_COOLDOWN_MS) return 0;
+  return CLAIM_COOLDOWN_MS - elapsed;
+}
+
+function formatDuration(ms: number): string {
+  const totalMin = Math.ceil(ms / 60_000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h === 0) return `${m}m`;
+  return `${h}h ${m}m`;
+}
+
 // ----- Native TRX send -----
 
 export interface BuildTronNativeSendArgs {
@@ -216,6 +322,12 @@ export async function buildTronTokenSend(
     visible: true,
   };
   const apiKey = resolveTronApiKey(readUserConfig());
+  // Pre-flight dry-run via triggerconstantcontract. Catches the broad class of
+  // prepare-succeeds-then-broadcast-reverts failures: insufficient token
+  // balance, USDT blocklist, paused contract. Also gives us the energy
+  // estimate for the preview (vs. the fee_limit cap).
+  const { energyUsed } = await preflightConstantContract(body, apiKey);
+  const estimatedEnergySun = energyUsed * ENERGY_PRICE_SUN;
   const res = await trongridPost<TrongridTriggerResponse>(
     "/wallet/triggersmartcontract",
     body,
@@ -258,6 +370,8 @@ export async function buildTronTokenSend(
       },
     },
     feeLimitSun: feeLimitSun.toString(),
+    estimatedEnergyUsed: energyUsed.toString(),
+    estimatedEnergyCostSun: estimatedEnergySun.toString(),
   };
   return issueTronHandle(tx);
 }
@@ -559,8 +673,22 @@ export async function buildTronClaimRewards(
     apiKey
   );
   if (res.Error) {
-    // Common case: "WithdrawBalance not allowed, need 24 hours since last Withdraw"
-    // — TRON enforces a 24h rate limit on claims. Surface TronGrid's message verbatim.
+    // Most common failure: TRON's 24h-between-claims rate limit. TronGrid
+    // returns "WithdrawBalance not allowed, need 24 hours since last Withdraw"
+    // without telling you when the cooldown expires. Read the account's
+    // latest_withdraw_time and translate to "claim again in X hours Y min"
+    // so the user doesn't have to guess.
+    if (/24 hours since last Withdraw/i.test(res.Error)) {
+      const remaining = await readClaimCooldownRemaining(args.from, apiKey).catch(
+        () => null
+      );
+      if (remaining !== null) {
+        throw new Error(
+          `TRON claim cooldown active — last claim was less than 24h ago. ` +
+            `Next claim available in ${formatDuration(remaining)}.`
+        );
+      }
+    }
     throw new Error(`TronGrid withdrawbalance failed: ${res.Error}`);
   }
   if (!res.txID || !res.raw_data_hex) {

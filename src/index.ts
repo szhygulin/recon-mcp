@@ -904,7 +904,7 @@ async function main() {
     "get_transaction_status",
     {
       description:
-        "Poll a transaction's status via the chain's RPC. Returns pending / success / failed, or unknown if the node hasn't seen it yet.",
+        "Poll a transaction's status via the chain's RPC (EVM) or TronGrid (TRON). Returns pending / success / failed, or unknown if the node hasn't seen it yet. Pass chain='tron' with the bare hex txID for TRON.",
       inputSchema: getTransactionStatusInput.shape,
     },
     handler(getTransactionStatus)

@@ -497,6 +497,20 @@ export interface UnsignedTronTx {
    * sends and WithdrawBalance — those pay bandwidth only.
    */
   feeLimitSun?: string;
+  /**
+   * Energy units the pre-flight triggerconstantcontract call consumed. Only
+   * present on contract calls where we pre-flight (TRC-20 transfers). The
+   * on-chain burn will be within a few percent of this number.
+   */
+  estimatedEnergyUsed?: string;
+  /**
+   * Estimated fee in SUN that will actually burn on-chain — energy units
+   * times the mainnet energy price (420 sun/energy as of 2024-10). The
+   * preview shows this alongside `feeLimitSun` so the user can see
+   * "expected ~15 TRX" next to "cap 100 TRX" and not think the cap is the
+   * charge.
+   */
+  estimatedEnergyCostSun?: string;
   /** Opaque handle — see tron-tx-store.ts. Phase 3 signer consumes this. */
   handle?: string;
   /**

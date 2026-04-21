@@ -538,6 +538,16 @@ describe("renderPostSendPollBlock — auto-poll directive after send_transaction
     expect(block).not.toMatch(/nextHandle=/);
     expect(block).toMatch(/No follow-up tx is queued/);
   });
+
+  it("uses a faster cadence on TRON (3s blocks) than on Ethereum (12s blocks)", () => {
+    const tronBlock = renderPostSendPollBlock({
+      chain: "tron",
+      txHash: "a".repeat(64),
+    });
+    expect(tronBlock).toMatch(/every ~3 seconds/);
+    expect(tronBlock).toMatch(/~1 minute/);
+    expect(tronBlock).not.toMatch(/every ~5 seconds/);
+  });
 });
 
 describe("shouldRenderVerificationBlock — approvals are suppressed (Ledger clear-signs them)", () => {
@@ -901,8 +911,10 @@ describe("verifyTxDecode (MCP handler) — routes by handle origin", () => {
     });
     const result = await verifyTxDecode({ handle: stamped.handle! });
     expect(result.status).toBe("not-applicable");
-    expect(result.summary).toMatch(/EVM-only/);
-    expect(result.summary).toMatch(/tronscan/);
+    expect(result.summary).toMatch(/decoded preview/);
+    expect(result.summary).toMatch(/assertTronRawDataMatches/);
+    expect(result.summary).toContain("transfer");
+    expect(result.summary).toContain("to: Tabc");
   });
 
   it("throws a clear 'Unknown or expired' error for an unrecognized handle", async () => {

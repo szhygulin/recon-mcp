@@ -22,6 +22,7 @@ import {
   tronPathForAccountIndex,
 } from "../../signing/tron-usb-signer.js";
 import { broadcastTronTx } from "../tron/broadcast.js";
+import { getTronTransactionStatus } from "../tron/status.js";
 import { assertTransactionSafe } from "../../signing/pre-sign-check.js";
 import {
   eip1559PreSignHash,
@@ -673,6 +674,9 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
 }
 
 export async function getTransactionStatus(args: GetTransactionStatusArgs) {
+  if (args.chain === "tron") {
+    return getTronTransactionStatus(args.txHash);
+  }
   const client = getClient(args.chain as SupportedChain);
   try {
     const receipt = await client.getTransactionReceipt({ hash: args.txHash as `0x${string}` });
@@ -750,7 +754,10 @@ export function getTxVerification(args: GetTxVerificationArgs): UnsignedTx | Uns
  * client-rendered SPA output. One MCP tool = one auditable code path.
  */
 export async function verifyTxDecode(args: GetTxVerificationArgs): Promise<VerifyDecodeResult> {
-  if (hasTronHandle(args.handle)) return notApplicableForTron();
+  if (hasTronHandle(args.handle)) {
+    const tronTx = consumeTronHandle(args.handle);
+    return notApplicableForTron(tronTx);
+  }
   if (!hasHandle(args.handle)) {
     throw new Error(
       `Unknown or expired tx handle '${args.handle}'. Prepared transactions live for ` +

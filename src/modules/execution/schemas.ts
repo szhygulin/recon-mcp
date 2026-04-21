@@ -137,8 +137,15 @@ export const previewSendInput = z.object({
 });
 
 export const getTransactionStatusInput = z.object({
-  chain: chainEnum,
-  txHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/),
+  chain: z
+    .enum([...SUPPORTED_CHAINS, "tron"] as unknown as [string, ...string[]])
+    .describe("EVM chain or 'tron'."),
+  txHash: z
+    .string()
+    .regex(/^(0x)?[a-fA-F0-9]{64}$/)
+    .describe(
+      "32-byte tx hash as hex. EVM txs are conventionally 0x-prefixed; TRON tx IDs are bare hex — both are accepted."
+    ),
 });
 
 export const getTxVerificationInput = z.object({

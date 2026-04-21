@@ -447,21 +447,31 @@ export function renderPostBroadcastBlock(args: {
  * of asking the user to type "next" — waiting on human turn-taking for a
  * routine inclusion poll is UX friction the user has to break out of.
  *
- * The cadence (~5s between polls, ~2min total) matches typical L1/L2
- * inclusion times without paging the RPC unnecessarily. If inclusion is
- * slow, the agent reports `pending` and the user can decide to keep waiting.
+ * Cadence is per-chain: TRON blocks every ~3s, so a 5s interval adds
+ * perceptible latency over the actual inclusion time; EVM L1 is ~12s,
+ * where 5s is already tight. Undershooting the block time is fine — the
+ * node just returns "unknown" / "pending" for the extra polls.
  *
  * For approve→action chains (`nextHandle` present), the agent must wait for
  * the approval receipt BEFORE re-simulating or sending the next step —
  * otherwise the dependent simulation fails with "insufficient allowance"
  * against pre-inclusion state.
  */
+const POLL_CADENCE: Record<string, { intervalSec: number; maxPolls: number; budgetLabel: string }> = {
+  ethereum: { intervalSec: 5, maxPolls: 24, budgetLabel: "~2 minutes" },
+  arbitrum: { intervalSec: 3, maxPolls: 20, budgetLabel: "~1 minute" },
+  polygon: { intervalSec: 3, maxPolls: 20, budgetLabel: "~1 minute" },
+  base: { intervalSec: 3, maxPolls: 20, budgetLabel: "~1 minute" },
+  tron: { intervalSec: 3, maxPolls: 20, budgetLabel: "~1 minute" },
+};
+
 export function renderPostSendPollBlock(args: {
   chain: string;
   txHash: string;
   nextHandle?: string;
 }): string {
   const { chain, txHash, nextHandle } = args;
+  const cadence = POLL_CADENCE[chain] ?? POLL_CADENCE.ethereum;
   const lines = [
     "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
     `The tx was forwarded to Ledger and broadcast; a txHash is above. Do NOT`,
@@ -470,8 +480,8 @@ export function renderPostSendPollBlock(args: {
     ``,
     `Do this, in order:`,
     `  1. Call get_transaction_status({ chain: "${chain}", txHash: "${txHash}" })`,
-    `     every ~5 seconds until status is "success" or "failed", or until`,
-    `     you have polled for ~2 minutes (~24 polls). If status stays`,
+    `     every ~${cadence.intervalSec} seconds until status is "success" or "failed", or until`,
+    `     you have polled for ${cadence.budgetLabel} (~${cadence.maxPolls} polls). If status stays`,
     `     "pending" / "unknown" past that budget, stop polling and tell the`,
     `     user the tx is still pending with the hash so they can watch it`,
     `     on a block explorer.`,
