@@ -336,6 +336,47 @@ export interface TronClaimableReward {
 }
 
 /**
+ * Live resource meter for a TRON account, in consumable UNITS (not TRX).
+ * Units are what each contract call charges against; frozen TRX only
+ * determines how many units you receive per day. `used` rolls off linearly
+ * over the 24h regen window, so `available = limit - used` is the
+ * instantaneous remaining headroom.
+ */
+export interface TronResourceMeter {
+  /** Units consumed in the current 24h window. */
+  usedUnits: number;
+  /** Total units available per 24h window at current freeze level. */
+  limitUnits: number;
+  /** `limitUnits - usedUnits` — immediately consumable. */
+  availableUnits: number;
+}
+
+/**
+ * Live account-resource snapshot from TronGrid's `/wallet/getaccountresource`.
+ * Distinct from `TronFrozenEntry`: that's the frozen TRX backing the
+ * resource, this is the units-available-right-now meter.
+ *
+ * Bandwidth has two sub-pools: `free` (600 units/day granted to every
+ * account, independent of stake) and `staked` (proportional to frozen TRX).
+ * TronGrid returns them as separate fields; we expose both because a fresh
+ * account with no stake still has the free pool and agents need to reason
+ * about it.
+ */
+export interface TronAccountResources {
+  bandwidth: {
+    free: TronResourceMeter;
+    staked: TronResourceMeter;
+  };
+  energy: TronResourceMeter;
+  /**
+   * Voting power derived from frozen TRX (1 TRX = 1 vote). `used` is how
+   * many votes are currently cast across all SRs; `available` is the
+   * unallocated headroom a new `prepare_tron_vote` can spend.
+   */
+  votingPower: TronResourceMeter;
+}
+
+/**
  * TRON staking view: frozen resources, pending unfreezes, claimable rewards.
  * Totals roll up into the portfolio's `tronUsd` via `totalStakedUsd`.
  */
@@ -344,6 +385,12 @@ export interface TronStakingSlice {
   claimableRewards: TronClaimableReward;
   frozen: TronFrozenEntry[];
   pendingUnfreezes: TronPendingUnfreeze[];
+  /**
+   * Live consumable-units meter (independent of frozen TRX). Absent only
+   * when TronGrid's `/wallet/getaccountresource` fails — the rest of the
+   * staking slice still returns.
+   */
+  resources?: TronAccountResources;
   /** Frozen + pending-unfreeze + claimable, in TRX (formatted). */
   totalStakedTrx: string;
   /** USD value of everything above at current TRX price. */

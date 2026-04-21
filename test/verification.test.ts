@@ -497,7 +497,12 @@ describe("renderVerificationBlock includes URL, hash, and the encouragement nudg
     expect(rendered).toContain("TRON");
     expect(rendered).toContain("no browser decoder URL");
     expect(rendered).toContain("tronscan");
-    expect(rendered).toContain(stamped.verification!.payloadHash);
+    // No payload-hash line: TRON app clear-signs every supported action,
+    // so there's no on-device hash for the user to match. txID (below)
+    // is the cross-check anchor.
+    expect(rendered).not.toContain(stamped.verification!.payloadHash);
+    expect(rendered).not.toContain("echoed at send time");
+    expect(rendered).toContain(stamped.txID);
     expect(rendered).not.toContain("SHOW THIS ENTIRE BLOCK TO THE USER VERBATIM");
   });
 });

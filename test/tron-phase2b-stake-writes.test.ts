@@ -10,6 +10,7 @@ import {
   encodeUnfreezeV2RawData,
   encodeOwnerOnlyRawData,
 } from "./helpers/tron-raw-data-encode.js";
+import { maybeTronBandwidthResponse } from "./helpers/tron-bandwidth-mock.js";
 
 /**
  * Phase-2b (TRON Stake 2.0 writes) tests. Network IO is stubbed via
@@ -39,6 +40,8 @@ describe("buildTronFreeze (network stubbed)", () => {
 
   beforeEach(() => {
     fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const preflight = maybeTronBandwidthResponse(url);
+      if (preflight) return preflight;
       expect(url).toBe("https://api.trongrid.io/wallet/freezebalancev2");
       const body = JSON.parse(init!.body as string);
       expect(body.owner_address).toBe(ADDR);
@@ -68,7 +71,9 @@ describe("buildTronFreeze (network stubbed)", () => {
   });
 
   it("uppercases ENERGY at the TronGrid edge", async () => {
-    fetchMock.mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const preflight = maybeTronBandwidthResponse(url);
+      if (preflight) return preflight;
       const body = JSON.parse(init!.body as string);
       expect(body.resource).toBe("ENERGY");
       return directTxResponse(
@@ -99,12 +104,13 @@ describe("buildTronFreeze (network stubbed)", () => {
   });
 
   it("surfaces TronGrid's top-level Error verbatim", async () => {
-    fetchMock.mockImplementationOnce(
-      async () =>
-        new Response(JSON.stringify({ Error: "contract validate error : frozen_balance must be greater than 1 TRX" }), {
-          status: 200,
-        })
-    );
+    fetchMock.mockImplementation(async (url: string) => {
+      const preflight = maybeTronBandwidthResponse(url);
+      if (preflight) return preflight;
+      return new Response(JSON.stringify({ Error: "contract validate error : frozen_balance must be greater than 1 TRX" }), {
+        status: 200,
+      });
+    });
     await expect(
       buildTronFreeze({ from: ADDR, amount: "0.5", resource: "bandwidth" })
     ).rejects.toThrow(/greater than 1 TRX/);
@@ -116,6 +122,8 @@ describe("buildTronUnfreeze (network stubbed)", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
+        const preflight = maybeTronBandwidthResponse(url);
+        if (preflight) return preflight;
         expect(url).toBe("https://api.trongrid.io/wallet/unfreezebalancev2");
         const body = JSON.parse(init!.body as string);
         expect(body.owner_address).toBe(ADDR);
@@ -146,12 +154,13 @@ describe("buildTronUnfreeze (network stubbed)", () => {
   it("surfaces 'less than frozen balance' verbatim (overshoot guard)", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify({ Error: "contract validate error : unfreezeBalance less than frozen balance" }), {
-            status: 200,
-          })
-      )
+      vi.fn(async (url: string) => {
+        const preflight = maybeTronBandwidthResponse(url);
+        if (preflight) return preflight;
+        return new Response(JSON.stringify({ Error: "contract validate error : unfreezeBalance less than frozen balance" }), {
+          status: 200,
+        });
+      })
     );
     await expect(
       buildTronUnfreeze({ from: ADDR, amount: "9999", resource: "bandwidth" })
@@ -173,6 +182,8 @@ describe("buildTronWithdrawExpireUnfreeze (network stubbed)", () => {
 
   beforeEach(() => {
     fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const preflight = maybeTronBandwidthResponse(url);
+      if (preflight) return preflight;
       expect(url).toBe("https://api.trongrid.io/wallet/withdrawexpireunfreeze");
       const body = JSON.parse(init!.body as string);
       expect(body.owner_address).toBe(ADDR);
@@ -194,13 +205,14 @@ describe("buildTronWithdrawExpireUnfreeze (network stubbed)", () => {
   });
 
   it("surfaces 'no expire unfreeze' when nothing has matured yet", async () => {
-    fetchMock.mockImplementationOnce(
-      async () =>
-        new Response(
-          JSON.stringify({ Error: "contract validate error : no expire unfreeze" }),
-          { status: 200 }
-        )
-    );
+    fetchMock.mockImplementation(async (url: string) => {
+      const preflight = maybeTronBandwidthResponse(url);
+      if (preflight) return preflight;
+      return new Response(
+        JSON.stringify({ Error: "contract validate error : no expire unfreeze" }),
+        { status: 200 }
+      );
+    });
     await expect(buildTronWithdrawExpireUnfreeze({ from: ADDR })).rejects.toThrow(
       /no expire unfreeze/
     );

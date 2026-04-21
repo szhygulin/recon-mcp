@@ -402,6 +402,21 @@ describe("getTronStaking (network stubbed)", () => {
           expect(init?.method).toBe("POST");
           return new Response(JSON.stringify({ reward: 1_500_000 }), { status: 200 }); // 1.5 TRX claimable
         }
+        if (url === "https://api.trongrid.io/wallet/getaccountresource") {
+          return new Response(
+            JSON.stringify({
+              freeNetUsed: 100,
+              freeNetLimit: 600,
+              NetUsed: 500,
+              NetLimit: 1200,
+              EnergyUsed: 10_000,
+              EnergyLimit: 50_000,
+              tronPowerUsed: 120,
+              tronPowerLimit: 150,
+            }),
+            { status: 200 }
+          );
+        }
         if (url.startsWith("https://coins.llama.fi/prices/current/")) {
           return new Response(
             JSON.stringify({ coins: { "coingecko:tron": { price: 0.1 } } }),
@@ -450,6 +465,13 @@ describe("getTronStaking (network stubbed)", () => {
         if (url === "https://api.trongrid.io/wallet/getReward") {
           return new Response(JSON.stringify({ reward: 0 }), { status: 200 });
         }
+        if (url === "https://api.trongrid.io/wallet/getaccountresource") {
+          // Fresh account — free bandwidth pool only, no stake.
+          return new Response(
+            JSON.stringify({ freeNetUsed: 0, freeNetLimit: 600 }),
+            { status: 200 }
+          );
+        }
         return new Response(JSON.stringify({ coins: {} }), { status: 200 });
       })
     );
@@ -458,6 +480,80 @@ describe("getTronStaking (network stubbed)", () => {
     expect(s.pendingUnfreezes).toHaveLength(0);
     expect(s.claimableRewards.amount).toBe("0");
     expect(s.totalStakedUsd).toBe(0);
+    // Fresh account still exposes the free-bandwidth pool.
+    expect(s.resources?.bandwidth.free.availableUnits).toBe(600);
+    expect(s.resources?.bandwidth.staked.limitUnits).toBe(0);
+    expect(s.resources?.energy.limitUnits).toBe(0);
+  });
+
+  it("exposes the live resource meter (bandwidth free + staked, energy, voting power)", async () => {
+    const s = await getTronStaking(addr);
+    expect(s.resources).toBeDefined();
+    expect(s.resources!.bandwidth.free).toEqual({
+      usedUnits: 100,
+      limitUnits: 600,
+      availableUnits: 500,
+    });
+    expect(s.resources!.bandwidth.staked).toEqual({
+      usedUnits: 500,
+      limitUnits: 1200,
+      availableUnits: 700,
+    });
+    expect(s.resources!.energy).toEqual({
+      usedUnits: 10_000,
+      limitUnits: 50_000,
+      availableUnits: 40_000,
+    });
+    expect(s.resources!.votingPower).toEqual({
+      usedUnits: 120,
+      limitUnits: 150,
+      availableUnits: 30,
+    });
+  });
+
+  it("clamps availableUnits to zero when TronGrid reports used > limit (over-spent window)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.startsWith("https://api.trongrid.io/v1/accounts/")) {
+          return new Response(JSON.stringify({ data: [{ frozenV2: [] }] }), { status: 200 });
+        }
+        if (url === "https://api.trongrid.io/wallet/getReward") {
+          return new Response(JSON.stringify({ reward: 0 }), { status: 200 });
+        }
+        if (url === "https://api.trongrid.io/wallet/getaccountresource") {
+          return new Response(
+            JSON.stringify({ freeNetUsed: 800, freeNetLimit: 600 }),
+            { status: 200 }
+          );
+        }
+        return new Response(JSON.stringify({ coins: {} }), { status: 200 });
+      })
+    );
+    const s = await getTronStaking(addr);
+    expect(s.resources!.bandwidth.free.availableUnits).toBe(0);
+  });
+
+  it("omits resources when /wallet/getaccountresource fails (rest of the slice still returns)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.startsWith("https://api.trongrid.io/v1/accounts/")) {
+          return new Response(JSON.stringify({ data: [{ frozenV2: [] }] }), { status: 200 });
+        }
+        if (url === "https://api.trongrid.io/wallet/getReward") {
+          return new Response(JSON.stringify({ reward: 0 }), { status: 200 });
+        }
+        if (url === "https://api.trongrid.io/wallet/getaccountresource") {
+          return new Response("upstream error", { status: 503 });
+        }
+        return new Response(JSON.stringify({ coins: {} }), { status: 200 });
+      })
+    );
+    const s = await getTronStaking(addr);
+    expect(s.resources).toBeUndefined();
+    expect(s.frozen).toHaveLength(0);
+    expect(s.claimableRewards.amount).toBe("0");
   });
 
   it("throws on malformed wallet address", async () => {

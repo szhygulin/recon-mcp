@@ -69,6 +69,124 @@ async function trongridPost<T>(
 }
 
 /**
+ * TRON bandwidth-burn rate: 1000 sun (0.001 TRX) per byte of signed tx that
+ * can't be covered by the account's free+staked bandwidth pool. Constant
+ * on mainnet, documented in TRON's resource-model spec.
+ */
+const BANDWIDTH_BURN_SUN_PER_BYTE = 1000n;
+
+/**
+ * Signed tx envelope overhead on top of `raw_data_hex`: the ECDSA signature
+ * (65 bytes) plus a small protobuf wrapper. Empirically 67 bytes for
+ * singleton-signature txs on mainnet — we round up slightly (to 68) so the
+ * pre-flight errs on the cautious side. A false-negative here is a clear
+ * error message the user can act on; a false-positive is the exact
+ * broadcast-time rejection we're trying to prevent.
+ */
+const SIGNATURE_OVERHEAD_BYTES = 68;
+
+interface TrongridAccountBalanceResponse {
+  balance?: number;
+}
+
+interface TrongridBandwidthResourceResponse {
+  freeNetUsed?: number;
+  freeNetLimit?: number;
+  NetUsed?: number;
+  NetLimit?: number;
+}
+
+/**
+ * Pre-flight: does `from` have enough bandwidth (or liquid TRX for the
+ * burn) to broadcast a tx of this size? The on-chain rule is per-pool,
+ * not combined (from java-tron `BandwidthProcessor.consume`):
+ *
+ *   1. Try staked pool: if `bytes > NetLimit - NetUsed`, skip.
+ *   2. Try free pool: if `bytes > freeNetLimit - freeNetUsed`, skip.
+ *   3. Fall back to TRX burn: FULL `bytes * 1000 sun` deducted from
+ *      liquid balance — not the shortfall. If balance can't cover the
+ *      full burn, broadcast rejects with `BANDWITH_ERROR` (sic).
+ *
+ * Earlier versions of this check summed the two pools and used a
+ * shortfall burn; that was wrong on both axes — a user with, say, 120
+ * units free + 100 staked + 0.1 TRX liquid was incorrectly marked OK for
+ * a 250-byte tx (sum 220 looked close, shortfall-burn 30 bytes = 0.03
+ * TRX looked covered) when in reality neither pool covers the tx and the
+ * real burn is 250 × 1000 sun = 0.25 TRX. That miscalculation is exactly
+ * how a real vote-cast flow slipped through to a failed broadcast.
+ *
+ * Called after the tx is built (we need `rawDataHex` for size) but before
+ * the handle is issued, so the error surfaces at prepare time.
+ */
+async function assertBandwidthSufficient(
+  from: string,
+  rawDataHex: string,
+  apiKey: string | undefined
+): Promise<void> {
+  const [resources, account] = await Promise.all([
+    trongridPost<TrongridBandwidthResourceResponse>(
+      "/wallet/getaccountresource",
+      { address: from, visible: true },
+      apiKey
+    ),
+    trongridPost<TrongridAccountBalanceResponse>(
+      "/wallet/getaccount",
+      { address: from, visible: true },
+      apiKey
+    ),
+  ]);
+
+  const signedTxBytes = rawDataHex.length / 2 + SIGNATURE_OVERHEAD_BYTES;
+  const freeBw = Math.max(0, (resources.freeNetLimit ?? 0) - (resources.freeNetUsed ?? 0));
+  const stakedBw = Math.max(0, (resources.NetLimit ?? 0) - (resources.NetUsed ?? 0));
+
+  // Per-pool coverage: staked pool OR free pool must fully cover on its
+  // own. Pools don't combine (java-tron checks each sequentially and
+  // falls through on partial coverage).
+  if (stakedBw >= signedTxBytes) return;
+  if (freeBw >= signedTxBytes) return;
+
+  // Both pools skipped → full-tx TRX burn.
+  const burnNeededSun = BigInt(signedTxBytes) * BANDWIDTH_BURN_SUN_PER_BYTE;
+  const balanceSun = BigInt(account.balance ?? 0);
+  if (balanceSun >= burnNeededSun) return;
+
+  const burnNeededTrx = (Number(burnNeededSun) / 1_000_000).toFixed(3);
+  const balanceTrx = (Number(balanceSun) / 1_000_000).toFixed(3);
+  throw new Error(
+    `Insufficient bandwidth to broadcast this ${signedTxBytes}-byte tx. Neither pool ` +
+      `covers it on its own (${freeBw} free, ${stakedBw} staked; tx needs ${signedTxBytes} ` +
+      `from a single pool), and liquid TRX can't cover the fallback burn ` +
+      `(${balanceTrx} TRX available, ${burnNeededTrx} TRX required at 1000 sun/byte × full tx). ` +
+      `Either (a) top up liquid TRX by at least ~${burnNeededTrx} TRX, (b) wait ${formatFreeRegenHint(resources.freeNetUsed ?? 0, resources.freeNetLimit ?? 0, signedTxBytes)} for ` +
+      `the free bandwidth pool to regenerate past ${signedTxBytes} units, or (c) freeze ` +
+      `additional TRX for bandwidth via prepare_tron_freeze(resource: "bandwidth"). This ` +
+      `would have failed at broadcast with TronGrid's BANDWITH_ERROR.`
+  );
+}
+
+/**
+ * Estimate how long until the free bandwidth pool has enough headroom to
+ * cover a tx of `signedTxBytes`. TRON's free-pool usage decays linearly
+ * over a 24h window (`netUsage(t) = currentUsage * max(0, 1 - t/86400)`).
+ * For the pool to cover the tx, usage must drop to `freeLimit -
+ * signedTxBytes`. If the tx exceeds the per-day free cap entirely,
+ * no amount of waiting helps — say so. Otherwise we linear-interpolate.
+ *
+ * A concrete estimate beats "~24h" from the old error message, which was
+ * the worst case (full pool needed from an empty start) but wrong for
+ * the common case (user needs back a small fraction of the daily cap).
+ */
+function formatFreeRegenHint(freeUsed: number, freeLimit: number, signedTxBytes: number): string {
+  const targetUsage = freeLimit - signedTxBytes;
+  if (targetUsage < 0) return "(unreachable — tx exceeds the per-day free cap)";
+  if (freeUsed <= targetUsage) return "(already enough — retry)";
+  const regenSec = 86400 * (freeUsed - targetUsage) / freeUsed;
+  if (regenSec < 3600) return `~${Math.ceil(regenSec / 60)} minutes`;
+  return `~${(regenSec / 3600).toFixed(1)} hours`;
+}
+
+/**
  * TronGrid surfaces errors in two shapes depending on endpoint:
  *   - /wallet/createtransaction and /wallet/withdrawbalance: `{Error: "..."}`
  *     at the top level on failure.
@@ -247,6 +365,7 @@ export async function buildTronNativeSend(
     to: args.to,
     amountSun,
   });
+  await assertBandwidthSufficient(args.from, res.raw_data_hex, apiKey);
 
   const tx: UnsignedTronTx = {
     chain: "tron",
@@ -351,6 +470,7 @@ export async function buildTronTokenSend(
     feeLimitSun,
     callValue: 0n,
   });
+  await assertBandwidthSufficient(args.from, ttx.raw_data_hex, apiKey);
 
   const tx: UnsignedTronTx = {
     chain: "tron",
@@ -455,6 +575,7 @@ export async function buildTronVote(args: BuildTronVoteArgs): Promise<UnsignedTr
     from: args.from,
     votes: args.votes.map((v) => ({ address: v.address, count: v.count })),
   });
+  await assertBandwidthSufficient(args.from, res.raw_data_hex, apiKey);
 
   const tx: UnsignedTronTx = {
     chain: "tron",
@@ -527,6 +648,7 @@ export async function buildTronFreeze(
     frozenBalanceSun: amountSun,
     resource: args.resource,
   });
+  await assertBandwidthSufficient(args.from, res.raw_data_hex, apiKey);
 
   const tx: UnsignedTronTx = {
     chain: "tron",
@@ -589,6 +711,7 @@ export async function buildTronUnfreeze(
     unfreezeBalanceSun: amountSun,
     resource: args.resource,
   });
+  await assertBandwidthSufficient(args.from, res.raw_data_hex, apiKey);
 
   const tx: UnsignedTronTx = {
     chain: "tron",
@@ -636,6 +759,7 @@ export async function buildTronWithdrawExpireUnfreeze(
     kind: "withdraw_expire_unfreeze",
     from: args.from,
   });
+  await assertBandwidthSufficient(args.from, res.raw_data_hex, apiKey);
 
   const tx: UnsignedTronTx = {
     chain: "tron",
@@ -699,6 +823,7 @@ export async function buildTronClaimRewards(
     kind: "claim_rewards",
     from: args.from,
   });
+  await assertBandwidthSufficient(args.from, res.raw_data_hex, apiKey);
 
   const tx: UnsignedTronTx = {
     chain: "tron",

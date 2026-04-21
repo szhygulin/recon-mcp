@@ -3,6 +3,7 @@ import { CACHE_TTL } from "../../config/cache.js";
 import { TRONGRID_BASE_URL, TRX_DECIMALS, isTronAddress } from "../../config/tron.js";
 import { resolveTronApiKey, readUserConfig } from "../../config/user-config.js";
 import type {
+  TronAccountResources,
   TronClaimableReward,
   TronFrozenEntry,
   TronPendingUnfreeze,
@@ -42,6 +43,30 @@ interface TrongridV1AccountResponse {
 
 interface TrongridRewardResponse {
   reward?: number;
+}
+
+/**
+ * Real fields returned by `/wallet/getaccountresource`. Note the casing:
+ * bandwidth fields are camelCase (`freeNetUsed`, `NetUsed`) while energy and
+ * aggregate fields use PascalCase (`EnergyUsed`, `TotalNetLimit`) — that's
+ * not a typo, it's how TronGrid ships the payload. Missing fields mean
+ * zero (fresh accounts with no stake omit `NetUsed` / `EnergyUsed`).
+ */
+interface TrongridAccountResourceResponse {
+  freeNetUsed?: number;
+  freeNetLimit?: number;
+  NetUsed?: number;
+  NetLimit?: number;
+  EnergyUsed?: number;
+  EnergyLimit?: number;
+  tronPowerUsed?: number;
+  tronPowerLimit?: number;
+}
+
+function meter(used: number | undefined, limit: number | undefined) {
+  const u = used ?? 0;
+  const l = limit ?? 0;
+  return { usedUnits: u, limitUnits: l, availableUnits: Math.max(0, l - u) };
 }
 
 interface LlamaResponse {
@@ -119,13 +144,22 @@ export async function getTronStaking(address: string): Promise<TronStakingSlice>
 
   const apiKey = resolveTronApiKey(readUserConfig());
 
-  const [accountRes, rewardRes, trxPrice] = await Promise.all([
+  // Resources can tolerate a TronGrid failure without killing the rest of
+  // the staking read — return undefined from the helper and the caller
+  // sets `resources` to undefined in the response. The other three calls
+  // let their errors propagate (the portfolio aggregator wraps them).
+  const [accountRes, rewardRes, resourcesRes, trxPrice] = await Promise.all([
     trongridGet<TrongridV1AccountResponse>(`/v1/accounts/${address}`, apiKey),
     trongridPost<TrongridRewardResponse>(
       "/wallet/getReward",
       { address, visible: true },
       apiKey
     ),
+    trongridPost<TrongridAccountResourceResponse>(
+      "/wallet/getaccountresource",
+      { address, visible: true },
+      apiKey
+    ).catch(() => undefined),
     fetchTrxPrice(),
   ]);
 
@@ -185,11 +219,23 @@ export async function getTronStaking(address: string): Promise<TronStakingSlice>
       ? Math.round(Number(totalStakedTrx) * trxPrice * 100) / 100
       : 0;
 
+  const resources: TronAccountResources | undefined = resourcesRes
+    ? {
+        bandwidth: {
+          free: meter(resourcesRes.freeNetUsed, resourcesRes.freeNetLimit),
+          staked: meter(resourcesRes.NetUsed, resourcesRes.NetLimit),
+        },
+        energy: meter(resourcesRes.EnergyUsed, resourcesRes.EnergyLimit),
+        votingPower: meter(resourcesRes.tronPowerUsed, resourcesRes.tronPowerLimit),
+      }
+    : undefined;
+
   return {
     address,
     claimableRewards,
     frozen,
     pendingUnfreezes,
+    ...(resources ? { resources } : {}),
     totalStakedTrx,
     totalStakedUsd,
   };

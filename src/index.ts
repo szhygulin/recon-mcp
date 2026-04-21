@@ -1015,7 +1015,7 @@ async function main() {
     "get_tron_staking",
     {
       description:
-        "Read TRON staking state for a base58 address: claimable voting rewards (WithdrawBalance-ready), frozen TRX under Stake 2.0 (bandwidth + energy), and pending unfreezes with their unlock timestamps. Returns raw SUN + formatted TRX + USD values, plus a `totalStakedUsd` rollup. Read-only; pair with `prepare_tron_claim_rewards` to actually withdraw the accumulated reward.",
+        "Read TRON staking state for a base58 address: claimable voting rewards (WithdrawBalance-ready), frozen TRX under Stake 2.0 (bandwidth + energy), pending unfreezes with unlock timestamps, AND the live account-resource meter (`resources`) showing immediately-consumable bandwidth units (free + staked pools), energy units, and voting-power units. The resource meter is what tx execution actually charges against — frozen TRX only determines the daily limit. Read-only; pair with `prepare_tron_claim_rewards` to withdraw rewards or `prepare_tron_vote` to allocate voting power.",
       inputSchema: getTronStakingInput.shape,
     },
     handler((args: { address: string }) => getTronStaking(args.address))

@@ -12,6 +12,7 @@ import {
   encodeTriggerSmartContractRawData,
   encodeOwnerOnlyRawData,
 } from "./helpers/tron-raw-data-encode.js";
+import { maybeTronBandwidthResponse } from "./helpers/tron-bandwidth-mock.js";
 
 /**
  * Phase-2 (TRON tx preparation) tests. Network IO against TronGrid is stubbed
@@ -75,6 +76,8 @@ describe("buildTronNativeSend (network stubbed)", () => {
 
   beforeEach(() => {
     fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const preflight = maybeTronBandwidthResponse(url);
+      if (preflight) return preflight;
       expect(url).toBe("https://api.trongrid.io/wallet/createtransaction");
       expect(init?.method).toBe("POST");
       const body = JSON.parse(init!.body as string);
@@ -156,7 +159,9 @@ describe("buildTronTokenSend (network stubbed)", () => {
 
   beforeEach(() => {
     fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      // Pre-flight dry-run hits triggerconstantcontract first.
+      const preflight = maybeTronBandwidthResponse(url);
+      if (preflight) return preflight;
+      // Energy pre-flight dry-run hits triggerconstantcontract first.
       if (url === "https://api.trongrid.io/wallet/triggerconstantcontract") {
         return new Response(
           JSON.stringify({
@@ -218,6 +223,8 @@ describe("buildTronTokenSend (network stubbed)", () => {
 
   it("honours an explicit feeLimitTrx override", async () => {
     fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const preflight = maybeTronBandwidthResponse(url);
+      if (preflight) return preflight;
       if (url === "https://api.trongrid.io/wallet/triggerconstantcontract") {
         return new Response(
           JSON.stringify({ result: { result: true }, energy_used: 14650, constant_result: [""] }),
@@ -328,6 +335,8 @@ describe("buildTronClaimRewards (network stubbed)", () => {
 
   beforeEach(() => {
     fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const preflight = maybeTronBandwidthResponse(url);
+      if (preflight) return preflight;
       expect(url).toBe("https://api.trongrid.io/wallet/withdrawbalance");
       const body = JSON.parse(init!.body as string);
       expect(body.owner_address).toBe(ADDR_FROM);

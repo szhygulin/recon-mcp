@@ -507,6 +507,14 @@ export function renderPostSendPollBlock(args: {
 
 export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification: TxVerification }): string {
   const v = tx.verification;
+  // No on-device hash line for TRON. The Ledger TRON app clear-signs all
+  // native actions (TransferContract, VoteWitness, FreezeBalanceV2, etc.)
+  // and well-known TRC-20 transfers (USDT/USDC) — there is no blind-sign
+  // hash for the user to match. The txID below is the cross-check anchor:
+  // it appears on-device during clear-sign approval AND on tronscan after
+  // broadcast. Adding a server-side "payload hash" here would train the
+  // user to compare against something the device never shows, reinforcing
+  // rubber-stamp habits rather than preventing them.
   return [
     "VERIFY BEFORE SIGNING (TRON) — no browser decoder URL; confirm the",
     "action + args below match what you intended, else REJECT on Ledger.",
@@ -514,7 +522,6 @@ export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification:
     `  Call:    ${v.humanDecode.functionName}`,
     ...formatArgs(v),
     `  from=${tx.from}  txID=${tx.txID}  rawData=${truncateHex(tx.rawDataHex, true)}`,
-    `  Hash: ${v.payloadHash}  (short ${v.payloadHashShort}, echoed at send time)`,
     "  After signing, paste txID into https://tronscan.org to cross-check.",
   ].join("\n");
 }

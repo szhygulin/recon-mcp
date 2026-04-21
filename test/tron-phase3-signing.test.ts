@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { encodeTransferRawData } from "./helpers/tron-raw-data-encode.js";
+import { maybeTronBandwidthResponse } from "./helpers/tron-bandwidth-mock.js";
 
 /**
  * Phase-3 (TRON USB HID signing) tests.
@@ -210,6 +211,8 @@ describe("sendTransaction — TRON handle routing", () => {
 
   it("signs on USB, broadcasts to TronGrid, and retires the handle on success", async () => {
     const fetchMock = vi.fn(async (url: string) => {
+      const preflight = maybeTronBandwidthResponse(url);
+      if (preflight) return preflight;
       if (url === "https://api.trongrid.io/wallet/createtransaction") {
         return new Response(
           JSON.stringify({
@@ -253,6 +256,8 @@ describe("sendTransaction — TRON handle routing", () => {
 
   it("keeps the handle alive when signing fails so the caller can retry", async () => {
     const fetchMock = vi.fn(async (url: string) => {
+      const preflight = maybeTronBandwidthResponse(url);
+      if (preflight) return preflight;
       if (url === "https://api.trongrid.io/wallet/createtransaction") {
         return new Response(
           JSON.stringify({
@@ -390,6 +395,8 @@ describe("pair_ledger_tron + get_ledger_status", () => {
       return { publicKey: "04abcd", address: addr };
     });
     const fetchMock = vi.fn(async (url: string) => {
+      const preflight = maybeTronBandwidthResponse(url);
+      if (preflight) return preflight;
       if (url === "https://api.trongrid.io/wallet/createtransaction") {
         return new Response(
           JSON.stringify({

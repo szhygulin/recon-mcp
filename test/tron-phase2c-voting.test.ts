@@ -3,6 +3,7 @@ import { listTronWitnesses } from "../src/modules/tron/witnesses.js";
 import { buildTronVote } from "../src/modules/tron/actions.js";
 import { hasTronHandle } from "../src/signing/tron-tx-store.js";
 import { encodeVoteWitnessRawData } from "./helpers/tron-raw-data-encode.js";
+import { maybeTronBandwidthResponse } from "./helpers/tron-bandwidth-mock.js";
 
 /**
  * Phase-2c (TRON voting) tests. Covers:
@@ -162,6 +163,8 @@ describe("buildTronVote (network stubbed)", () => {
 
   beforeEach(() => {
     fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const preflight = maybeTronBandwidthResponse(url);
+      if (preflight) return preflight;
       expect(url).toBe("https://api.trongrid.io/wallet/votewitnessaccount");
       const body = JSON.parse(init!.body as string);
       expect(body.owner_address).toBe(OWNER);
@@ -244,13 +247,14 @@ describe("buildTronVote (network stubbed)", () => {
   });
 
   it("surfaces TronGrid 'Not enough tron power' verbatim", async () => {
-    fetchMock.mockImplementationOnce(
-      async () =>
-        new Response(
-          JSON.stringify({ Error: "contract validate error : Not enough tron power" }),
-          { status: 200 }
-        )
-    );
+    fetchMock.mockImplementation(async (url: string) => {
+      const preflight = maybeTronBandwidthResponse(url);
+      if (preflight) return preflight;
+      return new Response(
+        JSON.stringify({ Error: "contract validate error : Not enough tron power" }),
+        { status: 200 }
+      );
+    });
     await expect(
       buildTronVote({ from: OWNER, votes: [{ address: SR1, count: 999_999 }] })
     ).rejects.toThrow(/Not enough tron power/);
