@@ -33,11 +33,15 @@ export interface SessionStatus {
   /** Peer-advertised description. Self-reported — NOT a trusted identity. */
   peerDescription?: string;
   /**
-   * Guidance for the agent: WalletConnect peer metadata is self-reported and any
-   * app can claim to be "Ledger Live". Surface `wallet`/`peerUrl` to the user
-   * before sending a tx they can't physically verify on the Ledger device.
+   * Only set when the paired peer's URL host is NOT on the Ledger-first-party
+   * allowlist (see `isKnownLedgerPeer`). The common case — pairing with Ledger
+   * Live, which advertises a `ledger.com` host — produces no warning, so the
+   * agent has nothing to surface. An unknown host flips this on and the agent
+   * is expected to ask the user to confirm the peer before sending.
+   *
+   * NOT emitted on unpaired sessions either: there's no peer to warn about.
    */
-  peerTrustWarning: string;
+  peerTrustWarning?: string;
   /**
    * Set when a local session record exists but the peer did not respond to the
    * liveness ping on restore. The session may still be valid (peer just
@@ -67,9 +71,24 @@ export interface SessionStatus {
 
 export const PEER_TRUST_WARNING =
   "WalletConnect peer metadata is self-reported — any app can claim to be 'Ledger Live'. " +
-  "If the paired wallet/URL above is unexpected (e.g. not 'Ledger Live' / ledger.com), ask the user " +
+  "The paired wallet/URL above is NOT on the Ledger-first-party allowlist; ask the user " +
   "to confirm before calling send_transaction. The ultimate check is that the tx shows up on the " +
   "user's physical Ledger device for on-screen approval.";
+
+/**
+ * Hosts the server treats as first-party Ledger WC peers. Exact match or any
+ * subdomain of `ledger.com` (so `wc.apps.ledger.com`, `ledger.com`, etc. all
+ * pass). Everything else trips `peerTrustWarning`.
+ */
+export function isKnownLedgerPeer(peerUrl: string | undefined): boolean {
+  if (!peerUrl) return false;
+  try {
+    const host = new URL(peerUrl).hostname.toLowerCase();
+    return host === "ledger.com" || host.endsWith(".ledger.com");
+  } catch {
+    return false;
+  }
+}
 
 export async function getSessionStatus(): Promise<SessionStatus> {
   await getSignClient(); // triggers restore + liveness check
@@ -91,13 +110,13 @@ export async function getSessionStatus(): Promise<SessionStatus> {
       paired: false,
       accounts: [],
       accountDetails: [],
-      peerTrustWarning: PEER_TRUST_WARNING,
       ...tronSection,
     };
   const accountDetails = await getConnectedAccountsDetailed();
   const accounts = accountDetails.map((a) => a.address);
   const meta = session.peer?.metadata;
   const unreachable = isPeerUnreachable();
+  const warnPeer = !isKnownLedgerPeer(meta?.url);
   return {
     paired: true,
     accounts,
@@ -107,7 +126,7 @@ export async function getSessionStatus(): Promise<SessionStatus> {
     ...(meta?.name ? { wallet: meta.name } : {}),
     ...(meta?.url ? { peerUrl: meta.url } : {}),
     ...(meta?.description ? { peerDescription: meta.description } : {}),
-    peerTrustWarning: PEER_TRUST_WARNING,
+    ...(warnPeer ? { peerTrustWarning: PEER_TRUST_WARNING } : {}),
     ...(unreachable ? { peerUnreachable: true } : {}),
     ...tronSection,
   };

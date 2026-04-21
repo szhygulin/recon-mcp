@@ -14,3 +14,9 @@ coverage/
 
 # Internal planning doc — not published to git.
 recon-mcp-requirements.md
+
+# crypto-audit skill output — local-only audit scratch.
+.context/
+
+# Claude Code local state (per-user permission grants, task locks).
+.claude/

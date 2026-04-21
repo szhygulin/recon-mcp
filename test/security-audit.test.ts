@@ -103,6 +103,20 @@ describe("C2+M10: WalletConnect peer identity", () => {
     expect(PEER_TRUST_WARNING).toMatch(/Ledger/);
     expect(PEER_TRUST_WARNING).toMatch(/confirm|device/i);
   });
+
+  it("isKnownLedgerPeer gates the warning — Ledger hosts pass, everything else trips", async () => {
+    // Only when the peer URL is NOT a ledger.com host does the server ship the
+    // warning. This keeps the common case (pairing with real Ledger Live) quiet
+    // and reserves the loud prompt for actually-unknown peers.
+    const { isKnownLedgerPeer } = await import("../src/signing/session.js");
+    expect(isKnownLedgerPeer("https://wc.apps.ledger.com")).toBe(true);
+    expect(isKnownLedgerPeer("https://ledger.com")).toBe(true);
+    expect(isKnownLedgerPeer("https://apps.ledger.com/wc")).toBe(true);
+    expect(isKnownLedgerPeer("https://ledger.com.attacker.example")).toBe(false);
+    expect(isKnownLedgerPeer("https://not-ledger.example")).toBe(false);
+    expect(isKnownLedgerPeer(undefined)).toBe(false);
+    expect(isKnownLedgerPeer("garbage")).toBe(false);
+  });
 });
 
 // ====================================================================
