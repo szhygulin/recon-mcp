@@ -150,6 +150,20 @@ export async function buildApprovalTx(a: BuildApprovalArgs): Promise<UnsignedTx 
 }
 
 /**
+ * Attach `next` to the end of an approval tx chain. If `approval` is null,
+ * returns `next` unchanged — callers get the same one-liner either way,
+ * replacing the `if (approval) { walk tail; attach; return approval; }
+ * return next;` pattern every action builder used to hand-roll.
+ */
+export function chainApproval(approval: UnsignedTx | null, next: UnsignedTx): UnsignedTx {
+  if (!approval) return next;
+  let tail = approval;
+  while (tail.next) tail = tail.next;
+  tail.next = next;
+  return approval;
+}
+
+/**
  * Zod schema fragment for an optional `approvalCap` tool parameter. Share
  * across every prepare_* tool that emits an approval.
  */

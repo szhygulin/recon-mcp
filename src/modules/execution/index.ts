@@ -5,7 +5,6 @@ import {
   requestSendTransaction,
   getConnectedAccounts,
 } from "../../signing/walletconnect.js";
-import { getSessionStatus } from "../../signing/session.js";
 import {
   consumeHandle,
   retireHandle,
@@ -31,6 +30,7 @@ import {
 } from "../../signing/verification.js";
 import { getClient, verifyChainId } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
+import { resolveTokenMeta } from "../shared/token-meta.js";
 import { simulateTx } from "../simulation/index.js";
 import {
   buildAaveSupply,
@@ -133,25 +133,6 @@ export async function pairLedgerTron(args: PairLedgerTronArgs = {}): Promise<{
   };
 }
 
-export async function getLedgerStatus() {
-  return getSessionStatus();
-}
-
-async function resolveAssetMeta(
-  chain: SupportedChain,
-  asset: `0x${string}`
-): Promise<{ decimals: number; symbol: string }> {
-  const client = getClient(chain);
-  const [decimals, symbol] = await client.multicall({
-    contracts: [
-      { address: asset, abi: erc20Abi, functionName: "decimals" },
-      { address: asset, abi: erc20Abi, functionName: "symbol" },
-    ],
-    allowFailure: false,
-  });
-  return { decimals: Number(decimals), symbol: symbol as string };
-}
-
 /** Attach eth_call simulation result, gas estimate, and USD cost. */
 async function enrichTx(tx: UnsignedTx): Promise<UnsignedTx> {
   const client = getClient(tx.chain);
@@ -195,7 +176,7 @@ async function enrichTx(tx: UnsignedTx): Promise<UnsignedTx> {
 // ----- Aave preparation handlers -----
 
 export async function prepareAaveSupply(args: PrepareAaveSupplyArgs): Promise<UnsignedTx> {
-  const meta = await resolveAssetMeta(args.chain as SupportedChain, args.asset as `0x${string}`);
+  const meta = await resolveTokenMeta(args.chain as SupportedChain, args.asset as `0x${string}`);
   return enrichTx(
     await buildAaveSupply({
       wallet: args.wallet as `0x${string}`,
@@ -210,7 +191,7 @@ export async function prepareAaveSupply(args: PrepareAaveSupplyArgs): Promise<Un
 }
 
 export async function prepareAaveWithdraw(args: PrepareAaveWithdrawArgs): Promise<UnsignedTx> {
-  const meta = await resolveAssetMeta(args.chain as SupportedChain, args.asset as `0x${string}`);
+  const meta = await resolveTokenMeta(args.chain as SupportedChain, args.asset as `0x${string}`);
   return enrichTx(
     await buildAaveWithdraw({
       wallet: args.wallet as `0x${string}`,
@@ -224,7 +205,7 @@ export async function prepareAaveWithdraw(args: PrepareAaveWithdrawArgs): Promis
 }
 
 export async function prepareAaveBorrow(args: PrepareAaveBorrowArgs): Promise<UnsignedTx> {
-  const meta = await resolveAssetMeta(args.chain as SupportedChain, args.asset as `0x${string}`);
+  const meta = await resolveTokenMeta(args.chain as SupportedChain, args.asset as `0x${string}`);
   return enrichTx(
     await buildAaveBorrow({
       wallet: args.wallet as `0x${string}`,
@@ -238,7 +219,7 @@ export async function prepareAaveBorrow(args: PrepareAaveBorrowArgs): Promise<Un
 }
 
 export async function prepareAaveRepay(args: PrepareAaveRepayArgs): Promise<UnsignedTx> {
-  const meta = await resolveAssetMeta(args.chain as SupportedChain, args.asset as `0x${string}`);
+  const meta = await resolveTokenMeta(args.chain as SupportedChain, args.asset as `0x${string}`);
   return enrichTx(
     await buildAaveRepay({
       wallet: args.wallet as `0x${string}`,
@@ -269,7 +250,7 @@ export async function prepareLidoUnstake(args: PrepareLidoUnstakeArgs): Promise<
 }
 
 export async function prepareEigenLayerDeposit(args: PrepareEigenLayerDepositArgs): Promise<UnsignedTx> {
-  const meta = await resolveAssetMeta("ethereum", args.token as `0x${string}`);
+  const meta = await resolveTokenMeta("ethereum", args.token as `0x${string}`);
   return enrichTx(
     await buildEigenLayerDeposit({
       wallet: args.wallet as `0x${string}`,
@@ -306,7 +287,7 @@ export async function prepareTokenSend(args: PrepareTokenSendArgs): Promise<Unsi
   const chain = args.chain as SupportedChain;
   const token = args.token as `0x${string}`;
   const to = args.to as `0x${string}`;
-  const meta = await resolveAssetMeta(chain, token);
+  const meta = await resolveTokenMeta(chain, token);
 
   let amountWei: bigint;
   let displayAmount = args.amount;

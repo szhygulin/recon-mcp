@@ -1,9 +1,9 @@
-import { encodeFunctionData, parseUnits, maxUint256, formatUnits } from "viem";
+import { encodeFunctionData, parseUnits, maxUint256 } from "viem";
 import { aavePoolAbi } from "../../abis/aave-pool.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { getClient } from "../../data/rpc.js";
 import { getAavePoolAddress } from "./aave.js";
-import { buildApprovalTx, resolveApprovalCap } from "../shared/approval.js";
+import { buildApprovalTx, chainApproval, resolveApprovalCap } from "../shared/approval.js";
 import type { SupportedChain, UnsignedTx } from "../../types/index.js";
 
 /**
@@ -95,15 +95,11 @@ interface AaveActionParams {
   approvalCap?: string;
 }
 
-function parseAmountFriendly(amount: string, decimals: number): bigint {
-  return parseUnits(amount, decimals);
-}
-
 export async function buildAaveSupply(p: AaveActionParams): Promise<UnsignedTx> {
   assertNotNativePseudoaddr(p.asset, "supply");
   await assertAaveActionAllowed(p.chain, p.asset, "supply");
   const pool = await getAavePoolAddress(p.chain);
-  const amountWei = parseAmountFriendly(p.amount, p.decimals);
+  const amountWei = parseUnits(p.amount, p.decimals);
   const { approvalAmount, display } = resolveApprovalCap(
     p.approvalCap,
     amountWei,
@@ -138,14 +134,7 @@ export async function buildAaveSupply(p: AaveActionParams): Promise<UnsignedTx> 
     },
   };
 
-  if (approval) {
-    // Walk to the tail of the approval chain (may be reset→approve) and attach supply.
-    let tail = approval;
-    while (tail.next) tail = tail.next;
-    tail.next = supplyTx;
-    return approval;
-  }
-  return supplyTx;
+  return chainApproval(approval, supplyTx);
 }
 
 export async function buildAaveWithdraw(p: AaveActionParams): Promise<UnsignedTx> {
@@ -153,7 +142,7 @@ export async function buildAaveWithdraw(p: AaveActionParams): Promise<UnsignedTx
   const pool = await getAavePoolAddress(p.chain);
   // Special case: passing max uint means "withdraw all" in Aave V3.
   const amountWei =
-    p.amount === "max" ? maxUint256 : parseAmountFriendly(p.amount, p.decimals);
+    p.amount === "max" ? maxUint256 : parseUnits(p.amount, p.decimals);
   return {
     chain: p.chain,
     to: pool,
@@ -178,7 +167,7 @@ const VARIABLE_RATE_MODE = 2n;
 export async function buildAaveBorrow(p: AaveActionParams): Promise<UnsignedTx> {
   await assertAaveActionAllowed(p.chain, p.asset, "borrow");
   const pool = await getAavePoolAddress(p.chain);
-  const amountWei = parseAmountFriendly(p.amount, p.decimals);
+  const amountWei = parseUnits(p.amount, p.decimals);
   return {
     chain: p.chain,
     to: pool,
@@ -251,7 +240,7 @@ export async function buildAaveRepay(p: AaveActionParams): Promise<UnsignedTx> {
     }
     neededForApproval = (debt * 101n) / 100n;
   } else {
-    amountWei = parseAmountFriendly(p.amount, p.decimals);
+    amountWei = parseUnits(p.amount, p.decimals);
     neededForApproval = amountWei;
   }
 
@@ -294,13 +283,6 @@ export async function buildAaveRepay(p: AaveActionParams): Promise<UnsignedTx> {
     },
   };
 
-  if (approval) {
-    let tail = approval;
-    while (tail.next) tail = tail.next;
-    tail.next = repayTx;
-    return approval;
-  }
-  return repayTx;
+  return chainApproval(approval, repayTx);
 }
 
-export { parseAmountFriendly, formatUnits };

@@ -2,7 +2,7 @@ import { encodeFunctionData, parseEther, parseUnits, zeroAddress } from "viem";
 import { stETHAbi, lidoWithdrawalQueueAbi } from "../../abis/lido.js";
 import { eigenStrategyManagerAbi } from "../../abis/eigenlayer-strategy-manager.js";
 import { CONTRACTS } from "../../config/contracts.js";
-import { buildApprovalTx, resolveApprovalCap } from "../shared/approval.js";
+import { buildApprovalTx, chainApproval, resolveApprovalCap } from "../shared/approval.js";
 import type { UnsignedTx } from "../../types/index.js";
 
 export interface LidoStakeParams {
@@ -65,14 +65,7 @@ export async function buildLidoUnstake(p: LidoUnstakeParams): Promise<UnsignedTx
     decoded: { functionName: "requestWithdrawals", args: { amount: p.amountStETH, owner: p.wallet } },
   };
 
-  if (approve) {
-    let tail = approve;
-    while (tail.next) tail = tail.next;
-    tail.next = unstakeTx;
-    return approve;
-  }
-
-  return unstakeTx;
+  return chainApproval(approve, unstakeTx);
 }
 
 export interface EigenDepositParams {
@@ -119,12 +112,5 @@ export async function buildEigenLayerDeposit(p: EigenDepositParams): Promise<Uns
     },
   };
 
-  if (approve) {
-    let tail = approve;
-    while (tail.next) tail = tail.next;
-    tail.next = depositTx;
-    return approve;
-  }
-
-  return depositTx;
+  return chainApproval(approve, depositTx);
 }

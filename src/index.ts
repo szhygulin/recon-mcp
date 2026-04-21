@@ -43,10 +43,10 @@ import { getPortfolioSummaryInput } from "./modules/portfolio/schemas.js";
 import { getSwapQuote, prepareSwap } from "./modules/swap/index.js";
 import { getSwapQuoteInput, prepareSwapInput } from "./modules/swap/schemas.js";
 
+import { getSessionStatus as getLedgerStatus } from "./signing/session.js";
 import {
   pairLedgerLive,
   pairLedgerTron,
-  getLedgerStatus,
   prepareAaveSupply,
   prepareAaveWithdraw,
   prepareAaveBorrow,

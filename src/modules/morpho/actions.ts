@@ -1,9 +1,9 @@
 import { encodeFunctionData, parseUnits } from "viem";
 import { morphoBlueAbi, type MorphoMarketParams } from "../../abis/morpho-blue.js";
-import { erc20Abi } from "../../abis/erc20.js";
 import { getClient } from "../../data/rpc.js";
 import { CONTRACTS } from "../../config/contracts.js";
-import { buildApprovalTx, resolveApprovalCap } from "../shared/approval.js";
+import { buildApprovalTx, chainApproval, resolveApprovalCap } from "../shared/approval.js";
+import { resolveTokenMeta } from "../shared/token-meta.js";
 import type {
   PrepareMorphoSupplyArgs,
   PrepareMorphoWithdrawArgs,
@@ -47,21 +47,6 @@ async function resolveMarketParams(
   return { loanToken, collateralToken, oracle, irm, lltv };
 }
 
-async function tokenMeta(
-  chain: SupportedChain,
-  asset: `0x${string}`
-): Promise<{ decimals: number; symbol: string }> {
-  const client = getClient(chain);
-  const [decimals, symbol] = await client.multicall({
-    contracts: [
-      { address: asset, abi: erc20Abi, functionName: "decimals" },
-      { address: asset, abi: erc20Abi, functionName: "symbol" },
-    ],
-    allowFailure: false,
-  });
-  return { decimals: Number(decimals), symbol: symbol as string };
-}
-
 function paramsTuple(p: MorphoMarketParams) {
   return {
     loanToken: p.loanToken,
@@ -77,7 +62,7 @@ export async function buildMorphoSupply(p: PrepareMorphoSupplyArgs): Promise<Uns
   const wallet = p.wallet as `0x${string}`;
   const morpho = morphoAddress(chain);
   const params = await resolveMarketParams(chain, p.marketId as `0x${string}`);
-  const meta = await tokenMeta(chain, params.loanToken);
+  const meta = await resolveTokenMeta(chain, params.loanToken);
   const amountWei = parseUnits(p.amount, meta.decimals);
   const { approvalAmount, display } = resolveApprovalCap(
     p.approvalCap,
@@ -111,13 +96,7 @@ export async function buildMorphoSupply(p: PrepareMorphoSupplyArgs): Promise<Uns
       args: { marketId: p.marketId, amount: p.amount, onBehalf: wallet },
     },
   };
-  if (approval) {
-    let tail = approval;
-    while (tail.next) tail = tail.next;
-    tail.next = supplyTx;
-    return approval;
-  }
-  return supplyTx;
+  return chainApproval(approval, supplyTx);
 }
 
 export async function buildMorphoWithdraw(p: PrepareMorphoWithdrawArgs): Promise<UnsignedTx> {
@@ -125,7 +104,7 @@ export async function buildMorphoWithdraw(p: PrepareMorphoWithdrawArgs): Promise
   const wallet = p.wallet as `0x${string}`;
   const morpho = morphoAddress(chain);
   const params = await resolveMarketParams(chain, p.marketId as `0x${string}`);
-  const meta = await tokenMeta(chain, params.loanToken);
+  const meta = await resolveTokenMeta(chain, params.loanToken);
   // "max" withdraw is encoded as shares=MaxUint256/2 would exceed position; safer to ask by assets with
   // a very large number. Morpho reverts on overdraw, so callers should read their position first.
   // Here we only support explicit amounts for withdraw.
@@ -158,7 +137,7 @@ export async function buildMorphoBorrow(p: PrepareMorphoBorrowArgs): Promise<Uns
   const wallet = p.wallet as `0x${string}`;
   const morpho = morphoAddress(chain);
   const params = await resolveMarketParams(chain, p.marketId as `0x${string}`);
-  const meta = await tokenMeta(chain, params.loanToken);
+  const meta = await resolveTokenMeta(chain, params.loanToken);
   const amountWei = parseUnits(p.amount, meta.decimals);
   return {
     chain,
@@ -183,7 +162,7 @@ export async function buildMorphoRepay(p: PrepareMorphoRepayArgs): Promise<Unsig
   const wallet = p.wallet as `0x${string}`;
   const morpho = morphoAddress(chain);
   const params = await resolveMarketParams(chain, p.marketId as `0x${string}`);
-  const meta = await tokenMeta(chain, params.loanToken);
+  const meta = await resolveTokenMeta(chain, params.loanToken);
   if (p.amount === "max") {
     throw new Error(
       `"max" is not supported for Morpho repay — read borrowShares and pass an explicit amount.`
@@ -222,13 +201,7 @@ export async function buildMorphoRepay(p: PrepareMorphoRepayArgs): Promise<Unsig
       args: { marketId: p.marketId, amount: p.amount, onBehalf: wallet },
     },
   };
-  if (approval) {
-    let tail = approval;
-    while (tail.next) tail = tail.next;
-    tail.next = repayTx;
-    return approval;
-  }
-  return repayTx;
+  return chainApproval(approval, repayTx);
 }
 
 export async function buildMorphoSupplyCollateral(
@@ -238,7 +211,7 @@ export async function buildMorphoSupplyCollateral(
   const wallet = p.wallet as `0x${string}`;
   const morpho = morphoAddress(chain);
   const params = await resolveMarketParams(chain, p.marketId as `0x${string}`);
-  const meta = await tokenMeta(chain, params.collateralToken);
+  const meta = await resolveTokenMeta(chain, params.collateralToken);
   const amountWei = parseUnits(p.amount, meta.decimals);
   const { approvalAmount, display } = resolveApprovalCap(
     p.approvalCap,
@@ -272,13 +245,7 @@ export async function buildMorphoSupplyCollateral(
       args: { marketId: p.marketId, amount: p.amount, onBehalf: wallet },
     },
   };
-  if (approval) {
-    let tail = approval;
-    while (tail.next) tail = tail.next;
-    tail.next = tx;
-    return approval;
-  }
-  return tx;
+  return chainApproval(approval, tx);
 }
 
 export async function buildMorphoWithdrawCollateral(
@@ -288,7 +255,7 @@ export async function buildMorphoWithdrawCollateral(
   const wallet = p.wallet as `0x${string}`;
   const morpho = morphoAddress(chain);
   const params = await resolveMarketParams(chain, p.marketId as `0x${string}`);
-  const meta = await tokenMeta(chain, params.collateralToken);
+  const meta = await resolveTokenMeta(chain, params.collateralToken);
   if (p.amount === "max") {
     throw new Error(
       `"max" is not supported for Morpho withdrawCollateral — read position.collateral and pass an explicit amount.`
