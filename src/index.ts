@@ -344,6 +344,7 @@ function previewSendHandler(
       maxPriorityFeePerGas: string;
       gas: string;
     };
+    previewToken: string;
   }>,
 ) {
   return async (args: { handle: string }) => {
@@ -502,9 +503,14 @@ async function main() {
         "   Relay that block VERBATIM to the user so the hash is on-screen when the Ledger device",
         "   prompt later appears. Skip this step for TRON handles — they use USB-HID signing with",
         "   native clear-sign screens, no WalletConnect hash.",
-        "6. Call `send_transaction` with the handle and `confirmed: true` — Ledger Live will",
-        "   prompt the user to review and physically sign on the device. For EVM handles this",
-        "   reads the pin from step 5; if you skipped preview_send it throws \"Missing pinned gas\".",
+        "6. Call `send_transaction` with the handle, `confirmed: true`, and (EVM only) the",
+        "   `previewToken` value returned by step 5 plus `userDecision: \"send\"`. Ledger Live",
+        "   will prompt the user to review and physically sign on the device. For EVM handles",
+        "   this reads the pin from step 5; if you skipped preview_send it throws \"Missing",
+        "   pinned gas\". The previewToken + userDecision pair is the schema-level gate that",
+        "   proves preview_send actually ran and that the EXTRA CHECKS menu was surfaced to",
+        "   the user — omit either and send_transaction refuses with a clear error explaining",
+        "   the fix. TRON handles ignore these two args.",
         "7. After `send_transaction` returns a txHash, relay the TRANSACTION BROADCAST block",
         "   VERBATIM to the user (it carries the hash + explorer link — do NOT drop it), THEN",
         "   poll `get_transaction_status` YOURSELF every ~5s until status is `success` or",
@@ -945,6 +951,7 @@ async function main() {
         "Forward an already-prepared transaction to the Ledger device for user signing. Routes on the handle's origin: EVM handles (prepare_aave_*, prepare_compound_*, prepare_swap, prepare_native_send, ...) go through Ledger Live via WalletConnect; TRON handles (prepare_tron_*) go through the directly-connected Ledger over USB HID and are broadcast via TronGrid. In both cases the user must review and physically approve the tx on the Ledger screen; this call blocks until the user signs or rejects. " +
         "EVM handles REQUIRE a prior preview_send(handle) call in the same session — send_transaction reads the pinned nonce + fees + gas stashed on the handle and will throw a clear error if the pin is missing. The split exists so the LEDGER BLIND-SIGN HASH is surfaced to the user BEFORE the blocking device prompt. " +
         "You MUST pass `confirmed: true` — the agent is affirming that the user has seen and acknowledged the decoded preview AND the LEDGER BLIND-SIGN HASH emitted by preview_send. " +
+        "EVM handles ADDITIONALLY require passing `previewToken` (the opaque string returned in preview_send's top-level JSON response) and `userDecision: \"send\"` (set after the user has replied \"send\" to the EXTRA CHECKS menu emitted by preview_send's agent-task block). Together these prove the agent actually surfaced the preview-time gate to the user instead of collapsing preview_send + send_transaction into one silent step — missing/mismatched values cause a clear-error refusal. TRON handles ignore both args. " +
         "For TRON handles, `pair_ledger_tron` must have been called at least once per session (so the TRON app has been opened on the device) and the Ledger must still be plugged in with the TRON app open at send time; preview_send is skipped (TRON has its own clear-sign UX on-device).",
       inputSchema: sendTransactionInput.shape,
     },

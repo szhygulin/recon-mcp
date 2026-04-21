@@ -37,6 +37,17 @@ export interface StashedPin {
   gas: bigint;
   preSignHash: `0x${string}`;
   pinnedAt: number;
+  /**
+   * Opaque token minted by `preview_send` and echoed back by `send_transaction`.
+   * Closes the UX gap where the chat agent silently collapses the preview step
+   * (the one that surfaces the EXTRA-CHECKS menu and the LEDGER BLIND-SIGN
+   * HASH) into a single "send" call. A send_transaction that does not carry
+   * a matching token proves preview_send never ran for this pin — the agent
+   * skipped the gate — and the server refuses. Re-pinning (preview_send with
+   * refresh: true) mints a fresh token, invalidating any captured-earlier
+   * token the agent might try to reuse.
+   */
+  previewToken: string;
 }
 
 interface StoredTx {

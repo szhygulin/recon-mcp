@@ -119,6 +119,26 @@ export const sendTransactionInput = z.object({
         "the decoded preview returned by the preceding prepare_* call. This is a schema-enforced " +
         "contract — omitting it fails validation before any tx is submitted."
     ),
+  previewToken: z
+    .string()
+    .optional()
+    .describe(
+      "EVM-only (ignored for TRON). Opaque token returned by the preceding `preview_send` call " +
+        "in its top-level JSON response. Must be passed back verbatim here — a mismatch or " +
+        "omission proves preview_send was skipped or re-run with `refresh: true` after capture, " +
+        "and send_transaction refuses. Closes the gap where the agent collapses preview_send + " +
+        "send_transaction into one step without surfacing the EXTRA CHECKS YOU CAN RUN BEFORE " +
+        "REPLYING 'SEND' menu to the user."
+    ),
+  userDecision: z
+    .literal("send")
+    .optional()
+    .describe(
+      "EVM-only (ignored for TRON). The agent sets this to the literal \"send\" AFTER presenting " +
+        "the EXTRA CHECKS menu from preview_send's agent-task block and receiving the user's " +
+        "explicit 'send' reply. Schema-enforced contract that the preview-time gate was surfaced " +
+        "to the user, not skipped. Missing value → send_transaction refuses with a clear error."
+    ),
 });
 
 export const previewSendInput = z.object({

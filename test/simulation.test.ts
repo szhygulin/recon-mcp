@@ -194,10 +194,13 @@ describe("preview_send runs guards and pins fees; send_transaction consumes the 
       maxPriorityFeePerGas: 2_000_000_000n.toString(),
       gas: 21_000n.toString(),
     });
+    expect(preview.previewToken).toMatch(/^[0-9a-f-]{36}$/);
 
     const result = await sendTransaction({
       handle: stamped.handle!,
       confirmed: true,
+      previewToken: preview.previewToken,
+      userDecision: "send",
     });
     expect(result.txHash).toBe("0xabc123");
     expect(requestSendMock).toHaveBeenCalledTimes(1);
