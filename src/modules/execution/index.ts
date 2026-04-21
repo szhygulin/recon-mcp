@@ -782,6 +782,12 @@ const SECOND_AGENT_INSTRUCTIONS = [
   "  3. Flag red flags: unlimited approvals (uint256.max), unknown destinations,",
   "     nested delegatecalls, transfers to addresses that don't match the stated",
   "     recipient, approvals to spenders that are not well-known protocol routers.",
+  "     Specifically: if the calldata embeds a recipient / `to` / unwrap target",
+  "     (e.g. unwrapWETH9's recipient, a bridge's destination, a transfer's `to`),",
+  "     compare it to payload.from. If they match, it is the signer's own wallet",
+  "     — that is the expected case for swaps/unwraps/withdrawals. If they DIFFER,",
+  "     the user is sending value to a third party and should confirm that",
+  "     destination was intentional.",
   "  4. If you cannot decode the selector (not in your training data), say so — do",
   "     not guess. 'I don't know this selector' is the correct answer when true.",
   "  5. Remind the user: before tapping 'Approve' on the Ledger, match the hash shown",
@@ -820,6 +826,15 @@ export interface EvmVerificationArtifact {
   handle: string;
   chain: SupportedChain;
   chainId: number;
+  /**
+   * The signer / paired wallet. Surfaced on the artifact (and inside the
+   * pasteable payload) so the second agent can auto-check "is the recipient
+   * embedded in the calldata the signer's own wallet or a third party?" —
+   * the common case that a second agent otherwise has to flag uncertainly.
+   * Optional on the type because UnsignedTx.from is optional, but populated
+   * in practice for every tx our prepare_* tools produce.
+   */
+  from?: `0x${string}`;
   to: `0x${string}`;
   value: string;
   data: `0x${string}`;
@@ -887,6 +902,7 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
       data: tx.data,
       payloadHash: tx.verification.payloadHash,
     };
+    if (tx.from) pasteablePayload.from = tx.from;
     if (pin) pasteablePayload.preSignHash = pin.preSignHash;
     const artifact: EvmVerificationArtifact = {
       artifactVersion: "v1",
@@ -899,6 +915,7 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
       payloadHash: tx.verification.payloadHash,
       pasteableBlock: buildPasteableBlock(pasteablePayload),
     };
+    if (tx.from) artifact.from = tx.from;
     if (pin) artifact.preSignHash = pin.preSignHash;
     return artifact;
   }

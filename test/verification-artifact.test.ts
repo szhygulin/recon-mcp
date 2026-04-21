@@ -48,6 +48,10 @@ describe("get_verification_artifact — second-agent copy-paste artifact", () =>
     expect(artifact.value).toBe(stamped.value);
     expect(artifact.data).toBe(stamped.data);
     expect(artifact.payloadHash).toBe(stamped.verification!.payloadHash);
+    // `from` must be surfaced so the second agent can auto-check whether
+    // in-calldata recipients (unwrapWETH9 target, bridge dest, transfer `to`)
+    // match the signer or are a third party.
+    expect(artifact.from).toBe(SENDER);
 
     // preview_send has not been called, so preSignHash must not be present.
     expect(artifact.preSignHash).toBeUndefined();
@@ -68,6 +72,9 @@ describe("get_verification_artifact — second-agent copy-paste artifact", () =>
     expect(artifact.pasteableBlock).toContain(stamped.data);
     expect(artifact.pasteableBlock).toContain(stamped.to);
     expect(artifact.pasteableBlock).toContain(stamped.verification!.payloadHash);
+    // `from` must appear inside the pasted payload too — the second agent
+    // reads payload.from to perform the recipient-vs-signer comparison.
+    expect(artifact.pasteableBlock).toContain(SENDER);
     // Old field name must be gone — future refactors should not resurrect it.
     const bag = artifact as unknown as Record<string, unknown>;
     expect(bag.instructionsForSecondAgent).toBeUndefined();
