@@ -171,6 +171,21 @@ export const getTxVerificationInput = z.object({
     ),
 });
 
+export const getVerificationArtifactInput = z.object({
+  handle: z
+    .string()
+    .min(1)
+    .describe(
+      "Opaque handle returned by any prepare_* tool. Returns a sparse, copy-paste-" +
+        "friendly JSON artifact carrying the raw calldata (or TRON rawDataHex), " +
+        "chain, recipient, value, payloadHash, and — when preview_send has already " +
+        "pinned gas — the Ledger blind-sign preSignHash. A static prompt telling a " +
+        "second LLM how to independently decode the bytes is included. The " +
+        "artifact intentionally omits the server's humanDecode, swiss-knife URL, " +
+        "and 4byte cross-check so the second agent cannot parrot them."
+    ),
+});
+
 export type PairLedgerTronArgs = z.infer<typeof pairLedgerTronInput>;
 export type PrepareAaveSupplyArgs = z.infer<typeof prepareAaveSupplyInput>;
 export type PrepareAaveWithdrawArgs = z.infer<typeof prepareAaveWithdrawInput>;
@@ -185,3 +200,4 @@ export type PreviewSendArgs = z.infer<typeof previewSendInput>;
 export type SendTransactionArgs = z.infer<typeof sendTransactionInput>;
 export type GetTransactionStatusArgs = z.infer<typeof getTransactionStatusInput>;
 export type GetTxVerificationArgs = z.infer<typeof getTxVerificationInput>;
+export type GetVerificationArtifactArgs = z.infer<typeof getVerificationArtifactInput>;

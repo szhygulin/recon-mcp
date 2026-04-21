@@ -84,6 +84,20 @@ TRON preimage: `"VaultPilot-txverify-v1:tron:" ‖ rawDataHex`.
 
 This fingerprint is a server-side prepare↔send integrity tag — it is **not** the hash Ledger's blind-sign screen displays (those are different preimages; Ledger hashes the full EIP-1559 RLP including nonce and fees). The blind-sign-matchable hash is emitted by `preview_send` in a separate `LEDGER BLIND-SIGN HASH` block.
 
+### Second-agent verification (optional, for the coordinated-agent case)
+
+The table above honestly concedes that a fully-coordinated agent compromise — where the same agent that invokes `prepare_*` with malicious args also filters what the user sees in chat — has no software-only defense, because the user's entire view flows through the agent.
+
+`get_verification_artifact(handle)` narrows that gap. It returns a sparse JSON blob — `{chain, chainId, to, value, data, payloadHash, preSignHash?}` plus a canned prompt — deliberately stripped of the server's own humanDecode, swiss-knife URL, and 4byte cross-check. Paste it into a **second, independent LLM session** (ideally a different provider) and let that agent decode the bytes from scratch with no shared context. If the two agents disagree on what the transaction does, the first agent was lying — abort.
+
+The Ledger device is the fabrication anchor: a compromised first agent can't invent bytes whose `preSignHash` matches the hash the Ledger screen displays at sign time. The canned prompt reminds the user to compare the artifact's `preSignHash` against the device before tapping approve — any mismatch proves the artifact was forged mid-flight, and the tx is rejected on-device anyway.
+
+Limits worth naming:
+
+- Does not catch a supply-chain compromise of the MCP process itself (the bytes the server builds are still the bytes it ships).
+- Does not catch a coordinated attack that simultaneously compromises both LLM providers (significantly harder than compromising one).
+- Does not replace the normal `VERIFY-BEFORE-SIGNING` block — it is an additional tool for skeptical users on high-value or unfamiliar-contract flows.
+
 ## Supported chains
 
 EVM: Ethereum, Arbitrum, Polygon, Base.
@@ -117,6 +131,7 @@ Read-only (no Ledger pairing required):
 - `get_swap_quote` — LiFi quote (optionally cross-checked against 1inch)
 - `check_contract_security`, `check_permission_risks`, `get_protocol_risk_score` — risk tooling
 - `get_transaction_status` — poll inclusion by hash
+- `get_verification_artifact` — returns a sparse, copy-paste-friendly JSON artifact (raw calldata + chain + payloadHash + preSignHash if pinned) for a prepared tx, plus a canned prompt telling a second LLM how to independently decode it. Intended for adversarial cross-verification on high-value flows — see §"Second-agent verification" above
 
 Meta:
 
