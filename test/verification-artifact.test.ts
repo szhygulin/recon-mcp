@@ -52,17 +52,28 @@ describe("get_verification_artifact — second-agent copy-paste artifact", () =>
     // preview_send has not been called, so preSignHash must not be present.
     expect(artifact.preSignHash).toBeUndefined();
 
-    // Canned instructions are present and non-empty so the user can paste
-    // artifact + prompt as a single block.
-    expect(typeof artifact.instructionsForSecondAgent).toBe("string");
-    expect(artifact.instructionsForSecondAgent.length).toBeGreaterThan(100);
-    expect(artifact.instructionsForSecondAgent).toMatch(/DO NOT trust any description text/);
-    expect(artifact.instructionsForSecondAgent).toMatch(/REJECT/);
-
+    // pasteableBlock: a single self-contained copy-paste string. Must carry
+    // explicit START/END markers so the user and the second LLM can see
+    // where the paste target begins and ends — without them, the first
+    // agent's commentary bleeds into the paste (seen live in testing).
+    expect(typeof artifact.pasteableBlock).toBe("string");
+    expect(artifact.pasteableBlock.length).toBeGreaterThan(200);
+    expect(artifact.pasteableBlock).toMatch(/COPY FROM THIS LINE/);
+    expect(artifact.pasteableBlock).toMatch(/END — STOP COPYING HERE/);
+    expect(artifact.pasteableBlock).toMatch(/DO NOT trust any description text/);
+    expect(artifact.pasteableBlock).toMatch(/REJECT/);
+    // Payload JSON is embedded INSIDE the markers so the second agent sees
+    // it as part of its single prompt — not a second artifact the user has
+    // to paste separately.
+    expect(artifact.pasteableBlock).toContain(stamped.data);
+    expect(artifact.pasteableBlock).toContain(stamped.to);
+    expect(artifact.pasteableBlock).toContain(stamped.verification!.payloadHash);
+    // Old field name must be gone — future refactors should not resurrect it.
+    const bag = artifact as unknown as Record<string, unknown>;
+    expect(bag.instructionsForSecondAgent).toBeUndefined();
     // Artifact must NOT leak the server's own decode — the whole point is
     // adversarial independence. Check the untyped bag to catch any accidental
     // field addition in future refactors.
-    const bag = artifact as unknown as Record<string, unknown>;
     expect(bag.humanDecode).toBeUndefined();
     expect(bag.decoded).toBeUndefined();
     expect(bag.decoderUrl).toBeUndefined();
@@ -84,6 +95,10 @@ describe("get_verification_artifact — second-agent copy-paste artifact", () =>
 
     const artifact = getVerificationArtifact({ handle: stamped.handle! }) as EvmVerificationArtifact;
     expect(artifact.preSignHash).toBe(pinnedPreSignHash);
+    // preSignHash appears inside the paste-block payload too, not just on
+    // the outer artifact — the second agent reads payload.preSignHash as
+    // the Ledger-match anchor (step 5 of the prompt).
+    expect(artifact.pasteableBlock).toContain(pinnedPreSignHash);
   });
 
   it("TRON happy path: artifact carries from, txID, rawDataHex, payloadHash; no preSignHash concept on TRON", () => {
@@ -105,11 +120,19 @@ describe("get_verification_artifact — second-agent copy-paste artifact", () =>
     expect(artifact.txID).toBe(stamped.txID);
     expect(artifact.rawDataHex).toBe(stamped.rawDataHex);
     expect(artifact.payloadHash).toBe(stamped.verification!.payloadHash);
-    expect(artifact.instructionsForSecondAgent).toMatch(/TRON|rawDataHex/);
+    // pasteableBlock carries START/END markers and the TRON-specific fields
+    // (rawDataHex, txID) inside the embedded payload.
+    expect(artifact.pasteableBlock).toMatch(/COPY FROM THIS LINE/);
+    expect(artifact.pasteableBlock).toMatch(/END — STOP COPYING HERE/);
+    expect(artifact.pasteableBlock).toMatch(/TRON|rawDataHex/);
+    expect(artifact.pasteableBlock).toContain(stamped.rawDataHex);
+    expect(artifact.pasteableBlock).toContain(stamped.txID);
 
     // TRON has no EIP-1559 pre-sign hash concept — the artifact shape must
     // not include that field on TRON handles.
-    expect((artifact as unknown as Record<string, unknown>).preSignHash).toBeUndefined();
+    const bag = artifact as unknown as Record<string, unknown>;
+    expect(bag.preSignHash).toBeUndefined();
+    expect(bag.instructionsForSecondAgent).toBeUndefined();
   });
 
   it("unknown handle: throws a clear 'Unknown or expired' error", () => {

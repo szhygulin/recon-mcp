@@ -790,6 +790,31 @@ const SECOND_AGENT_INSTRUCTIONS = [
   "     intermediary — REJECT.",
 ].join("\n");
 
+/**
+ * Explicit start/end copy-markers so the user (and the second LLM) can tell
+ * where the paste target begins and ends. Without them, the first agent's
+ * surrounding commentary bleeds into the paste: live users have pasted the
+ * "Reply with what the second agent said..." trailing sentence into the
+ * second session, confusing it. The markers eliminate that ambiguity.
+ */
+const PASTE_START = '===== COPY FROM THIS LINE TO THE "END" MARKER INTO A SEPARATE LLM SESSION =====';
+const PASTE_START_2 = "===== (ideally a different LLM provider — the point is no shared context)    =====";
+const PASTE_END = '===== END — STOP COPYING HERE =====';
+
+function buildPasteableBlock(payload: Record<string, unknown>): string {
+  return [
+    PASTE_START,
+    PASTE_START_2,
+    "",
+    SECOND_AGENT_INSTRUCTIONS,
+    "",
+    "PAYLOAD:",
+    JSON.stringify(payload, null, 2),
+    "",
+    PASTE_END,
+  ].join("\n");
+}
+
 export interface EvmVerificationArtifact {
   artifactVersion: "v1";
   handle: string;
@@ -800,7 +825,13 @@ export interface EvmVerificationArtifact {
   data: `0x${string}`;
   payloadHash: `0x${string}`;
   preSignHash?: `0x${string}`;
-  instructionsForSecondAgent: string;
+  /**
+   * Self-contained copy-paste string with explicit START/END markers,
+   * instructions for the second agent, and the JSON payload embedded inline.
+   * The agent should present this field VERBATIM to the user — do not
+   * rewrap, don't add commentary inside the markers, don't reformat.
+   */
+  pasteableBlock: string;
 }
 
 export interface TronVerificationArtifact {
@@ -811,7 +842,8 @@ export interface TronVerificationArtifact {
   txID: string;
   rawDataHex: string;
   payloadHash: `0x${string}`;
-  instructionsForSecondAgent: string;
+  /** See EvmVerificationArtifact.pasteableBlock. */
+  pasteableBlock: string;
 }
 
 export type VerificationArtifact = EvmVerificationArtifact | TronVerificationArtifact;
@@ -842,6 +874,20 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
       throw new Error(`Internal: tx for handle '${args.handle}' missing verification metadata.`);
     }
     const pin = getPinnedGas(args.handle);
+    // Payload embedded in the paste-block is the SECOND-AGENT-FACING view —
+    // just the fields the prompt references (chain, chainId, to, value, data,
+    // payloadHash, preSignHash). The artifact's own `handle` / `artifactVersion`
+    // are internal plumbing; including them would just invite the second
+    // agent to comment on structural fields rather than the tx semantics.
+    const pasteablePayload: Record<string, unknown> = {
+      chain: tx.chain,
+      chainId: CHAIN_IDS[tx.chain],
+      to: tx.to,
+      value: tx.value,
+      data: tx.data,
+      payloadHash: tx.verification.payloadHash,
+    };
+    if (pin) pasteablePayload.preSignHash = pin.preSignHash;
     const artifact: EvmVerificationArtifact = {
       artifactVersion: "v1",
       handle: args.handle,
@@ -851,7 +897,7 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
       value: tx.value,
       data: tx.data,
       payloadHash: tx.verification.payloadHash,
-      instructionsForSecondAgent: SECOND_AGENT_INSTRUCTIONS,
+      pasteableBlock: buildPasteableBlock(pasteablePayload),
     };
     if (pin) artifact.preSignHash = pin.preSignHash;
     return artifact;
@@ -861,6 +907,13 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
     if (!tx.verification) {
       throw new Error(`Internal: TRON tx for handle '${args.handle}' missing verification metadata.`);
     }
+    const pasteablePayload = {
+      chain: "tron",
+      from: tx.from,
+      txID: tx.txID,
+      rawDataHex: tx.rawDataHex,
+      payloadHash: tx.verification.payloadHash,
+    };
     return {
       artifactVersion: "v1",
       handle: args.handle,
@@ -869,7 +922,7 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
       txID: tx.txID,
       rawDataHex: tx.rawDataHex,
       payloadHash: tx.verification.payloadHash,
-      instructionsForSecondAgent: SECOND_AGENT_INSTRUCTIONS,
+      pasteableBlock: buildPasteableBlock(pasteablePayload),
     };
   }
   throw new Error(
