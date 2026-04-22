@@ -221,6 +221,23 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     // `[Open in swiss-knife decoder](<url>)` keeps it a neat single line.
     expect(block).toContain(`[Open in swiss-knife decoder](${decoderUrl})`);
     expect(block).toMatch(/Markdown hyperlink/);
+    // Live-run regression: the agent stripped both the `…` backticks around
+    // the hash AND the [label](url) syntax around the swiss-knife link,
+    // rendering "Open in swiss-knife decoder" as plain text with no URL and
+    // the hash as plain prose. Root cause was notation ambiguity: the
+    // template used square-bracket placeholders like `[✓|✗|⚠]` for
+    // "pick-one" verdict markers, and the agent generalized "brackets are
+    // placeholder notation → strip them" to the Markdown link brackets too.
+    // Fix: switch placeholders to curly braces `{✓|✗|⚠}` so square brackets
+    // only appear in literal Markdown link syntax, and add an explicit
+    // NOTATION section that distinguishes the two.
+    expect(block).toMatch(/NOTATION/);
+    expect(block).toMatch(/\{✓\|✗\|⚠\}/);
+    expect(block).not.toMatch(/\[✓\|✗\|⚠\]/);
+    // The NOTATION section must explicitly call out `[label](url)` and
+    // backtick-wrapped hashes as literal Markdown, not placeholders.
+    expect(block).toMatch(/\[label\]\(url\)/);
+    expect(block).toMatch(/rendering directives, NOT placeholders/i);
   });
 
   it("when no decoder URL is available (oversized calldata), tells the agent to say so honestly", async () => {
