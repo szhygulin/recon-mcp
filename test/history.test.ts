@@ -39,6 +39,10 @@ beforeEach(() => {
   cache.clear();
   // Override global fetch. Node 18+ uses global fetch; vi.stubGlobal handles it.
   vi.stubGlobal("fetch", fakeFetch);
+  // Stub API key — Etherscan V2 requires one. Tests mock fetch so the value
+  // never hits the wire; without this, test runs on clean machines (CI) would
+  // throw EtherscanApiKeyMissingError before hitting the mock.
+  vi.stubEnv("ETHERSCAN_API_KEY", "test-key");
 });
 
 const WALLET = "0x1234567890123456789012345678901234567890";
@@ -49,19 +53,48 @@ function actionOf(url: string): string | undefined {
   return m ? m[1] : undefined;
 }
 
+function chainIdOf(url: string): string | undefined {
+  const m = url.match(/[?&]chainid=([^&]+)/);
+  return m ? m[1] : undefined;
+}
+
+/**
+ * V2 URL shape: https://api.etherscan.io/v2/api?chainid=N&module=...&action=...&apikey=...
+ * The matcher pins the V2 path prefix explicitly so a regression to V1
+ * (`api.etherscan.io/api?...`) would fall through to the "unmatched fetch"
+ * throw rather than silently matching.
+ */
 function etherscanOk(action: string, result: unknown[]) {
   return {
-    match: (url: string) => url.includes("api.etherscan.io") && actionOf(url) === action,
+    match: (url: string) =>
+      url.includes("api.etherscan.io/v2/api") && actionOf(url) === action && chainIdOf(url) !== undefined,
     respond: () => ({ ok: true, body: { status: "1", message: "OK", result } }),
   };
 }
 
 function etherscanNoTx(action: string) {
   return {
-    match: (url: string) => url.includes("api.etherscan.io") && actionOf(url) === action,
+    match: (url: string) =>
+      url.includes("api.etherscan.io/v2/api") && actionOf(url) === action && chainIdOf(url) !== undefined,
     respond: () => ({
       ok: true,
       body: { status: "0", message: "No transactions found", result: [] },
+    }),
+  };
+}
+
+/** V1-style response used in the deprecation-reproduction test. */
+function etherscanDeprecated(action: string) {
+  return {
+    match: (url: string) =>
+      url.includes("api.etherscan.io/v2/api") && actionOf(url) === action,
+    respond: () => ({
+      ok: true,
+      body: {
+        status: "0",
+        message: "NOTOK",
+        result: "You are using a deprecated V1 endpoint, switch to Etherscan API V2 using https://docs.etherscan.io/v2-migration",
+      },
     }),
   };
 }
@@ -384,6 +417,92 @@ describe("get_transaction_history: timestamp filter", () => {
     });
     expect(res.items.length).toBe(1);
     expect(res.items[0].hash).toBe("0xmid");
+  });
+});
+
+describe("get_transaction_history: V2 migration", () => {
+  it("sends chainid=1 for ethereum and chainid=42161 for arbitrum", async () => {
+    routes = [
+      etherscanNoTx("txlist"),
+      etherscanNoTx("tokentx"),
+      etherscanNoTx("txlistinternal"),
+      llamaNotFound(),
+    ];
+    const { getTransactionHistory } = await import("../src/modules/history/index.js");
+    await getTransactionHistory({
+      wallet: WALLET,
+      chain: "ethereum",
+      limit: 25,
+      includeExternal: true,
+      includeTokenTransfers: true,
+      includeInternal: true,
+    });
+    expect(fetchCalls.every((u) => !u.includes("api.etherscan.io/v2/api") || chainIdOf(u) === "1")).toBe(
+      true
+    );
+
+    fetchCalls = [];
+    cache.clear();
+    await getTransactionHistory({
+      wallet: WALLET,
+      chain: "arbitrum",
+      limit: 25,
+      includeExternal: true,
+      includeTokenTransfers: true,
+      includeInternal: true,
+    });
+    expect(
+      fetchCalls.every((u) => !u.includes("api.etherscan.io/v2/api") || chainIdOf(u) === "42161")
+    ).toBe(true);
+  });
+
+  it("propagates a clear error when ETHERSCAN_API_KEY is missing", async () => {
+    vi.unstubAllEnvs();
+    // Also make sure the user-config lookup doesn't resolve a key from disk —
+    // mock readUserConfig to return null so the test is deterministic on the
+    // developer's machine regardless of ~/.vaultpilot-mcp/config.json.
+    vi.doMock("../src/config/user-config.js", async () => {
+      const actual = await vi.importActual<typeof import("../src/config/user-config.js")>(
+        "../src/config/user-config.js"
+      );
+      return { ...actual, readUserConfig: () => null };
+    });
+    vi.resetModules();
+    const { getTransactionHistory } = await import("../src/modules/history/index.js");
+    await expect(
+      getTransactionHistory({
+        wallet: WALLET,
+        chain: "ethereum",
+        limit: 25,
+        includeExternal: true,
+        includeTokenTransfers: true,
+        includeInternal: true,
+      })
+    ).rejects.toThrow(/ETHERSCAN_API_KEY/);
+    vi.doUnmock("../src/config/user-config.js");
+    vi.resetModules();
+  });
+
+  it("surfaces the V1-deprecation `result` field in error messages", async () => {
+    routes = [
+      etherscanDeprecated("txlist"),
+      etherscanDeprecated("tokentx"),
+      etherscanDeprecated("txlistinternal"),
+      llamaNotFound(),
+    ];
+    const { getTransactionHistory } = await import("../src/modules/history/index.js");
+    const res = await getTransactionHistory({
+      wallet: WALLET,
+      chain: "ethereum",
+      limit: 25,
+      includeExternal: true,
+      includeTokenTransfers: true,
+      includeInternal: true,
+    });
+    expect(res.items.length).toBe(0);
+    expect(res.errors?.length).toBe(3);
+    const joined = (res.errors ?? []).map((e) => e.message).join(" | ");
+    expect(joined).toContain("deprecated V1 endpoint");
   });
 });
 

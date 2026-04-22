@@ -1,6 +1,9 @@
 import { cache } from "../../data/cache.js";
 import { CACHE_TTL } from "../../config/cache.js";
-import { resolveEtherscanApiKey, readUserConfig } from "../../config/user-config.js";
+import {
+  etherscanV2Fetch,
+  EtherscanApiKeyMissingError,
+} from "../../data/apis/etherscan-v2.js";
 import { sanitizeContractName } from "../../data/apis/etherscan.js";
 import type { SupportedChain } from "../../types/index.js";
 import type {
@@ -9,23 +12,9 @@ import type {
   InternalHistoryItem,
 } from "./schemas.js";
 
-const API_BASE: Record<SupportedChain, string> = {
-  ethereum: "https://api.etherscan.io/api",
-  arbitrum: "https://api.arbiscan.io/api",
-  polygon: "https://api.polygonscan.com/api",
-  base: "https://api.basescan.org/api",
-};
-
-const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const SERVER_ROW_CAP = 100;
 const MAX_SYMBOL_LEN = 32;
 const MAX_NAME_LEN = 64;
-
-interface EtherscanEnvelope<T> {
-  status: string;
-  message: string;
-  result: T | string;
-}
 
 interface TxListItem {
   hash: string;
@@ -58,44 +47,6 @@ interface InternalTxItem {
   value: string;
   isError: string;
   traceId?: string;
-}
-
-async function etherscanFetch<T>(
-  chain: SupportedChain,
-  params: Record<string, string>
-): Promise<T[]> {
-  const apiKey = resolveEtherscanApiKey(readUserConfig());
-  const qs = new URLSearchParams({
-    ...params,
-    page: "1",
-    offset: String(SERVER_ROW_CAP),
-    sort: "desc",
-  });
-  if (apiKey) qs.set("apikey", apiKey);
-
-  const res = await fetch(`${API_BASE[chain]}?${qs.toString()}`);
-  if (!res.ok) {
-    throw new Error(`Etherscan ${chain} ${params.action} returned ${res.status}`);
-  }
-  const text = await res.text();
-  if (text.length > MAX_RESPONSE_BYTES) {
-    throw new Error(
-      `Etherscan ${chain} ${params.action} response exceeds ${MAX_RESPONSE_BYTES} bytes (got ${text.length})`
-    );
-  }
-  const body = JSON.parse(text) as EtherscanEnvelope<T[]>;
-  if (body.status !== "1") {
-    if (typeof body.result === "string" && body.result.toLowerCase().includes("no transactions")) {
-      return [];
-    }
-    if (body.message?.toLowerCase().includes("no transactions")) {
-      return [];
-    }
-    throw new Error(
-      `Etherscan ${chain} ${params.action} error: ${body.message || "unknown"}`
-    );
-  }
-  return Array.isArray(body.result) ? body.result : [];
 }
 
 function formatUnitsDecimal(raw: string, decimals: number): string {
@@ -192,6 +143,17 @@ export interface EvmFetchResult {
   errors: Array<{ source: string; message: string }>;
 }
 
+async function fetchAction<T>(chain: SupportedChain, action: string, address: string): Promise<T[]> {
+  return etherscanV2Fetch<T>(chain, {
+    module: "account",
+    action,
+    address,
+    page: "1",
+    offset: String(SERVER_ROW_CAP),
+    sort: "desc",
+  });
+}
+
 export async function fetchEvmHistory(args: {
   wallet: `0x${string}`;
   chain: SupportedChain;
@@ -207,18 +169,23 @@ export async function fetchEvmHistory(args: {
   }
 
   const errors: Array<{ source: string; message: string }> = [];
-  const baseParams = { module: "account", address: wallet };
 
+  // Missing API key is a fatal, user-actionable error — surface it directly
+  // rather than burying it in per-endpoint error arrays. Probe once before
+  // the fan-out so the caller gets ONE clean error, not three redundant ones.
   const [externalRows, tokenRows, internalRows] = await Promise.all([
-    etherscanFetch<TxListItem>(chain, { ...baseParams, action: "txlist" }).catch((e: Error) => {
+    fetchAction<TxListItem>(chain, "txlist", wallet).catch((e: Error) => {
+      if (e instanceof EtherscanApiKeyMissingError) throw e;
       errors.push({ source: `etherscan.txlist.${chain}`, message: e.message });
       return [] as TxListItem[];
     }),
-    etherscanFetch<TokenTxItem>(chain, { ...baseParams, action: "tokentx" }).catch((e: Error) => {
+    fetchAction<TokenTxItem>(chain, "tokentx", wallet).catch((e: Error) => {
+      if (e instanceof EtherscanApiKeyMissingError) throw e;
       errors.push({ source: `etherscan.tokentx.${chain}`, message: e.message });
       return [] as TokenTxItem[];
     }),
-    etherscanFetch<InternalTxItem>(chain, { ...baseParams, action: "txlistinternal" }).catch((e: Error) => {
+    fetchAction<InternalTxItem>(chain, "txlistinternal", wallet).catch((e: Error) => {
+      if (e instanceof EtherscanApiKeyMissingError) throw e;
       errors.push({ source: `etherscan.txlistinternal.${chain}`, message: e.message });
       return [] as InternalTxItem[];
     }),
