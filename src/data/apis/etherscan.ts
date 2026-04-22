@@ -1,14 +1,10 @@
 import { cache } from "../cache.js";
 import { CACHE_TTL } from "../../config/cache.js";
-import { resolveEtherscanApiKey, readUserConfig } from "../../config/user-config.js";
+import {
+  etherscanV2Fetch,
+  EtherscanApiKeyMissingError,
+} from "./etherscan-v2.js";
 import type { SupportedChain } from "../../types/index.js";
-
-const API_BASE: Record<SupportedChain, string> = {
-  ethereum: "https://api.etherscan.io/api",
-  arbitrum: "https://api.arbiscan.io/api",
-  polygon: "https://api.polygonscan.com/api",
-  base: "https://api.basescan.org/api",
-};
 
 export interface ContractInfo {
   address: `0x${string}`;
@@ -49,15 +45,21 @@ interface EtherscanSourceCodeItem {
   Implementation: string;
 }
 
-interface EtherscanResponse<T> {
-  status: string;
-  message: string;
-  result: T;
-}
-
 /**
- * Fetch contract verification info from Etherscan / Arbiscan.
- * Cached for 24 hours — verification state rarely changes.
+ * Fetch contract verification info via Etherscan V2. Cached for 24 hours —
+ * verification state rarely changes.
+ *
+ * V2 migration note: the per-chain V1 endpoints (api.etherscan.io,
+ * api.arbiscan.io, ...) were deprecated in 2025 and now NOTOK every call.
+ * V2 consolidates all chains behind a single host with `chainid`; the call
+ * shape is otherwise unchanged. An ETHERSCAN_API_KEY is now required.
+ *
+ * Error discipline: real errors (missing key, rate limit, HTTP failure)
+ * throw and are NOT cached. Only legitimate "contract exists but isn't
+ * verified" responses (status:"1", empty SourceCode) are cached as
+ * `{isVerified: false}`. This matters because caching an error as
+ * "unverified" would lock callers out for 24h and silently degrade the
+ * security-review path.
  */
 export async function getContractInfo(
   address: `0x${string}`,
@@ -67,37 +69,23 @@ export async function getContractInfo(
   const hit = cache.get<ContractInfo>(key);
   if (hit) return hit;
 
-  const apiKey = resolveEtherscanApiKey(readUserConfig());
-  const params = new URLSearchParams({
-    module: "contract",
-    action: "getsourcecode",
-    address,
-  });
-  if (apiKey) params.set("apikey", apiKey);
-
-  const url = `${API_BASE[chain]}?${params.toString()}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Etherscan request failed: ${res.status} ${res.statusText}`);
+  let rows: EtherscanSourceCodeItem[];
+  try {
+    rows = await etherscanV2Fetch<EtherscanSourceCodeItem>(chain, {
+      module: "contract",
+      action: "getsourcecode",
+      address,
+    });
+  } catch (e) {
+    // Surface the underlying error untouched — EtherscanApiKeyMissingError
+    // carries a helpful message, and transient errors (rate limit, etc.)
+    // should not pollute the 24h cache with a fake "not verified".
+    if (e instanceof EtherscanApiKeyMissingError) throw e;
+    throw e;
   }
 
-  // Bound the response before JSON-parsing. Etherscan has been well-behaved,
-  // but the response is cached 24h in memory — an unbounded blob is both a
-  // memory-pressure vector and gives a MITM with a broken TLS setup room to
-  // inject a huge payload. 2MB covers the largest verified contracts we've
-  // seen (fully-resolved imports of flattened DeFi protocols top out ~1MB)
-  // with a comfortable margin.
-  const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-  const text = await res.text();
-  if (text.length > MAX_RESPONSE_BYTES) {
-    throw new Error(
-      `Etherscan response for ${address} on ${chain} exceeds ${MAX_RESPONSE_BYTES} bytes (got ${text.length}). Refusing to parse.`
-    );
-  }
-  const body = JSON.parse(text) as EtherscanResponse<EtherscanSourceCodeItem[]>;
-
-  if (body.status !== "1" || !body.result?.[0]) {
-    // Unverified contracts still return a valid response with empty SourceCode.
+  if (!rows[0]) {
+    // status:"1" with empty result — treat as unverified.
     const result: ContractInfo = {
       address,
       chain,
@@ -108,7 +96,7 @@ export async function getContractInfo(
     return result;
   }
 
-  const item = body.result[0];
+  const item = rows[0];
   const isVerified = item.SourceCode !== "";
   let abi: unknown[] | undefined;
   if (isVerified && item.ABI && item.ABI !== "Contract source code not verified") {

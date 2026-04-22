@@ -40,6 +40,9 @@ import {
 import { getPortfolioSummary } from "./modules/portfolio/index.js";
 import { getPortfolioSummaryInput } from "./modules/portfolio/schemas.js";
 
+import { getTransactionHistory } from "./modules/history/index.js";
+import { getTransactionHistoryInput } from "./modules/history/schemas.js";
+
 import { getSwapQuote, prepareSwap } from "./modules/swap/index.js";
 import { getSwapQuoteInput, prepareSwapInput } from "./modules/swap/schemas.js";
 import { prepareUniswapSwap } from "./modules/uniswap-swap/index.js";
@@ -781,6 +784,16 @@ async function main() {
       inputSchema: getPortfolioSummaryInput.shape,
     },
     handler(getPortfolioSummary)
+  );
+
+  server.registerTool(
+    "get_transaction_history",
+    {
+      description:
+        "Fetch a wallet's recent on-chain transaction history on a single chain, merged across external (user-initiated) txs, ERC-20/TRC-20 token transfers, and internal (contract-initiated) txs. Results are sorted newest-first, capped at `limit` (default 25, max 50), and annotated with decoded method names (via 4byte.directory) and historical USD values at the time of each tx (via DefiLlama). Supports Ethereum/Arbitrum/Polygon/Base via Etherscan and TRON via TronGrid. TRON does not expose internal txs, so `includeInternal` is silently ignored there. Use this to answer 'what did I do last week?', 'show me my recent swaps', or 'did I already approve X?' without the user pasting tx hashes. Read-only — no signing, no broadcast.",
+      inputSchema: getTransactionHistoryInput.shape,
+    },
+    handler(getTransactionHistory)
   );
 
   // ---- Module 5: Swap/Bridge (LiFi) ----

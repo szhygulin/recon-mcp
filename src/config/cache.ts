@@ -8,6 +8,8 @@ export const CACHE_TTL = {
   SECURITY_PERMISSIONS: 3_600_000,
   PROTOCOL_RISK: 3_600_000,
   IMMUNEFI: 86_400_000,
+  HISTORY: 60_000,
+  HISTORICAL_PRICE: 2_592_000_000,
 } as const;
 
 export type CacheTTLKey = keyof typeof CACHE_TTL;
