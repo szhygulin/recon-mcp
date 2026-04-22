@@ -624,7 +624,7 @@ describe("decodeCalldata — LiFi Diamond", () => {
       functionName: "swapTokensMultipleV3ERC20ToNative",
       args: [
         `0x${"00".repeat(32)}` as `0x${string}`,
-        "vaultpilot-mcp",
+        "0xC0f5b7f7703BA95dC7C09D4eF50A830622234075",
         "",
         SENDER,
         42_000_000_000_000_000n,
