@@ -162,6 +162,48 @@ export const CONTRACTS = {
     // verified for Base yet. Add the address + block together in a future
     // PR rather than guess and risk missing positions.
   },
+  optimism: {
+    aave: {
+      // Aave V3 on Optimism. PoolAddressesProvider matches the deterministic
+      // cross-L2 address (same on Arbitrum/Polygon); UiPoolDataProvider is
+      // chain-specific. Sourced from bgd-labs/aave-address-book AaveV3Optimism.
+      poolAddressProvider: "0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb",
+      uiPoolDataProvider: "0xa6741111f4CcB5162Ec6A825465354Ed8c6F7095",
+      pool: "0x794a61358D6845594F94dc1DB02A252b5b4814aD",
+    },
+    uniswap: {
+      // Optimism uses the canonical cross-chain Uniswap V3 addresses (same as
+      // Ethereum/Arbitrum/Polygon — only Base diverged). Verified against
+      // Uniswap/docs Optimism-Deployments.md.
+      positionManager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
+      factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+      swapRouter02: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+      quoterV2: "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+    },
+    // Lido / EigenLayer are L1-only; Morpho Blue is deployed on Optimism but
+    // we omit it for the same reason as Base — the discovery scan needs a
+    // verified deployment block. Add later as a follow-up.
+    tokens: {
+      // USDC is the Circle-native (post-2023); USDC.e is the bridged legacy
+      // version that some positions are still denominated in.
+      USDC: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+      "USDC.e": "0x7F5c764cBc14f9669B88837ca1490cCa17c31607",
+      USDT: "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58",
+      DAI: "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1",
+      WETH: "0x4200000000000000000000000000000000000006",
+      WBTC: "0x68f180fcCe6836688e9084f035309E29Bf0A2095",
+      // OP-stack predeploy addresses (0x4200... range). The OP token is the
+      // governance token for the Optimism Collective.
+      OP: "0x4200000000000000000000000000000000000042",
+    },
+    compound: {
+      // Compound V3 markets on Optimism, sourced from compound-finance/comet
+      // deployments/optimism/{usdc,weth,usdt}/roots.json.
+      cUSDCv3: "0x2e44e174f7D53F0212823acC11C01A11d58c5bCB",
+      cWETHv3: "0xE36A30D249f7761327fd973001A32010b521b6Fd",
+      cUSDTv3: "0x995E394b8B2437aC8Ce61Ee0bC610D617962B214",
+    },
+  },
 } as const;
 
 export type ChainContracts<C extends SupportedChain> = (typeof CONTRACTS)[C];
@@ -173,6 +215,7 @@ export const NATIVE_SYMBOL: Record<SupportedChain, string> = {
   // Polygon's native token is MATIC (rebranding to POL is in progress — same contract).
   polygon: "MATIC",
   base: "ETH",
+  optimism: "ETH",
 };
 
 /**
@@ -202,6 +245,7 @@ const DECIMALS_BY_SYMBOL: Record<string, number> = {
   arb: 18,
   wmatic: 18,
   cbeth: 18,
+  op: 18,
 };
 
 export interface TokenInfo {

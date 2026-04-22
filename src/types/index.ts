@@ -11,13 +11,14 @@
  * portfolio summary) accept. This split keeps TRON strictly additive: EVM
  * internals don't need to learn that TRON exists.
  */
-export type SupportedChain = "ethereum" | "arbitrum" | "polygon" | "base";
+export type SupportedChain = "ethereum" | "arbitrum" | "polygon" | "base" | "optimism";
 
 export const SUPPORTED_CHAINS: readonly SupportedChain[] = [
   "ethereum",
   "arbitrum",
   "polygon",
   "base",
+  "optimism",
 ] as const;
 
 /** Non-EVM chains. Kept as its own union so EVM-only tables keep their type. */
@@ -45,6 +46,7 @@ export const CHAIN_IDS: Record<SupportedChain, number> = {
   arbitrum: 42161,
   polygon: 137,
   base: 8453,
+  optimism: 10,
 };
 
 export const CHAIN_ID_TO_NAME: Record<number, SupportedChain> = {
@@ -52,6 +54,7 @@ export const CHAIN_ID_TO_NAME: Record<number, SupportedChain> = {
   42161: "arbitrum",
   137: "polygon",
   8453: "base",
+  10: "optimism",
 };
 
 /**
