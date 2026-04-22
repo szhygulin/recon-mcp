@@ -1,4 +1,4 @@
-import { mainnet, arbitrum, polygon, base } from "viem/chains";
+import { mainnet, arbitrum, polygon, base, optimism } from "viem/chains";
 import type { Chain } from "viem";
 import type { RpcProvider, SupportedChain, UserConfig } from "../types/index.js";
 
@@ -7,6 +7,7 @@ export const VIEM_CHAINS: Record<SupportedChain, Chain> = {
   arbitrum,
   polygon,
   base,
+  optimism,
 };
 
 /** URL path segment per provider + chain. */
@@ -16,12 +17,14 @@ const PROVIDER_URL_TEMPLATES: Record<Exclude<RpcProvider, "custom">, Record<Supp
     arbitrum: (k) => `https://arbitrum-mainnet.infura.io/v3/${k}`,
     polygon: (k) => `https://polygon-mainnet.infura.io/v3/${k}`,
     base: (k) => `https://base-mainnet.infura.io/v3/${k}`,
+    optimism: (k) => `https://optimism-mainnet.infura.io/v3/${k}`,
   },
   alchemy: {
     ethereum: (k) => `https://eth-mainnet.g.alchemy.com/v2/${k}`,
     arbitrum: (k) => `https://arb-mainnet.g.alchemy.com/v2/${k}`,
     polygon: (k) => `https://polygon-mainnet.g.alchemy.com/v2/${k}`,
     base: (k) => `https://base-mainnet.g.alchemy.com/v2/${k}`,
+    optimism: (k) => `https://opt-mainnet.g.alchemy.com/v2/${k}`,
   },
 };
 
@@ -30,6 +33,7 @@ const ENV_URL_VAR: Record<SupportedChain, string> = {
   arbitrum: "ARBITRUM_RPC_URL",
   polygon: "POLYGON_RPC_URL",
   base: "BASE_RPC_URL",
+  optimism: "OPTIMISM_RPC_URL",
 };
 
 export class RpcConfigError extends Error {

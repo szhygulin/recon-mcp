@@ -66,12 +66,14 @@ const PROVIDER_URLS: Record<"infura" | "alchemy", Record<SupportedChain, (k: str
     arbitrum: (k) => `https://arbitrum-mainnet.infura.io/v3/${k}`,
     polygon: (k) => `https://polygon-mainnet.infura.io/v3/${k}`,
     base: (k) => `https://base-mainnet.infura.io/v3/${k}`,
+    optimism: (k) => `https://optimism-mainnet.infura.io/v3/${k}`,
   },
   alchemy: {
     ethereum: (k) => `https://eth-mainnet.g.alchemy.com/v2/${k}`,
     arbitrum: (k) => `https://arb-mainnet.g.alchemy.com/v2/${k}`,
     polygon: (k) => `https://polygon-mainnet.g.alchemy.com/v2/${k}`,
     base: (k) => `https://base-mainnet.g.alchemy.com/v2/${k}`,
+    optimism: (k) => `https://opt-mainnet.g.alchemy.com/v2/${k}`,
   },
 };
 

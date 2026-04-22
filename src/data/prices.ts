@@ -15,15 +15,17 @@ const LLAMA_CHAIN: Record<SupportedChain, string> = {
   arbitrum: "arbitrum",
   polygon: "polygon",
   base: "base",
+  optimism: "optimism",
 };
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-/** Coingecko ID for each chain's native asset. Ethereum + Arbitrum + Base share ETH; Polygon uses MATIC. */
+/** Coingecko ID for each chain's native asset. Ethereum + Arbitrum + Base + Optimism share ETH; Polygon uses MATIC. */
 const NATIVE_COINGECKO_ID: Record<SupportedChain, string> = {
   ethereum: "coingecko:ethereum",
   arbitrum: "coingecko:ethereum",
   polygon: "coingecko:matic-network",
   base: "coingecko:ethereum",
+  optimism: "coingecko:ethereum",
 };
 
 export interface PriceQuery {

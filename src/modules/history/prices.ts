@@ -23,6 +23,7 @@ const NATIVE_COIN_KEY: Record<AnyChain, string> = {
   arbitrum: "coingecko:ethereum",
   polygon: "coingecko:matic-network",
   base: "coingecko:ethereum",
+  optimism: "coingecko:ethereum",
   tron: "coingecko:tron",
 };
 
@@ -31,6 +32,7 @@ const LLAMA_CHAIN: Record<AnyChain, string> = {
   arbitrum: "arbitrum",
   polygon: "polygon",
   base: "base",
+  optimism: "optimism",
   tron: "tron",
 };
 

@@ -7,6 +7,7 @@ const RPC_ENV_KEYS = [
   "ARBITRUM_RPC_URL",
   "POLYGON_RPC_URL",
   "BASE_RPC_URL",
+  "OPTIMISM_RPC_URL",
   "RPC_PROVIDER",
   "RPC_API_KEY",
 ];
@@ -59,6 +60,27 @@ describe("resolveRpcUrl", () => {
     process.env.RPC_API_KEY = "envkey";
     const cfg: UserConfig = { rpc: { provider: "infura", apiKey: "cfgkey" } };
     expect(resolveRpcUrl("base", cfg)).toBe("https://env-base.example/");
+  });
+
+  it("OPTIMISM_RPC_URL env var wins over everything else", () => {
+    process.env.OPTIMISM_RPC_URL = "https://env-optimism.example/";
+    process.env.RPC_PROVIDER = "alchemy";
+    process.env.RPC_API_KEY = "envkey";
+    const cfg: UserConfig = { rpc: { provider: "infura", apiKey: "cfgkey" } };
+    expect(resolveRpcUrl("optimism", cfg)).toBe("https://env-optimism.example/");
+  });
+
+  it("Infura and Alchemy build the right Optimism URL", () => {
+    process.env.RPC_PROVIDER = "infura";
+    process.env.RPC_API_KEY = "abc123";
+    expect(resolveRpcUrl("optimism", null)).toBe(
+      "https://optimism-mainnet.infura.io/v3/abc123"
+    );
+
+    delete process.env.RPC_PROVIDER;
+    delete process.env.RPC_API_KEY;
+    const cfg: UserConfig = { rpc: { provider: "alchemy", apiKey: "k" } };
+    expect(resolveRpcUrl("optimism", cfg)).toBe("https://opt-mainnet.g.alchemy.com/v2/k");
   });
 
   it("custom provider uses per-chain URL from config", () => {
