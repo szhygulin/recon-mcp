@@ -7,6 +7,8 @@
 
 **Self-custodial crypto portfolio and DeFi, managed by AI agents — signed on your Ledger hardware wallet.**
 
+![VaultPilot MCP demo](./demo.gif)
+
 VaultPilot MCP is a Model Context Protocol server that lets AI agents — **Claude Code, Claude Desktop, Cursor**, and any MCP-compatible client — read your on-chain positions across **Ethereum, Arbitrum, Polygon, Base**, and **TRON** and prepare EVM transactions that you sign on your **Ledger device via WalletConnect**. Your private keys never leave the hardware wallet, and every transaction is previewed in human-readable form before you approve it on the device.
 
 Supported protocols: **Aave V3, Compound V3 (Comet), Morpho Blue, Uniswap V3 LP, Lido (stETH/wstETH), EigenLayer**, plus **LiFi** for swap/bridge aggregation and **1inch** for optional intra-chain quote comparison.
