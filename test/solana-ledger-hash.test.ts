@@ -8,6 +8,8 @@ import {
 import {
   renderSolanaVerificationBlock,
   renderSolanaAgentTaskBlock,
+  renderSolanaPrepareSummaryBlock,
+  renderSolanaPrepareAgentTaskBlock,
 } from "../src/signing/render-verification.js";
 import type { UnsignedSolanaTx } from "../src/types/index.js";
 
@@ -79,6 +81,51 @@ describe("renderSolanaVerificationBlock", () => {
     // The hash must be wrapped in **`…`** — verified in live runs that
     // plain backticks or plain bold don't give enough contrast.
     expect(block).toContain(`**\`${expectedHash}\`**`);
+  });
+});
+
+describe("renderSolanaPrepareSummaryBlock", () => {
+  it("emits a user-facing summary with NO Message Hash (deferred to preview_solana_send)", () => {
+    const block = renderSolanaPrepareSummaryBlock({
+      handle: "abc-123",
+      action: "spl_send",
+      from: "4FLpszPQR1Cno8TDnEwYHzxhQSJQAWvb7mMzynArAQGf",
+      description: "Send 100 USDC to self",
+      decoded: {
+        functionName: "solana.spl.transferChecked",
+        args: { amount: "100 USDC" },
+      },
+      estimatedFeeLamports: 5000,
+    });
+    expect(block).toContain("PREPARED");
+    expect(block).toContain("SPL token transfer");
+    expect(block).toContain("preview_solana_send");
+    // No hash VALUE rendered at prepare time (the block mentions "Message
+    // Hash" textually as part of describing what preview_solana_send does;
+    // that's fine). There should be no bold+code wrapping — that's the
+    // signal of an actual hash — and no base58 digest in the body.
+    expect(block).not.toMatch(/\*\*`[1-9A-HJ-NP-Za-km-z]{43,44}`\*\*/);
+  });
+});
+
+describe("renderSolanaPrepareAgentTaskBlock", () => {
+  it("instructs the agent to wait for 'send' before calling preview_solana_send", () => {
+    const block = renderSolanaPrepareAgentTaskBlock({
+      handle: "abc-123",
+      action: "native_send",
+      from: "4FLpszPQR1Cno8TDnEwYHzxhQSJQAWvb7mMzynArAQGf",
+      description: "Send 1 SOL to self",
+      decoded: {
+        functionName: "solana.system.transfer",
+        args: { amount: "1 SOL" },
+      },
+    });
+    expect(block).toContain("DO NOT FORWARD THIS BLOCK TO THE USER");
+    expect(block).toContain("wait for");
+    expect(block).toContain("preview_solana_send(handle)");
+    expect(block).toContain("Handle: abc-123");
+    // Don't pre-decode or fabricate a hash at prepare time.
+    expect(block).toContain("Do NOT fabricate a hash");
   });
 });
 

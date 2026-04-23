@@ -65,9 +65,11 @@ describe("buildSolanaNativeSend", () => {
     expect(tx.from).toBe(WALLET);
     expect(tx.decoded.functionName).toBe("solana.system.transfer");
     expect(tx.decoded.args.lamports).toBe("1500000000"); // 1.5 SOL
-    expect(tx.messageBase64).toMatch(/^[A-Za-z0-9+/=]+$/); // valid base64
     expect(tx.handle).toBeDefined();
-    expect(tx.recentBlockhash).toBe("HXSG2e3m7nYQL1LkRKksi2r1EH1Sd5sCQqTeyBJVeKkh");
+    // Prepare returns a DRAFT — no messageBase64 / recentBlockhash yet.
+    // Those get pinned by `preview_solana_send`.
+    expect((tx as Record<string, unknown>).messageBase64).toBeUndefined();
+    expect((tx as Record<string, unknown>).recentBlockhash).toBeUndefined();
     // No priority fee under default (empty) getRecentPrioritizationFees.
     expect(tx.priorityFeeMicroLamports).toBeUndefined();
   });

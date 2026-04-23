@@ -8,7 +8,12 @@ import {
   retireHandle,
 } from "../src/signing/tx-store.js";
 import { issueTronHandle } from "../src/signing/tron-tx-store.js";
-import { issueSolanaHandle } from "../src/signing/solana-tx-store.js";
+import {
+  issueSolanaDraftHandle,
+  pinSolanaHandle,
+  type SolanaDraftMeta,
+} from "../src/signing/solana-tx-store.js";
+import { Transaction, PublicKey, SystemProgram } from "@solana/web3.js";
 import { CONTRACTS } from "../src/config/contracts.js";
 import { CHAIN_IDS } from "../src/types/index.js";
 import { solanaLedgerMessageHash } from "../src/signing/verification.js";
@@ -17,7 +22,7 @@ import type {
   SolanaVerificationArtifact,
   TronVerificationArtifact,
 } from "../src/modules/execution/index.js";
-import type { UnsignedSolanaTx, UnsignedTx } from "../src/types/index.js";
+import type { UnsignedTx } from "../src/types/index.js";
 
 const USDC = getAddress(CONTRACTS.ethereum.tokens.USDC);
 const RECIPIENT = getAddress("0x2222222222222222222222222222222222222222");
@@ -154,54 +159,79 @@ describe("get_verification_artifact — second-agent copy-paste artifact", () =>
   });
 
   it("Solana SPL happy path: artifact carries messageBase64 + ledgerMessageHash; native_send omits the ledger hash", () => {
-    const splTx: UnsignedSolanaTx = {
-      chain: "solana",
+    // Build real draftTx objects (Transaction with a System.Transfer) — bits
+    // don't matter for this test; we just need valid message bytes after pin.
+    const from = new PublicKey("4FLpszPQR1Cno8TDnEwYHzxhQSJQAWvb7mMzynArAQGf");
+    const to = from;
+
+    const splDraftTx = new Transaction().add(
+      SystemProgram.transfer({ fromPubkey: from, toPubkey: to, lamports: 1 }),
+    );
+    splDraftTx.feePayer = from;
+    const splMeta: SolanaDraftMeta = {
       action: "spl_send",
-      from: "4FLpszPQR1Cno8TDnEwYHzxhQSJQAWvb7mMzynArAQGf",
-      messageBase64: Buffer.from("example-spl-message-bytes").toString("base64"),
-      recentBlockhash: "HXSG2e3m7nYQL1LkRKksi2r1EH1Sd5sCQqTeyBJVeKkh",
+      from: from.toBase58(),
       description: "Send 1 USDC",
       decoded: {
         functionName: "solana.spl.transferChecked",
         args: { amount: "1 USDC" },
       },
     };
-    const stampedSpl = issueSolanaHandle(splTx);
-    const expectedLedgerHash = solanaLedgerMessageHash(splTx.messageBase64);
+    const { handle: splHandle } = issueSolanaDraftHandle({
+      draftTx: splDraftTx,
+      meta: splMeta,
+    });
+    const splPinned = pinSolanaHandle(
+      splHandle,
+      "HXSG2e3m7nYQL1LkRKksi2r1EH1Sd5sCQqTeyBJVeKkh",
+    );
+    const expectedLedgerHash = solanaLedgerMessageHash(splPinned.messageBase64);
 
-    const artifact = getVerificationArtifact({ handle: stampedSpl.handle! }) as SolanaVerificationArtifact;
+    const artifact = getVerificationArtifact({ handle: splHandle }) as SolanaVerificationArtifact;
     expect(artifact.artifactVersion).toBe("v1");
     expect(artifact.chain).toBe("solana");
     expect(artifact.action).toBe("spl_send");
-    expect(artifact.messageBase64).toBe(splTx.messageBase64);
+    expect(artifact.messageBase64).toBe(splPinned.messageBase64);
     expect(artifact.ledgerMessageHash).toBe(expectedLedgerHash);
-    expect(artifact.payloadHash).toBe(stampedSpl.verification!.payloadHash);
+    expect(artifact.payloadHash).toBe(splPinned.verification!.payloadHash);
     // Pasteable block: markers + embedded payload with raw bytes + ledger hash.
     expect(artifact.pasteableBlock).toMatch(/COPY FROM THIS LINE/);
-    expect(artifact.pasteableBlock).toContain(splTx.messageBase64);
+    expect(artifact.pasteableBlock).toContain(splPinned.messageBase64);
     expect(artifact.pasteableBlock).toContain(expectedLedgerHash);
     expect(artifact.pasteableBlock).toContain("solana");
     // Second-agent guidance calls out SPL blind-sign specifically.
     expect(artifact.pasteableBlock).toMatch(/ALL SPL token transfers on Solana/);
 
     // Native SOL: clear-signs, so artifact must NOT carry a ledger hash.
-    const nativeTx: UnsignedSolanaTx = {
-      ...splTx,
+    const nativeDraftTx = new Transaction().add(
+      SystemProgram.transfer({ fromPubkey: from, toPubkey: to, lamports: 2 }),
+    );
+    nativeDraftTx.feePayer = from;
+    const nativeMeta: SolanaDraftMeta = {
       action: "native_send",
-      messageBase64: Buffer.from("example-native-message-bytes").toString("base64"),
+      from: from.toBase58(),
+      description: "Send 1 SOL",
       decoded: {
         functionName: "solana.system.transfer",
         args: { amount: "1 SOL" },
       },
     };
-    const stampedNative = issueSolanaHandle(nativeTx);
+    const { handle: nativeHandle } = issueSolanaDraftHandle({
+      draftTx: nativeDraftTx,
+      meta: nativeMeta,
+    });
+    const nativePinned = pinSolanaHandle(
+      nativeHandle,
+      "HXSG2e3m7nYQL1LkRKksi2r1EH1Sd5sCQqTeyBJVeKkh",
+    );
+
     const nativeArtifact = getVerificationArtifact({
-      handle: stampedNative.handle!,
+      handle: nativeHandle,
     }) as SolanaVerificationArtifact;
     expect(nativeArtifact.action).toBe("native_send");
     expect(nativeArtifact.ledgerMessageHash).toBeUndefined();
     expect(nativeArtifact.pasteableBlock).not.toContain(
-      solanaLedgerMessageHash(nativeTx.messageBase64),
+      solanaLedgerMessageHash(nativePinned.messageBase64),
     );
   });
 

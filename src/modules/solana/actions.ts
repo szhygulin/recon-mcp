@@ -14,8 +14,10 @@ import { getSolanaConnection } from "./rpc.js";
 import { SOL_DECIMALS, SOLANA_TOKEN_DECIMALS, SOLANA_TOKENS } from "../../config/solana.js";
 import { resolveRecipientAta, SPL_TOKEN_ACCOUNT_RENT_LAMPORTS } from "./ata.js";
 import { computePriorityFee } from "./priority-fee.js";
-import { issueSolanaHandle } from "../../signing/solana-tx-store.js";
-import type { UnsignedSolanaTx } from "../../types/index.js";
+import {
+  issueSolanaDraftHandle,
+  type SolanaTxDraft,
+} from "../../signing/solana-tx-store.js";
 
 /** Minimum SOL balance we leave on the wallet after a `max` send — protects against accidentally emptying below the rent-exempt floor. */
 const SOL_SAFETY_BUFFER_LAMPORTS = 10_000;
@@ -92,13 +94,34 @@ export interface SolanaNativeSendParams {
 }
 
 /**
- * Build a native SOL transfer. One `SystemProgram.transfer` instruction
- * prepended optionally by a `ComputeBudget` pair when the network is
- * congested. Pre-flight: refuses if the wallet is short.
+ * Shape returned by the builders — the handle, the draft metadata, and the
+ * bits the agent can show to the user BEFORE `preview_solana_send` runs.
+ * No `messageBase64` / `recentBlockhash` yet; those get populated by
+ * `preview_solana_send` right before signing.
+ */
+export interface PreparedSolanaTx {
+  handle: string;
+  action: "native_send" | "spl_send";
+  chain: "solana";
+  from: string;
+  description: string;
+  decoded: { functionName: string; args: Record<string, string> };
+  rentLamports?: number;
+  priorityFeeMicroLamports?: number;
+  computeUnitLimit?: number;
+  estimatedFeeLamports?: number;
+}
+
+/**
+ * Build a native SOL transfer. One `SystemProgram.transfer` instruction,
+ * optionally preceded by a `ComputeBudget` pair when the network is
+ * congested. Pre-flight: refuses if the wallet is short. Returns a DRAFT
+ * (handle + metadata) — the blockhash is pinned later by
+ * `preview_solana_send`.
  */
 export async function buildSolanaNativeSend(
   p: SolanaNativeSendParams,
-): Promise<UnsignedSolanaTx> {
+): Promise<PreparedSolanaTx> {
   const fromPubkey = assertSolanaAddress(p.wallet);
   const toPubkey = assertSolanaAddress(p.to);
   const conn = getSolanaConnection();
@@ -139,20 +162,18 @@ export async function buildSolanaNativeSend(
     displayAmount = p.amount;
   }
 
-  // Build the tx. Solana txs are assembled message-first: we append all
-  // instructions, set fee payer + recent blockhash, then `serializeMessage()`
-  // gives us the bytes the Ledger will sign.
-  const tx = new Transaction();
-  tx.feePayer = fromPubkey;
+  // Build the draft tx. No recentBlockhash — that gets set at preview time.
+  const draftTx = new Transaction();
+  draftTx.feePayer = fromPubkey;
   if (pfee) {
-    tx.add(
+    draftTx.add(
       ComputeBudgetProgram.setComputeUnitLimit({ units: pfee.computeUnitLimit }),
       ComputeBudgetProgram.setComputeUnitPrice({
         microLamports: BigInt(pfee.microLamportsPerCu),
       }),
     );
   }
-  tx.add(
+  draftTx.add(
     SystemProgram.transfer({
       fromPubkey,
       toPubkey,
@@ -160,36 +181,48 @@ export async function buildSolanaNativeSend(
     }),
   );
 
-  const { blockhash } = await conn.getLatestBlockhash("confirmed");
-  tx.recentBlockhash = blockhash;
-
-  const messageBytes = tx.serializeMessage();
-  const messageBase64 = messageBytes.toString("base64");
-
-  return issueSolanaHandle({
-    chain: "solana",
-    action: "native_send",
-    from: p.wallet,
-    messageBase64,
-    recentBlockhash: blockhash,
-    description: `Send ${displayAmount} SOL to ${p.to}`,
-    decoded: {
-      functionName: "solana.system.transfer",
-      args: {
-        from: p.wallet,
-        to: p.to,
-        amount: `${displayAmount} SOL`,
-        lamports: lamports.toString(),
+  const draft: SolanaTxDraft = {
+    draftTx,
+    meta: {
+      action: "native_send",
+      from: p.wallet,
+      description: `Send ${displayAmount} SOL to ${p.to}`,
+      decoded: {
+        functionName: "solana.system.transfer",
+        args: {
+          from: p.wallet,
+          to: p.to,
+          amount: `${displayAmount} SOL`,
+          lamports: lamports.toString(),
+        },
       },
+      ...(pfee
+        ? {
+            priorityFeeMicroLamports: pfee.microLamportsPerCu,
+            computeUnitLimit: pfee.computeUnitLimit,
+          }
+        : {}),
+      estimatedFeeLamports: totalFee,
     },
-    ...(pfee
-      ? {
-          priorityFeeMicroLamports: pfee.microLamportsPerCu,
-          computeUnitLimit: pfee.computeUnitLimit,
-        }
+  };
+  const { handle } = issueSolanaDraftHandle(draft);
+  return {
+    handle,
+    action: "native_send",
+    chain: "solana",
+    from: p.wallet,
+    description: draft.meta.description,
+    decoded: draft.meta.decoded,
+    ...(draft.meta.priorityFeeMicroLamports !== undefined
+      ? { priorityFeeMicroLamports: draft.meta.priorityFeeMicroLamports }
       : {}),
-    estimatedFeeLamports: totalFee,
-  });
+    ...(draft.meta.computeUnitLimit !== undefined
+      ? { computeUnitLimit: draft.meta.computeUnitLimit }
+      : {}),
+    ...(draft.meta.estimatedFeeLamports !== undefined
+      ? { estimatedFeeLamports: draft.meta.estimatedFeeLamports }
+      : {}),
+  };
 }
 
 export interface SolanaSplSendParams {
@@ -210,7 +243,7 @@ export interface SolanaSplSendParams {
  */
 export async function buildSolanaSplSend(
   p: SolanaSplSendParams,
-): Promise<UnsignedSolanaTx> {
+): Promise<PreparedSolanaTx> {
   const fromPubkey = assertSolanaAddress(p.wallet);
   const toPubkey = assertSolanaAddress(p.to);
   const mintPubkey = assertSolanaAddress(p.mint);
@@ -276,11 +309,11 @@ export async function buildSolanaSplSend(
     );
   }
 
-  // Build the tx.
-  const tx = new Transaction();
-  tx.feePayer = fromPubkey;
+  // Build the draft tx. No recentBlockhash — that gets set at preview time.
+  const draftTx = new Transaction();
+  draftTx.feePayer = fromPubkey;
   if (pfee) {
-    tx.add(
+    draftTx.add(
       ComputeBudgetProgram.setComputeUnitLimit({ units: pfee.computeUnitLimit }),
       ComputeBudgetProgram.setComputeUnitPrice({
         microLamports: BigInt(pfee.microLamportsPerCu),
@@ -288,7 +321,7 @@ export async function buildSolanaSplSend(
     );
   }
   if (recipient.needsCreation) {
-    tx.add(
+    draftTx.add(
       createAssociatedTokenAccountInstruction(
         fromPubkey, // fee / rent payer
         recipient.ataAddress,
@@ -297,7 +330,7 @@ export async function buildSolanaSplSend(
       ),
     );
   }
-  tx.add(
+  draftTx.add(
     createTransferCheckedInstruction(
       senderAta,
       mintPubkey,
@@ -308,48 +341,59 @@ export async function buildSolanaSplSend(
     ),
   );
 
-  const { blockhash } = await conn.getLatestBlockhash("confirmed");
-  tx.recentBlockhash = blockhash;
-
-  const messageBytes = tx.serializeMessage();
-  const messageBase64 = messageBytes.toString("base64");
-
   const descSuffix = recipient.needsCreation
     ? ` (+ create recipient ${symbol} account, costs ${formatSol(BigInt(SPL_TOKEN_ACCOUNT_RENT_LAMPORTS))} SOL rent)`
     : "";
-
-  return issueSolanaHandle({
-    chain: "solana",
-    action: "spl_send",
-    from: p.wallet,
-    messageBase64,
-    recentBlockhash: blockhash,
-    description: `Send ${p.amount} ${symbol} to ${p.to}${descSuffix}`,
-    decoded: {
-      functionName: "solana.spl.transferChecked",
-      args: {
-        from: p.wallet,
-        to: p.to,
-        mint: p.mint,
-        symbol,
-        amount: `${p.amount} ${symbol}`,
-        amountBase: amountBase.toString(),
-        decimals: decimals.toString(),
-        ...(recipient.needsCreation
-          ? { createsRecipientAta: "true", rentSol: formatSol(BigInt(SPL_TOKEN_ACCOUNT_RENT_LAMPORTS)) }
-          : {}),
+  const estimatedFeeLamports =
+    totalFee + (recipient.needsCreation ? SPL_TOKEN_ACCOUNT_RENT_LAMPORTS : 0);
+  const draft: SolanaTxDraft = {
+    draftTx,
+    meta: {
+      action: "spl_send",
+      from: p.wallet,
+      description: `Send ${p.amount} ${symbol} to ${p.to}${descSuffix}`,
+      decoded: {
+        functionName: "solana.spl.transferChecked",
+        args: {
+          from: p.wallet,
+          to: p.to,
+          mint: p.mint,
+          symbol,
+          amount: `${p.amount} ${symbol}`,
+          amountBase: amountBase.toString(),
+          decimals: decimals.toString(),
+          ...(recipient.needsCreation
+            ? { createsRecipientAta: "true", rentSol: formatSol(BigInt(SPL_TOKEN_ACCOUNT_RENT_LAMPORTS)) }
+            : {}),
+        },
       },
+      ...(recipient.needsCreation ? { rentLamports: SPL_TOKEN_ACCOUNT_RENT_LAMPORTS } : {}),
+      ...(pfee
+        ? {
+            priorityFeeMicroLamports: pfee.microLamportsPerCu,
+            computeUnitLimit: pfee.computeUnitLimit,
+          }
+        : {}),
+      estimatedFeeLamports,
     },
-    ...(recipient.needsCreation
-      ? { rentLamports: SPL_TOKEN_ACCOUNT_RENT_LAMPORTS }
+  };
+  const { handle } = issueSolanaDraftHandle(draft);
+  return {
+    handle,
+    action: "spl_send",
+    chain: "solana",
+    from: p.wallet,
+    description: draft.meta.description,
+    decoded: draft.meta.decoded,
+    ...(draft.meta.rentLamports !== undefined
+      ? { rentLamports: draft.meta.rentLamports }
       : {}),
-    ...(pfee
-      ? {
-          priorityFeeMicroLamports: pfee.microLamportsPerCu,
-          computeUnitLimit: pfee.computeUnitLimit,
-        }
+    ...(draft.meta.priorityFeeMicroLamports !== undefined
+      ? { priorityFeeMicroLamports: draft.meta.priorityFeeMicroLamports }
       : {}),
-    estimatedFeeLamports:
-      totalFee + (recipient.needsCreation ? SPL_TOKEN_ACCOUNT_RENT_LAMPORTS : 0),
-  });
+    ...(draft.meta.computeUnitLimit !== undefined
+      ? { computeUnitLimit: draft.meta.computeUnitLimit }
+      : {}),
+    estimatedFeeLamports: draft.meta.estimatedFeeLamports,
+  };
 }

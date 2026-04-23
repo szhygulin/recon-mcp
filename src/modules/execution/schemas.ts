@@ -225,6 +225,24 @@ export const previewSendInput = z.object({
     ),
 });
 
+export const previewSolanaSendInput = z.object({
+  handle: z
+    .string()
+    .min(1)
+    .describe(
+      "Opaque handle returned by prepare_solana_native_send / prepare_solana_spl_send. " +
+        "preview_solana_send fetches a fresh Solana blockhash, serializes the message " +
+        "bytes, computes the base58(sha256(...)) Message Hash the Ledger Solana app will " +
+        "display on blind-sign, and pins the handle so send_transaction can consume it. " +
+        "MUST be called between prepare_solana_* and send_transaction — the pair is " +
+        "separated because a Solana blockhash is only valid ~60s and prepare→user-approve " +
+        "routinely blows that window. Re-callable on the same handle to re-pin with a " +
+        "newer blockhash if the user pauses."
+    ),
+});
+
+export type PreviewSolanaSendArgs = z.infer<typeof previewSolanaSendInput>;
+
 export const getTransactionStatusInput = z.object({
   chain: z
     .enum([...SUPPORTED_CHAINS, "tron", "solana"] as unknown as [string, ...string[]])

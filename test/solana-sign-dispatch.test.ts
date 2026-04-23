@@ -62,16 +62,20 @@ afterEach(() => {
 });
 
 describe("sendTransaction dispatch — Solana", () => {
-  it("routes a Solana handle through the Solana USB signer + broadcast", async () => {
-    // 1. Prepare a native SOL send to get a real handle.
+  it("routes a Solana handle through the Solana USB signer + broadcast, after preview pins blockhash", async () => {
+    // 1. Prepare + preview to get a PINNED handle.
     connectionStub.getBalance.mockResolvedValue(5_000_000_000);
     const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
-    const tx = await buildSolanaNativeSend({
+    const draft = await buildSolanaNativeSend({
       wallet: WALLET,
       to: RECIPIENT,
       amount: "0.1",
     });
-    expect(tx.handle).toBeDefined();
+    expect(draft.handle).toBeDefined();
+
+    // preview pins a fresh blockhash and stores messageBase64 on the handle.
+    const { previewSolanaSend } = await import("../src/modules/execution/index.js");
+    await previewSolanaSend({ handle: draft.handle });
 
     // 2. Wire up the Ledger mock to return the expected wallet address + a
     //    well-formed 64-byte signature.
@@ -88,7 +92,7 @@ describe("sendTransaction dispatch — Solana", () => {
     // 4. Send.
     const { sendTransaction } = await import("../src/modules/execution/index.js");
     const result = await sendTransaction({
-      handle: tx.handle!,
+      handle: draft.handle,
       confirmed: true,
     });
 
@@ -103,17 +107,38 @@ describe("sendTransaction dispatch — Solana", () => {
 
     // Handle is retired after success — a retry should fail.
     const { hasSolanaHandle } = await import("../src/signing/solana-tx-store.js");
-    expect(hasSolanaHandle(tx.handle!)).toBe(false);
+    expect(hasSolanaHandle(draft.handle)).toBe(false);
+  });
+
+  it("refuses with a clear error if send_transaction is called before preview_solana_send pins the handle", async () => {
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000);
+    const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
+    const draft = await buildSolanaNativeSend({
+      wallet: WALLET,
+      to: RECIPIENT,
+      amount: "0.1",
+    });
+
+    const { sendTransaction } = await import("../src/modules/execution/index.js");
+    await expect(
+      sendTransaction({ handle: draft.handle, confirmed: true }),
+    ).rejects.toThrow(/has not been pinned yet.*preview_solana_send/);
+
+    // USB was not touched.
+    expect(signTransactionMock).not.toHaveBeenCalled();
+    expect(connectionStub.sendRawTransaction).not.toHaveBeenCalled();
   });
 
   it("refuses with the address-mismatch SECURITY error when Ledger returns a different pubkey", async () => {
     connectionStub.getBalance.mockResolvedValue(5_000_000_000);
     const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
-    const tx = await buildSolanaNativeSend({
+    const draft = await buildSolanaNativeSend({
       wallet: WALLET,
       to: RECIPIENT,
       amount: "0.1",
     });
+    const { previewSolanaSend } = await import("../src/modules/execution/index.js");
+    await previewSolanaSend({ handle: draft.handle });
 
     // Ledger returns a DIFFERENT address — simulates wrong device connected
     // or a tampered `from` field.
@@ -124,13 +149,43 @@ describe("sendTransaction dispatch — Solana", () => {
 
     const { sendTransaction } = await import("../src/modules/execution/index.js");
     await expect(
-      sendTransaction({ handle: tx.handle!, confirmed: true }),
+      sendTransaction({ handle: draft.handle, confirmed: true }),
     ).rejects.toThrow(/SECURITY.*does not match/);
 
     // Broadcast was NOT called.
     expect(connectionStub.sendRawTransaction).not.toHaveBeenCalled();
     // Handle is NOT retired — caller can retry with the right device.
     const { hasSolanaHandle } = await import("../src/signing/solana-tx-store.js");
-    expect(hasSolanaHandle(tx.handle!)).toBe(true);
+    expect(hasSolanaHandle(draft.handle)).toBe(true);
+  });
+
+  it("re-calling preview_solana_send on the same handle re-pins with a newer blockhash", async () => {
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000);
+    const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
+    const draft = await buildSolanaNativeSend({
+      wallet: WALLET,
+      to: RECIPIENT,
+      amount: "0.1",
+    });
+
+    const { previewSolanaSend } = await import("../src/modules/execution/index.js");
+    const firstPinBlockhash = "HXSG2e3m7nYQL1LkRKksi2r1EH1Sd5sCQqTeyBJVeKkh";
+    connectionStub.getLatestBlockhash.mockResolvedValueOnce({
+      blockhash: firstPinBlockhash,
+      lastValidBlockHeight: 1_000,
+    });
+    const first = await previewSolanaSend({ handle: draft.handle });
+    expect(first.recentBlockhash).toBe(firstPinBlockhash);
+
+    // User pauses; caller re-previews. Returns a different blockhash + hash.
+    const secondPinBlockhash = "5a7PR3n1eTKCTgLkbkjNWTBvFu8kv1RYD9QgEQD8CAzB";
+    connectionStub.getLatestBlockhash.mockResolvedValueOnce({
+      blockhash: secondPinBlockhash,
+      lastValidBlockHeight: 1_200,
+    });
+    const second = await previewSolanaSend({ handle: draft.handle });
+    expect(second.recentBlockhash).toBe(secondPinBlockhash);
+    expect(second.messageBase64).not.toBe(first.messageBase64);
+    expect(second.verification!.payloadHash).not.toBe(first.verification!.payloadHash);
   });
 });

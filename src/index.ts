@@ -66,6 +66,7 @@ import {
   prepareWethUnwrap,
   prepareTokenSend,
   previewSend,
+  previewSolanaSend,
   sendTransaction,
   getTransactionStatus,
   getTxVerification,
@@ -90,6 +91,7 @@ import {
   prepareWethUnwrapInput,
   prepareTokenSendInput,
   previewSendInput,
+  previewSolanaSendInput,
   sendTransactionInput,
   getTransactionStatusInput,
   getTxVerificationInput,
@@ -186,10 +188,13 @@ import {
   renderPrepareReceiptBlock,
   renderPreviewVerifyAgentTaskBlock,
   renderSolanaAgentTaskBlock,
+  renderSolanaPrepareAgentTaskBlock,
+  renderSolanaPrepareSummaryBlock,
   renderSolanaVerificationBlock,
   renderTronVerificationBlock,
   renderVerificationBlock,
   shouldRenderVerificationBlock,
+  type RenderableSolanaPrepareResult,
 } from "./signing/render-verification.js";
 import { verifyEvmCalldata, type VerifyDecodeResult } from "./signing/verify-decode.js";
 import type {
@@ -232,13 +237,32 @@ export async function collectVerificationBlocks(
   // EVM path: UnsignedTx has `chain` / `to` / `data` / `value` / `verification` + optional `.next`.
   const r = result as Record<string, unknown>;
   const verification = r.verification as TxVerification | undefined;
-  if (!verification) return blocks;
   const chain = r.chain as string | undefined;
+  // Solana drafts (prepare_solana_*) carry no `verification` field — the
+  // verification bundle is built at `preview_solana_send` time when the
+  // message bytes are pinned. Handle drafts before bailing on missing
+  // `verification`.
+  if (chain === "solana" && !verification && !r.messageBase64) {
+    if (
+      typeof r.handle === "string" &&
+      typeof r.action === "string" &&
+      typeof r.description === "string" &&
+      r.decoded !== undefined
+    ) {
+      const prepared = result as RenderableSolanaPrepareResult;
+      blocks.push(renderSolanaPrepareSummaryBlock(prepared));
+      blocks.push(renderSolanaPrepareAgentTaskBlock(prepared));
+    }
+    return blocks;
+  }
+  if (!verification) return blocks;
   if (chain === "tron" && typeof r.rawDataHex === "string") {
     blocks.push(renderTronVerificationBlock(result as UnsignedTronTx & { verification: TxVerification }));
     return blocks;
   }
   if (chain === "solana" && typeof r.messageBase64 === "string") {
+    // Pinned Solana tx — emitted by `preview_solana_send`. Full VERIFY +
+    // CHECKS block (agent auto-runs CHECK 1 + CHECK 2, matches hash).
     const solanaTx = result as UnsignedSolanaTx;
     blocks.push(renderSolanaVerificationBlock(solanaTx));
     blocks.push(renderSolanaAgentTaskBlock(solanaTx));
@@ -417,6 +441,37 @@ function previewSendHandler(
 }
 
 /**
+ * Handler wrapper for `preview_solana_send`. Pins a fresh blockhash against
+ * the draft handle and emits (a) the pinned UnsignedSolanaTx as JSON, (b) the
+ * user-facing VERIFY BEFORE SIGNING block with the Message Hash, and (c) the
+ * agent-task block with CHECK 1 + CHECK 2 recipes. Parallel to
+ * `previewSendHandler` but Solana-native — the message bytes are pinned
+ * here (not nonce + EIP-1559 fees).
+ */
+function previewSolanaSendHandler(
+  fn: (args: { handle: string }) => Promise<UnsignedSolanaTx>,
+) {
+  return async (args: { handle: string }) => {
+    try {
+      const pinned = await fn(args);
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(pinned, bigintReplacer, 2) },
+          { type: "text" as const, text: renderSolanaVerificationBlock(pinned) },
+          { type: "text" as const, text: renderSolanaAgentTaskBlock(pinned) },
+        ],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: "text" as const, text: `Error: ${message}` }],
+        isError: true,
+      };
+    }
+  };
+}
+
+/**
  * Handler wrapper for `send_transaction`. Emits a user-facing post-broadcast
  * block with the txHash + explorer link (so the agent cannot silently drop
  * the hash from the chat — a live-test regression that motivated this
@@ -548,19 +603,23 @@ async function main() {
         "3. Call a `prepare_*` tool to build the unsigned transaction (this returns a handle",
         "   plus a human-readable decoded preview; no calldata is exposed to the agent).",
         "4. Show the decoded preview to the user and get explicit confirmation.",
-        "5. FOR EVM HANDLES ONLY: call `preview_send(handle)` BEFORE `send_transaction`. It pins",
-        "   nonce + EIP-1559 fees server-side and returns a LEDGER BLIND-SIGN HASH content block.",
-        "   Relay that block VERBATIM to the user so the hash is on-screen when the Ledger device",
-        "   prompt later appears. Skip this step for TRON handles — they use USB-HID signing with",
-        "   native clear-sign screens, no WalletConnect hash.",
+        "5. BEFORE `send_transaction`, run the chain-specific pin step:",
+        "   - EVM handles: call `preview_send(handle)` to pin nonce + EIP-1559 fees and get the",
+        "     LEDGER BLIND-SIGN HASH. Relay that block VERBATIM so the hash is on-screen when",
+        "     the Ledger device prompt later appears.",
+        "   - Solana handles: call `preview_solana_send(handle)` to fetch a fresh blockhash,",
+        "     serialize the message, and get the Ledger Message Hash. Solana blockhashes expire",
+        "     in ~60s, so this MUST run close to `send_transaction` — NOT at prepare time. The",
+        "     tool's response carries the CHECKS PERFORMED agent-task block you then auto-run.",
+        "   - TRON handles: skip this step — USB-HID signing with native clear-sign, no hash.",
         "6. Call `send_transaction` with the handle, `confirmed: true`, and (EVM only) the",
         "   `previewToken` value returned by step 5 plus `userDecision: \"send\"`. Ledger Live",
-        "   will prompt the user to review and physically sign on the device. For EVM handles",
-        "   this reads the pin from step 5; if you skipped preview_send it throws \"Missing",
-        "   pinned gas\". The previewToken + userDecision pair is the schema-level gate that",
-        "   proves preview_send actually ran and that the EXTRA CHECKS menu was surfaced to",
-        "   the user — omit either and send_transaction refuses with a clear error explaining",
-        "   the fix. TRON handles ignore these two args.",
+        "   (EVM) or the USB Ledger (Solana/TRON) will prompt the user to review and physically",
+        "   sign. For EVM handles this reads the pin from step 5; if you skipped preview_send it",
+        "   throws \"Missing pinned gas\". For Solana handles, if you skipped preview_solana_send",
+        "   it throws \"has not been pinned yet\". The EVM previewToken + userDecision pair is the",
+        "   schema-level gate that proves preview_send actually ran — omit either and",
+        "   send_transaction refuses with a clear error. TRON and Solana handles ignore those two.",
         "7. After `send_transaction` returns a txHash, relay the TRANSACTION BROADCAST block",
         "   VERBATIM to the user (it carries the hash + explorer link — do NOT drop it), THEN",
         "   poll `get_transaction_status` YOURSELF every ~5s until status is `success` or",
@@ -925,7 +984,7 @@ async function main() {
     "prepare_solana_native_send",
     {
       description:
-        "Build an unsigned SOL native-transfer transaction via SystemProgram.transfer. Returns a human-readable preview + opaque handle. Forward via `send_transaction` to sign on the directly-connected Ledger (USB HID via @ledgerhq/hw-app-solana) and broadcast to the configured Solana RPC. Run `pair_ledger_solana` once per session first so the Solana app is open and the device address is verified. Amount is in SOL (e.g. \"0.5\") or \"max\" for full balance minus fee + safety buffer. Priority fee is added dynamically only when `getRecentPrioritizationFees` p50 is above the congestion threshold — no fee under normal network conditions. The Ledger Solana app clear-signs SystemProgram.transfer (shows recipient + amount on device); no preview_send / blind-sign hash UX is needed.",
+        "Build an unsigned SOL native-transfer DRAFT via SystemProgram.transfer. Returns a compact preview + opaque handle — but does NOT yet serialize the message or fetch a blockhash (those happen in `preview_solana_send`, called right before `send_transaction`, to keep the ~60s blockhash validity window from being burned during user review). Run `pair_ledger_solana` once per session first so the Solana app is open and the device address is verified. Amount is in SOL (e.g. \"0.5\") or \"max\" for full balance minus fee + safety buffer. Priority fee is added dynamically only when `getRecentPrioritizationFees` p50 is above the congestion threshold. The Ledger Solana app clear-signs SystemProgram.transfer (shows recipient + amount on device); `preview_solana_send` still runs to pin a fresh blockhash — just without a blind-sign hash-match step on the user's side.",
       inputSchema: prepareSolanaNativeSendInput.shape,
     },
     handler(prepareSolanaNativeSend)
@@ -935,7 +994,7 @@ async function main() {
     "prepare_solana_spl_send",
     {
       description:
-        "Build an unsigned SPL token transfer via Token.TransferChecked. Returns a human-readable preview + opaque handle. Forward via `send_transaction` to sign on the Ledger and broadcast. Run `pair_ledger_solana` first. Pass the base58 SPL mint address (canonical decimals resolved for USDC, USDT, JUP, BONK, JTO, mSOL, jitoSOL; otherwise read from chain). If the recipient does NOT yet have an Associated Token Account for this mint, the tx automatically includes a `createAssociatedTokenAccount` instruction — the sender pays ~0.00204 SOL rent, disclosed explicitly in the preview (`rentLamports` + `description`). BLIND-SIGN REQUIRED: the Ledger Solana app does NOT auto clear-sign TransferChecked — its parser requires a signed 'Trusted Name' TLV descriptor that only Ledger Live supplies, so the device drops into blind-sign and shows a 'Message Hash' (base58(sha256(messageBytes))). The user must (1) enable 'Allow blind signing' in Solana app → Settings, and (2) match the Message Hash surfaced in the preview verification block against the on-device value before approving. Same defense model the EVM DeFi flow uses for swaps.",
+        "Build an unsigned SPL token transfer DRAFT via Token.TransferChecked. Returns a compact preview + opaque handle — but does NOT yet serialize the message or fetch a blockhash. When the user says 'send', call `preview_solana_send(handle)` to pin a fresh blockhash, compute the Message Hash, and emit the CHECKS agent-task block, then call `send_transaction`. Run `pair_ledger_solana` first. Pass the base58 SPL mint address (canonical decimals resolved for USDC, USDT, JUP, BONK, JTO, mSOL, jitoSOL; otherwise read from chain). If the recipient does NOT yet have an Associated Token Account for this mint, the draft automatically includes a `createAssociatedTokenAccount` instruction — the sender pays ~0.00204 SOL rent, disclosed explicitly (`rentLamports` + `description`). BLIND-SIGN REQUIRED: the Ledger Solana app does NOT auto clear-sign TransferChecked — its parser requires a signed 'Trusted Name' TLV descriptor that only Ledger Live supplies, so the device drops into blind-sign and shows a 'Message Hash' (base58(sha256(messageBytes))). The user must (1) enable 'Allow blind signing' in Solana app → Settings, and (2) match the Message Hash surfaced by `preview_solana_send` against the on-device value before approving. Same defense model the EVM DeFi flow uses for swaps.",
       inputSchema: prepareSolanaSplSendInput.shape,
     },
     handler(prepareSolanaSplSend)
@@ -1047,10 +1106,33 @@ async function main() {
         "on-device hash is deterministic. If gas conditions drift while the user reviews, call " +
         "preview_send again on the same handle to refresh the pin (overwrites the prior one). " +
         "send_transaction will throw a clear error if called without a prior preview_send. Not " +
-        "applicable to TRON handles (USB HID signing flow, no WalletConnect).",
+        "applicable to TRON handles (USB HID signing flow, no WalletConnect). For Solana handles " +
+        "use `preview_solana_send` — it pins a fresh blockhash instead of nonce + EIP-1559 fees.",
       inputSchema: previewSendInput.shape,
     },
     previewSendHandler(previewSend),
+  );
+
+  server.registerTool(
+    "preview_solana_send",
+    {
+      description:
+        "Solana-only: finalize a prepared Solana tx for signing by fetching a FRESH recent " +
+        "blockhash, serializing the message bytes, and computing the base58(sha256(...)) " +
+        "Message Hash the Ledger Solana app will display on blind-sign. MUST be called " +
+        "between prepare_solana_* and send_transaction — Solana blockhashes expire after " +
+        "~150 blocks (~60s), and the prepare → user-approve → broadcast path on a live " +
+        "Ledger routinely runs longer than that. Splitting the blockhash pin off prepare " +
+        "lets the user see-and-match the hash seconds before tapping Approve, with the full " +
+        "~60s window available for the broadcast. Returns the pinned UnsignedSolanaTx " +
+        "(messageBase64 + ledger Message Hash) plus the CHECKS PERFORMED agent-task block " +
+        "the agent must auto-run. Re-callable on the same handle: re-calling overwrites " +
+        "the prior pin with a newer blockhash (useful if the user pauses between preview " +
+        "and send). send_transaction will throw a clear error if called without a prior " +
+        "preview_solana_send.",
+      inputSchema: previewSolanaSendInput.shape,
+    },
+    previewSolanaSendHandler(previewSolanaSend),
   );
 
   server.registerTool(

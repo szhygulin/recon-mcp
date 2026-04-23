@@ -645,12 +645,17 @@ export interface UnsignedSolanaTx {
    * and accounts — tampering with any of these at send time will cause
    * either the device address check or the on-chain signature verification
    * to fail.
+   *
+   * Pinned by `preview_solana_send` with a fresh blockhash, immediately before
+   * signing. `prepare_solana_*` stores a draft (no blockhash); the pinned
+   * form only exists after preview runs. `send_transaction` requires it.
    */
   messageBase64: string;
   /**
-   * Blockhash baked into the message. Solana tx is valid for ~150 blocks
-   * (~60s); expose it on the preview so the agent can tell the user
-   * "sign within 60s or I'll re-prepare".
+   * Blockhash baked into the message, pinned at `preview_solana_send` time.
+   * Solana txs are valid for ~150 blocks (~60s) from this hash's slot, so
+   * the preview → send window is bounded — `preview_solana_send` emits a
+   * fresh hash right before broadcast so the full window is available.
    */
   recentBlockhash: string;
   /** Human-readable description for the preview. */

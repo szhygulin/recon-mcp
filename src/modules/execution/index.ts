@@ -18,6 +18,8 @@ import {
   consumeSolanaHandle,
   retireSolanaHandle,
   hasSolanaHandle,
+  getSolanaDraft,
+  pinSolanaHandle,
 } from "../../signing/solana-tx-store.js";
 import {
   getTronLedgerAddress,
@@ -40,7 +42,9 @@ import { getSolanaTransactionStatus } from "../solana/status.js";
 import {
   buildSolanaNativeSend,
   buildSolanaSplSend,
+  type PreparedSolanaTx,
 } from "../solana/actions.js";
+import { getSolanaConnection } from "../solana/rpc.js";
 import { assertTransactionSafe } from "../../signing/pre-sign-check.js";
 import {
   eip1559PreSignHash,
@@ -210,7 +214,7 @@ export async function pairLedgerSolana(
 
 export async function prepareSolanaNativeSend(
   args: PrepareSolanaNativeSendArgs,
-): Promise<UnsignedSolanaTx> {
+): Promise<PreparedSolanaTx> {
   return buildSolanaNativeSend({
     wallet: args.wallet,
     to: args.to,
@@ -220,13 +224,40 @@ export async function prepareSolanaNativeSend(
 
 export async function prepareSolanaSplSend(
   args: PrepareSolanaSplSendArgs,
-): Promise<UnsignedSolanaTx> {
+): Promise<PreparedSolanaTx> {
   return buildSolanaSplSend({
     wallet: args.wallet,
     mint: args.mint,
     to: args.to,
     amount: args.amount,
   });
+}
+
+/**
+ * Pin a prepared Solana tx's draft with a fresh blockhash, serialize the
+ * message bytes, compute the Ledger Message Hash (base58(sha256(bytes))),
+ * and return the fully-pinned tx the user must match on-device.
+ *
+ * Why this step exists: blockhashes expire after ~150 blocks (~60s), and
+ * prepare → CHECKS → user-approve → broadcast routinely runs 90+ seconds.
+ * Fetching the blockhash at prepare time burned the full window before the
+ * device ever prompted. This step refreshes the blockhash right before the
+ * user matches the hash on the device, giving the full ~60s window for the
+ * broadcast path.
+ *
+ * Re-callable on the same handle — the store overwrites the pinned form
+ * with the newer blockhash. Useful if the user paused between the first
+ * preview and the actual "send".
+ */
+export async function previewSolanaSend(args: {
+  handle: string;
+}): Promise<UnsignedSolanaTx> {
+  // Verify the handle exists before hitting the RPC so we fail fast on stale
+  // handles without burning a network call.
+  getSolanaDraft(args.handle);
+  const conn = getSolanaConnection();
+  const { blockhash } = await conn.getLatestBlockhash("confirmed");
+  return pinSolanaHandle(args.handle, blockhash);
 }
 
 /**

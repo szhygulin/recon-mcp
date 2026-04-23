@@ -773,6 +773,107 @@ export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification:
 }
 
 /**
+ * Shape of a prepare_solana_* result — the draft is in the tx-store; this
+ * is the user-visible metadata returned to the agent. Parallels UnsignedTx
+ * without `messageBase64` / `recentBlockhash` (those get pinned by
+ * `preview_solana_send` right before signing).
+ */
+export interface RenderableSolanaPrepareResult {
+  handle: string;
+  action: "native_send" | "spl_send";
+  from: string;
+  description: string;
+  decoded: { functionName: string; args: Record<string, string> };
+  rentLamports?: number;
+  estimatedFeeLamports?: number;
+}
+
+/**
+ * User-facing block emitted from `prepare_solana_*`. DELIBERATELY does not
+ * contain a Message Hash — the hash is only meaningful once a fresh
+ * blockhash is pinned, which happens in `preview_solana_send`. Showing a
+ * hash at prepare time would train users to match a stale value.
+ */
+export function renderSolanaPrepareSummaryBlock(
+  r: RenderableSolanaPrepareResult,
+): string {
+  const actionLabel =
+    r.action === "native_send" ? "native SOL transfer" : "SPL token transfer";
+  return [
+    `PREPARED (Solana — ${actionLabel}) — review, then confirm to continue`,
+    `  ${r.description}`,
+    `  From:    ${r.from}`,
+    `  Call:    ${r.decoded.functionName}`,
+    "  Args:",
+    ...Object.entries(r.decoded.args).map(([k, v]) => `    - ${k}: ${v}`),
+    ...(r.estimatedFeeLamports !== undefined
+      ? [`  Est. fee: ${r.estimatedFeeLamports} lamports`]
+      : []),
+    ...(r.rentLamports !== undefined
+      ? [`  Rent:    ${r.rentLamports} lamports (one-time, creates recipient ATA)`]
+      : []),
+    "",
+    "NEXT STEP — NOT YET SIGNABLE",
+    "  The Solana message is NOT serialized yet: we intentionally defer the",
+    "  blockhash fetch so the ~60s on-chain validity window isn't burned",
+    "  while the user reviews. When the user says 'send', call",
+    "  `preview_solana_send(handle)` — that tool pins a fresh blockhash,",
+    "  returns the Message Hash to match on-device, and emits the CHECKS",
+    "  PERFORMED agent-task block the agent runs unprompted.",
+  ].join("\n");
+}
+
+/**
+ * Per-call agent-task directive for `prepare_solana_*` results. Tells the
+ * agent to produce a short bullet summary and then — once the user says
+ * "send" — call `preview_solana_send(handle)` to pin the blockhash. All
+ * the integrity checks (CHECK 1 / CHECK 2 / second-LLM) fire from the
+ * `preview_solana_send` response, not here; at prepare time there are no
+ * final message bytes to decode or hash.
+ */
+export function renderSolanaPrepareAgentTaskBlock(
+  r: RenderableSolanaPrepareResult,
+): string {
+  const actionWord = r.action === "native_send" ? "native SOL send" : "SPL send";
+  const summaryShape =
+    r.action === "spl_send"
+      ? [
+          "  - Headline: \"Prepared SPL send — <amount> <symbol> to <short addr>\"",
+          "  - From: <from address>",
+          "  - To: <to address>",
+          "  - Mint: <mint address> (<symbol if known>)",
+          "  - Amount: <human amount + symbol>",
+          "  - Rent: <rent in SOL if ATA creation, else omit the bullet>",
+          "  - Fee: <est. fee in SOL>",
+        ]
+      : [
+          "  - Headline: \"Prepared native SOL send — <amount> SOL to <short addr>\"",
+          "  - From: <from address>",
+          "  - To: <to address>",
+          "  - Amount: <human SOL amount>",
+          "  - Fee: <est. fee in SOL>",
+        ];
+  return [
+    "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
+    `Produce a COMPACT bullet summary of the prepared ${actionWord}. Required shape:`,
+    ...summaryShape,
+    "",
+    "End with ONE line:",
+    '  "Reply \'send\' to continue — I\'ll pin a fresh blockhash, run the',
+    '   mandatory integrity checks, and surface the Ledger Message Hash for',
+    '   you to match on-device."',
+    "",
+    "Do NOT call `preview_solana_send` or `send_transaction` yet — wait for",
+    "the user's 'send'. When they reply, call `preview_solana_send(handle)`",
+    "with the handle below; that response carries the CHECKS template and",
+    "the Message Hash. Do NOT fabricate a hash here — none exists yet; the",
+    "blockhash gets fetched at preview_solana_send time.",
+    "",
+    `Handle: ${r.handle}`,
+  ].join("\n");
+}
+
+/**
  * User-facing VERIFY BEFORE SIGNING block for Solana txs. Two shapes:
  *
  * - native_send (SystemProgram.Transfer): the Ledger Solana app clear-signs
