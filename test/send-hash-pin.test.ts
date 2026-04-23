@@ -175,14 +175,16 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     // against <hash>" phrasing read like a developer instruction.
     expect(block).toMatch(/hash shown on-device is exactly/i);
     expect(block).not.toMatch(/match it against/);
-    // The blind-sign hash must be wrapped in single backticks so Markdown
-    // clients render it in highlighted inline-code color instead of
-    // blending into prose.
-    expect(block).toMatch(/`0xabc`/);
-    // And the agent must be told to preserve the backticks — without this
-    // guard, paraphrasers strip them and the hash loses its visual
-    // distinction (same live-run bug as the URL-narration issue).
-    expect(block).toMatch(/wrapped in single backticks/i);
+    // The blind-sign hash must be wrapped in BOTH bold AND single-backtick
+    // inline code so Markdown clients render it with maximum visual
+    // emphasis. Backticks alone rendered too muted in Claude Code terminal
+    // output during a live run; users missed the hash under device-screen
+    // time pressure, so the directive was upgraded to require both markers.
+    expect(block).toMatch(/\*\*`0xabc`\*\*/);
+    // The agent must be told to preserve both emphasis markers — without
+    // this guard, paraphrasers strip them and the hash loses its visual
+    // distinction (same live-run bug class as the URL-narration issue).
+    expect(block).toMatch(/bold AND single-backtick/i);
     // No menu for the two mandatory checks — the old (1)/(2) shape is gone.
     expect(block).not.toMatch(/EXTRA CHECKS YOU CAN RUN/);
     expect(block).not.toMatch(/\(1\)\s*<plain-English pair-consistency/);
