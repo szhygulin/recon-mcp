@@ -893,7 +893,8 @@ async function main() {
         "session exists whose topic ends with the last 8 chars of the `topic` field (surface those 8 chars in your prompt, e.g. \"…a1b2c3d4\"). If no matching session " +
         "is listed there, a different peer is impersonating Ledger Live — do NOT proceed. The physical Ledger device's on-screen confirmation is still the final check " +
         "on tx contents, but the topic cross-check is what binds the WC session to the user's real Ledger Live install. " +
-        "The `tron` array is read from the cache populated by `pair_ledger_tron`; `send_transaction` re-probes USB on every TRON sign, so the cache cannot be spoofed into approving a tx for the wrong account.",
+        "The `tron` array is read from the cache populated by `pair_ledger_tron`; `send_transaction` re-probes USB on every TRON sign, so the cache cannot be spoofed into approving a tx for the wrong account. " +
+        "If the response has `peerUnreachable: true`, the WalletConnect relay couldn't confirm Ledger Live is connected — the cached `accounts` are still fine for address resolution (read-only questions about balances / history / portfolio), but BEFORE any signing flow you MUST ask the user whether to re-pair via `pair_ledger_live`. The exact call-to-action text is in `peerUnreachableGuidance`; splice it verbatim into your reply rather than paraphrasing. Never auto-re-pair on a read-only request.",
       inputSchema: getLedgerStatusInput.shape,
     },
     handler(getLedgerStatus)
