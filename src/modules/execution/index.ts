@@ -196,11 +196,14 @@ export async function pairLedgerSolana(
       "Solana account paired. You can now call `prepare_solana_native_send` / " +
       "`prepare_solana_spl_send` with this address and forward the handle via " +
       "`send_transaction`. Keep the Ledger plugged in with the Solana app open " +
-      "— each sign re-opens USB and re-verifies the device address. If the tx " +
-      "needs to create an Associated Token Account (first-time SPL send to a " +
-      "fresh recipient), the Solana app may require blind-sign mode — the " +
-      "preview will flag it. To pair another slot, call `pair_ledger_solana` " +
-      "again with a different `accountIndex`.",
+      "— each sign re-opens USB and re-verifies the device address. Native SOL " +
+      "sends clear-sign (amount + recipient shown on-device). SPL token sends " +
+      "BLIND-SIGN — the Ledger Solana app requires a signed Trusted-Name " +
+      "descriptor that only Ledger Live supplies, so the device shows a " +
+      "'Message Hash' instead of decoded fields. For SPL: (1) enable 'Allow " +
+      "blind signing' in Solana app → Settings, (2) match the Message Hash " +
+      "surfaced in the preview against the on-device value. To pair another " +
+      "slot, call `pair_ledger_solana` again with a different `accountIndex`.",
   };
 }
 

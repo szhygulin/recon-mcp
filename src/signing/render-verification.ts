@@ -1,5 +1,12 @@
 import { CHAIN_IDS } from "../types/index.js";
-import type { SupportedChain, TxVerification, UnsignedTronTx, UnsignedTx } from "../types/index.js";
+import type {
+  SupportedChain,
+  TxVerification,
+  UnsignedSolanaTx,
+  UnsignedTronTx,
+  UnsignedTx,
+} from "../types/index.js";
+import { solanaLedgerMessageHash } from "./verification.js";
 
 /**
  * Render the VERIFY-BEFORE-SIGNING text block that every `prepare_*` tool
@@ -762,6 +769,143 @@ export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification:
     ...formatArgs(v),
     `  from=${tx.from}  txID=${tx.txID}  rawData=${truncateHex(tx.rawDataHex, true)}`,
     "  After signing, paste txID into https://tronscan.org to cross-check.",
+  ].join("\n");
+}
+
+/**
+ * User-facing VERIFY BEFORE SIGNING block for Solana txs. Two shapes:
+ *
+ * - native_send (SystemProgram.Transfer): the Ledger Solana app clear-signs
+ *   these unconditionally, so we print the decoded action + amount +
+ *   recipient and tell the user to confirm the on-device screens. No
+ *   Message Hash — the user has nothing to match.
+ *
+ * - spl_send (Token.TransferChecked, possibly with createAssociatedTokenAccount
+ *   prepended): empirically the Ledger Solana app drops into blind-sign here
+ *   because the parser at libsol/spl_token_instruction.c requires a signed
+ *   "Trusted Name" TLV descriptor that only Ledger Live supplies. In
+ *   blind-sign mode the device displays base58(sha256(messageBytes)) under
+ *   the label "Message Hash". We compute the same value server-side and
+ *   surface it in bold+code so the user has it on-screen BEFORE the device
+ *   prompt fires — same UX the EVM blind-sign flow already uses.
+ */
+export function renderSolanaVerificationBlock(tx: UnsignedSolanaTx): string {
+  if (tx.action === "native_send") {
+    return renderSolanaNativeVerificationBlock(tx);
+  }
+  return renderSolanaSplVerificationBlock(tx);
+}
+
+function formatSolanaDecodedArgs(tx: UnsignedSolanaTx): string[] {
+  return Object.entries(tx.decoded.args).map(
+    ([k, v]) => `    - ${k}: ${v}`,
+  );
+}
+
+function renderSolanaNativeVerificationBlock(tx: UnsignedSolanaTx): string {
+  return [
+    "VERIFY BEFORE SIGNING (Solana — native SOL transfer)",
+    "The Ledger Solana app clear-signs SystemProgram.Transfer. The on-device",
+    "screens will show the amount and recipient — confirm they match the",
+    "decoded call below, else REJECT on the device.",
+    "",
+    `  Call:    ${tx.decoded.functionName}`,
+    "  Args:",
+    ...formatSolanaDecodedArgs(tx),
+    `  From:    ${tx.from}`,
+    `  Blockhash: ${tx.recentBlockhash}`,
+  ].join("\n");
+}
+
+function renderSolanaSplVerificationBlock(tx: UnsignedSolanaTx): string {
+  const ledgerHash = solanaLedgerMessageHash(tx.messageBase64);
+  return [
+    "VERIFY BEFORE SIGNING (Solana — SPL token transfer)",
+    "The Ledger Solana app does NOT auto clear-sign SPL transfers (the app",
+    "requires a signed Trusted-Name descriptor that only Ledger Live supplies).",
+    "Your device will BLIND-SIGN: it shows a 'Message Hash' and nothing else.",
+    "",
+    "  Required one-time setup: on your Ledger → Solana app → Settings →",
+    "  enable 'Allow blind signing'. If this isn't enabled the app will",
+    "  refuse to sign.",
+    "",
+    "LEDGER MESSAGE HASH — match this against your device screen:",
+    `  **\`${ledgerHash}\`**`,
+    "",
+    "This is base58(sha256(messageBytes)) — the exact string the Solana app",
+    "computes and displays under the 'Message Hash' label. If the device",
+    "shows a different value, REJECT — something between this preview and",
+    "the device is tampering with the tx.",
+    "",
+    `  Call:    ${tx.decoded.functionName}`,
+    "  Args:",
+    ...formatSolanaDecodedArgs(tx),
+    `  From:    ${tx.from}`,
+    `  Blockhash: ${tx.recentBlockhash}`,
+  ].join("\n");
+}
+
+/**
+ * Per-call agent-task directive for Solana prepare results. Mirrors the EVM
+ * pattern: the server authors the exact shape the agent's user-facing reply
+ * must take, so a narrowly-compromised agent can't silently strip the
+ * Message Hash or the blind-sign warning. Native sends skip the hash
+ * rendering (nothing to match); SPL sends force the agent to relay the
+ * `**\`hash\`**` wrapper literally so the hash renders with bold+code
+ * contrast in every client (verified in live runs that plain backticks
+ * blended into prose).
+ */
+export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
+  if (tx.action === "native_send") {
+    return [
+      "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
+      "Produce a COMPACT bullet summary of the prepared native SOL send. Do",
+      "NOT relay the VERIFY-BEFORE-SIGNING block verbatim. Required shape:",
+      "  - Headline: \"Prepared native SOL send — <amount> SOL to <short addr>\"",
+      "  - From: <from address>",
+      "  - To: <to address>",
+      "  - Amount: <human SOL amount>",
+      "  - Fee: <fee in SOL>",
+      "End with ONE line: \"Reply 'send' to forward to the Ledger — the",
+      "Solana app will clear-sign (shows amount + recipient on-device).\"",
+      "No Message Hash is shown for native sends; do NOT fabricate one.",
+    ].join("\n");
+  }
+  const ledgerHash = solanaLedgerMessageHash(tx.messageBase64);
+  return [
+    "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
+    "Produce a COMPACT bullet summary of the prepared SPL token send. Do",
+    "NOT relay the VERIFY-BEFORE-SIGNING block verbatim. Required shape:",
+    "  - Headline: \"Prepared SPL send — <amount> <symbol> to <short addr>\"",
+    "  - From: <from address>",
+    "  - To: <to address>",
+    "  - Mint: <mint address> (<symbol if known>)",
+    "  - Amount: <human amount + symbol>",
+    "  - Rent: <rent in SOL if ATA creation, else omit the bullet>",
+    "  - Fee: <fee in SOL>",
+    "",
+    "THEN append EXACTLY this block to your reply — verbatim characters,",
+    "including the **`…`** wrappers (bold + single-backtick inline code).",
+    "Do NOT strip the Markdown — backticks alone render too subtly and",
+    "users have missed them under device-screen time pressure in live",
+    "runs. Do NOT paraphrase:",
+    "",
+    "    ═══════ LEDGER MESSAGE HASH — MATCH ON-DEVICE ═══════",
+    `    Hash: **\`${ledgerHash}\`**`,
+    "    Your Solana app will BLIND-SIGN (not clear-sign) — it shows the",
+    "    hash above under 'Message Hash'. If the device value differs,",
+    "    REJECT on the device. Any difference means tampering between this",
+    "    reply and the Ledger — do not approve.",
+    "    One-time setup: 'Allow blind signing' must be ON in the Solana",
+    "    app Settings, or the app refuses the tx.",
+    "    ════════════════════════════════════════════════════",
+    "",
+    "End with ONE line: \"Reply 'send' to forward to the Ledger — match",
+    "the hash above against your device screen before tapping Approve.\"",
+    "",
+    "Whenever you reference this hash elsewhere in your reply (headline,",
+    "post-broadcast summary, etc.) use the same `**\\`hash\\`**` wrapper —",
+    "inconsistent emphasis slows the user's visual match.",
   ].join("\n");
 }
 

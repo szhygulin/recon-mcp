@@ -185,12 +185,20 @@ import {
   renderPostSendPollBlock,
   renderPrepareReceiptBlock,
   renderPreviewVerifyAgentTaskBlock,
+  renderSolanaAgentTaskBlock,
+  renderSolanaVerificationBlock,
   renderTronVerificationBlock,
   renderVerificationBlock,
   shouldRenderVerificationBlock,
 } from "./signing/render-verification.js";
 import { verifyEvmCalldata, type VerifyDecodeResult } from "./signing/verify-decode.js";
-import type { SupportedChain, TxVerification, UnsignedTronTx, UnsignedTx } from "./types/index.js";
+import type {
+  SupportedChain,
+  TxVerification,
+  UnsignedSolanaTx,
+  UnsignedTronTx,
+  UnsignedTx,
+} from "./types/index.js";
 import type { SendTransactionArgs } from "./modules/execution/schemas.js";
 
 import { readUserConfig } from "./config/user-config.js";
@@ -228,6 +236,12 @@ export async function collectVerificationBlocks(
   const chain = r.chain as string | undefined;
   if (chain === "tron" && typeof r.rawDataHex === "string") {
     blocks.push(renderTronVerificationBlock(result as UnsignedTronTx & { verification: TxVerification }));
+    return blocks;
+  }
+  if (chain === "solana" && typeof r.messageBase64 === "string") {
+    const solanaTx = result as UnsignedSolanaTx;
+    blocks.push(renderSolanaVerificationBlock(solanaTx));
+    blocks.push(renderSolanaAgentTaskBlock(solanaTx));
     return blocks;
   }
   if (typeof r.to === "string" && typeof r.data === "string" && typeof r.value === "string" && typeof chain === "string") {
@@ -921,7 +935,7 @@ async function main() {
     "prepare_solana_spl_send",
     {
       description:
-        "Build an unsigned SPL token transfer via Token.TransferChecked. Returns a human-readable preview + opaque handle. Forward via `send_transaction` to sign on the Ledger and broadcast. Run `pair_ledger_solana` first. Pass the base58 SPL mint address (canonical decimals resolved for USDC, USDT, JUP, BONK, JTO, mSOL, jitoSOL; otherwise read from chain). If the recipient does NOT yet have an Associated Token Account for this mint, the tx automatically includes a `createAssociatedTokenAccount` instruction — the sender pays ~0.00204 SOL rent, disclosed explicitly in the preview (`rentLamports` + `description`). Note: creating a new ATA may require enabling 'Allow blind signing' in the Solana app settings (Solana app → Settings → 'Allow blind signing' → enable) — the preview warns about this when ATA creation is needed. The TransferChecked instruction itself clear-signs (mint + amount + recipient shown on device).",
+        "Build an unsigned SPL token transfer via Token.TransferChecked. Returns a human-readable preview + opaque handle. Forward via `send_transaction` to sign on the Ledger and broadcast. Run `pair_ledger_solana` first. Pass the base58 SPL mint address (canonical decimals resolved for USDC, USDT, JUP, BONK, JTO, mSOL, jitoSOL; otherwise read from chain). If the recipient does NOT yet have an Associated Token Account for this mint, the tx automatically includes a `createAssociatedTokenAccount` instruction — the sender pays ~0.00204 SOL rent, disclosed explicitly in the preview (`rentLamports` + `description`). BLIND-SIGN REQUIRED: the Ledger Solana app does NOT auto clear-sign TransferChecked — its parser requires a signed 'Trusted Name' TLV descriptor that only Ledger Live supplies, so the device drops into blind-sign and shows a 'Message Hash' (base58(sha256(messageBytes))). The user must (1) enable 'Allow blind signing' in Solana app → Settings, and (2) match the Message Hash surfaced in the preview verification block against the on-device value before approving. Same defense model the EVM DeFi flow uses for swaps.",
       inputSchema: prepareSolanaSplSendInput.shape,
     },
     handler(prepareSolanaSplSend)

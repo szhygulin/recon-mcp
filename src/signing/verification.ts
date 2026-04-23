@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import bs58 from "bs58";
 import {
   concat,
   hexToBytes,
@@ -96,6 +98,28 @@ export function tronPayloadFingerprint(rawDataHex: string): `0x${string}` {
 export function solanaPayloadFingerprint(messageBase64: string): `0x${string}` {
   const messageBytes = Buffer.from(messageBase64, "base64");
   return keccak256(concat([toBytes(DOMAIN_TAG_SOLANA), new Uint8Array(messageBytes)]));
+}
+
+/**
+ * Reproduces the "Message Hash" string the Ledger Solana app displays during
+ * blind-sign: base58(sha256(compiledMessageBytes)) where compiledMessageBytes
+ * is the exact message buffer the Ledger Ed25519-signs (i.e. our
+ * `messageBase64` after base64-decode). Verified against the app-solana
+ * source: `cx_hash_sha256` on the raw message buffer in
+ * src/handle_sign_message.c, then base58-rendered via
+ * libsol/transaction_summary.c. No truncation — the full 32-byte digest is
+ * shown on-device (~43–44 base58 chars).
+ *
+ * Users enable "Allow blind signing" in Solana app → Settings to land on
+ * this screen; they then match the string below against the device display
+ * before approving. Distinct from `solanaPayloadFingerprint` above, which is
+ * our own domain-tagged keccak256 for server-side preview↔send consistency
+ * and is NEVER shown on-device.
+ */
+export function solanaLedgerMessageHash(messageBase64: string): string {
+  const messageBytes = Buffer.from(messageBase64, "base64");
+  const digest = createHash("sha256").update(messageBytes).digest();
+  return bs58.encode(digest);
 }
 
 const SWISS_KNIFE_BASE = "https://calldata.swiss-knife.xyz/decoder";
