@@ -52,6 +52,9 @@ import { getSessionStatus as getLedgerStatus } from "./signing/session.js";
 import {
   pairLedgerLive,
   pairLedgerTron,
+  pairLedgerSolana,
+  prepareSolanaNativeSend,
+  prepareSolanaSplSend,
   prepareAaveSupply,
   prepareAaveWithdraw,
   prepareAaveBorrow,
@@ -72,6 +75,9 @@ import {
 import {
   pairLedgerLiveInput,
   pairLedgerTronInput,
+  pairLedgerSolanaInput,
+  prepareSolanaNativeSendInput,
+  prepareSolanaSplSendInput,
   getLedgerStatusInput,
   prepareAaveSupplyInput,
   prepareAaveWithdrawInput,
@@ -408,7 +414,7 @@ function previewSendHandler(
 function sendTransactionHandler(
   fn: (args: SendTransactionArgs) => Promise<{
     txHash: `0x${string}` | string;
-    chain: SupportedChain | "tron";
+    chain: SupportedChain | "tron" | "solana";
     nextHandle?: string;
     preSignHash?: `0x${string}`;
     to?: `0x${string}`;
@@ -892,11 +898,41 @@ async function main() {
   );
 
   server.registerTool(
+    "pair_ledger_solana",
+    {
+      description:
+        "Pair the host's directly-connected Ledger device for Solana signing. REQUIREMENTS: Ledger plugged into the machine running this MCP (USB, not WalletConnect), device unlocked, and the 'Solana' app open on-screen. Ledger Live's WalletConnect integration does NOT expose Solana accounts, so Solana signing goes over USB HID via @ledgerhq/hw-app-solana (same USB path as TRON). Reads the device address at `m/44'/501'/<accountIndex>'` (default accountIndex=0 — the first Solana account in Ledger Live) and caches it so `get_ledger_status` can report it under the `solana: [...]` section. Call multiple times with different `accountIndex` values to pair additional Solana accounts. Call this once per session (per account) before `prepare_solana_*` or `send_transaction` with a Solana handle. If the Solana app isn't open, the device is locked, or the derivation path doesn't match your Ledger Live setup, returns an actionable error.",
+      inputSchema: pairLedgerSolanaInput.shape,
+    },
+    handler(pairLedgerSolana)
+  );
+
+  server.registerTool(
+    "prepare_solana_native_send",
+    {
+      description:
+        "Build an unsigned SOL native-transfer transaction via SystemProgram.transfer. Returns a human-readable preview + opaque handle. Forward via `send_transaction` to sign on the directly-connected Ledger (USB HID via @ledgerhq/hw-app-solana) and broadcast to the configured Solana RPC. Run `pair_ledger_solana` once per session first so the Solana app is open and the device address is verified. Amount is in SOL (e.g. \"0.5\") or \"max\" for full balance minus fee + safety buffer. Priority fee is added dynamically only when `getRecentPrioritizationFees` p50 is above the congestion threshold — no fee under normal network conditions. The Ledger Solana app clear-signs SystemProgram.transfer (shows recipient + amount on device); no preview_send / blind-sign hash UX is needed.",
+      inputSchema: prepareSolanaNativeSendInput.shape,
+    },
+    handler(prepareSolanaNativeSend)
+  );
+
+  server.registerTool(
+    "prepare_solana_spl_send",
+    {
+      description:
+        "Build an unsigned SPL token transfer via Token.TransferChecked. Returns a human-readable preview + opaque handle. Forward via `send_transaction` to sign on the Ledger and broadcast. Run `pair_ledger_solana` first. Pass the base58 SPL mint address (canonical decimals resolved for USDC, USDT, JUP, BONK, JTO, mSOL, jitoSOL; otherwise read from chain). If the recipient does NOT yet have an Associated Token Account for this mint, the tx automatically includes a `createAssociatedTokenAccount` instruction — the sender pays ~0.00204 SOL rent, disclosed explicitly in the preview (`rentLamports` + `description`). Note: creating a new ATA may require enabling 'Allow blind signing' in the Solana app settings (Solana app → Settings → 'Allow blind signing' → enable) — the preview warns about this when ATA creation is needed. The TransferChecked instruction itself clear-signs (mint + amount + recipient shown on device).",
+      inputSchema: prepareSolanaSplSendInput.shape,
+    },
+    handler(prepareSolanaSplSend)
+  );
+
+  server.registerTool(
     "get_ledger_status",
     {
       description:
-        "Report whether a WalletConnect session with Ledger Live is active (EVM chains) AND whether any TRON Ledger pairings are cached (USB HID — see `pair_ledger_tron`). " +
-        "Returns `accounts: 0x…[]` — the list of EVM wallet addresses the user has connected — and optionally `tron: [{ address, path, appVersion, accountIndex }, …]` (one entry per paired TRON account, ordered by accountIndex) if `pair_ledger_tron` has been run at least once. " +
+        "Report whether a WalletConnect session with Ledger Live is active (EVM chains) AND whether any TRON or Solana Ledger pairings are cached (USB HID — see `pair_ledger_tron` / `pair_ledger_solana`). " +
+        "Returns `accounts: 0x…[]` — the list of EVM wallet addresses the user has connected — and optionally `tron: [{ address, path, appVersion, accountIndex }, …]` and `solana: [{ address, path, appVersion, accountIndex }, …]` (one entry per paired non-EVM account, ordered by accountIndex) if the corresponding `pair_ledger_*` tool has been run at least once. " +
         "Call this FIRST whenever the user refers to their wallet(s) by position or nickname instead of by address — e.g. " +
         '\"my wallet\", \"my TRON wallet\", \"the first address\", \"account 2\", \"second wallet\", \"second TRON account\" — so you can resolve the reference to a concrete 0x… / T… ' +
         "before invoking any prepare_* / swap / send / portfolio tool that takes a `wallet` / `tronAddress` argument. Do NOT ask the user to paste an " +

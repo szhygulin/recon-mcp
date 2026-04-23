@@ -10,6 +10,7 @@ import { CHAIN_IDS } from "../types/index.js";
 import type {
   SupportedChain,
   TxVerification,
+  UnsignedSolanaTx,
   UnsignedTronTx,
   UnsignedTx,
 } from "../types/index.js";
@@ -28,6 +29,7 @@ import { decodeCalldata, decodeTronCall } from "./decode-calldata.js";
  */
 export const DOMAIN_TAG_EVM = "VaultPilot-txverify-v1:";
 export const DOMAIN_TAG_TRON = "VaultPilot-txverify-v1:tron:";
+export const DOMAIN_TAG_SOLANA = "VaultPilot-txverify-v1:solana:";
 
 export function payloadFingerprint(
   tx: Pick<UnsignedTx, "chain" | "to" | "value" | "data">,
@@ -83,6 +85,17 @@ export function eip1559PreSignHash(args: {
 export function tronPayloadFingerprint(rawDataHex: string): `0x${string}` {
   const hex = (rawDataHex.startsWith("0x") ? rawDataHex : `0x${rawDataHex}`) as `0x${string}`;
   return keccak256(concat([toBytes(DOMAIN_TAG_TRON), hexToBytes(hex)]));
+}
+
+/**
+ * Fingerprint for a Solana tx — hashes the base64-decoded message bytes
+ * (what the Ledger signs) with a Solana-specific domain tag. Preview and
+ * send both re-hash the stored message to confirm nothing was tampered
+ * with between prepare and broadcast.
+ */
+export function solanaPayloadFingerprint(messageBase64: string): `0x${string}` {
+  const messageBytes = Buffer.from(messageBase64, "base64");
+  return keccak256(concat([toBytes(DOMAIN_TAG_SOLANA), new Uint8Array(messageBytes)]));
 }
 
 const SWISS_KNIFE_BASE = "https://calldata.swiss-knife.xyz/decoder";
@@ -170,5 +183,45 @@ export function buildTronVerification(tx: UnsignedTronTx): TxVerification {
       `into https://tronscan.org/#/transaction/<txID> AFTER signing to see the ` +
       `network's interpretation. The payload hash below is over the exact rawDataHex ` +
       `that will be signed on the Ledger.`,
+  };
+}
+
+/**
+ * Build the pre-sign verification bundle for a Solana tx. Parallel to
+ * `buildTronVerification`. The decoded structure comes from the tx
+ * itself (the builder populates `decoded`); `payloadHash` is over the
+ * base64-decoded message bytes — the exact bytes the Ledger signs.
+ */
+export function buildSolanaVerification(tx: UnsignedSolanaTx): TxVerification {
+  const payloadHash = solanaPayloadFingerprint(tx.messageBase64);
+  const payloadHashShort = payloadHash.slice(2, 10);
+  const args = Object.entries(tx.decoded.args).map(([name, value]) => ({
+    name,
+    type: "string",
+    value: String(value),
+  }));
+  return {
+    payloadHash,
+    payloadHashShort,
+    humanDecode: {
+      functionName: tx.decoded.functionName,
+      args,
+      // "local-abi" is EVM-specific (viem decode of a known ABI); TRON uses
+      // its own string. For Solana, the decode is builder-populated from
+      // Solana instruction types (SystemProgram / SPL Token) — tag "local-abi"
+      // as the closest match; it tells the UI this is a trusted local decode
+      // rather than "no decode available".
+      source: "local-abi" as const,
+    },
+    comparisonString: `solana:${tx.from}:${tx.recentBlockhash}:${tx.messageBase64}`,
+    // swiss-knife.xyz is EVM-only. For Solana, the user's independent verifier
+    // is the Solana Ledger app itself (clear-signs transfers + TransferChecked)
+    // plus post-broadcast inspection on solscan.io.
+    decoderPasteInstructions:
+      `swiss-knife.xyz doesn't support Solana. Verify by (1) reading the clear-sign ` +
+      `screens on the Ledger Solana app — amount + recipient + mint are shown for ` +
+      `SystemProgram.Transfer and Token.TransferChecked; (2) after broadcast, ` +
+      `comparing the tx on https://solscan.io/tx/<signature>. The payload hash below ` +
+      `is over the exact message bytes signed by the Ledger.`,
   };
 }

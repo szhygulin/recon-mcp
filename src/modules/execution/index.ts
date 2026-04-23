@@ -15,19 +15,38 @@ import {
 } from "../../signing/tx-store.js";
 import { consumeTronHandle, retireTronHandle } from "../../signing/tron-tx-store.js";
 import {
+  consumeSolanaHandle,
+  retireSolanaHandle,
+  hasSolanaHandle,
+} from "../../signing/solana-tx-store.js";
+import {
   getTronLedgerAddress,
   signTronTxOnLedger,
   setPairedTronAddress,
   getPairedTronByAddress,
   tronPathForAccountIndex,
 } from "../../signing/tron-usb-signer.js";
+import {
+  getSolanaLedgerAddress,
+  signSolanaTxOnLedger,
+  setPairedSolanaAddress,
+  getPairedSolanaByAddress,
+  solanaPathForAccountIndex,
+} from "../../signing/solana-usb-signer.js";
 import { broadcastTronTx } from "../tron/broadcast.js";
 import { getTronTransactionStatus } from "../tron/status.js";
+import { broadcastSolanaTx } from "../solana/broadcast.js";
+import { getSolanaTransactionStatus } from "../solana/status.js";
+import {
+  buildSolanaNativeSend,
+  buildSolanaSplSend,
+} from "../solana/actions.js";
 import { assertTransactionSafe } from "../../signing/pre-sign-check.js";
 import {
   eip1559PreSignHash,
   payloadFingerprint,
   tronPayloadFingerprint,
+  solanaPayloadFingerprint,
 } from "../../signing/verification.js";
 import { isClearSignOnlyTx } from "../../signing/render-verification.js";
 import { getClient, verifyChainId } from "../../data/rpc.js";
@@ -49,6 +68,7 @@ import { buildWethUnwrap } from "../weth/actions.js";
 import { getTokenPrice } from "../../data/prices.js";
 import type {
   PairLedgerTronArgs,
+  PairLedgerSolanaArgs,
   PrepareAaveSupplyArgs,
   PrepareAaveWithdrawArgs,
   PrepareAaveBorrowArgs,
@@ -59,6 +79,8 @@ import type {
   PrepareNativeSendArgs,
   PrepareWethUnwrapArgs,
   PrepareTokenSendArgs,
+  PrepareSolanaNativeSendArgs,
+  PrepareSolanaSplSendArgs,
   PreviewSendArgs,
   SendTransactionArgs,
   GetTransactionStatusArgs,
@@ -66,7 +88,12 @@ import type {
   GetVerificationArtifactArgs,
 } from "./schemas.js";
 import { CHAIN_IDS } from "../../types/index.js";
-import type { SupportedChain, UnsignedTx, UnsignedTronTx } from "../../types/index.js";
+import type {
+  SupportedChain,
+  UnsignedTx,
+  UnsignedTronTx,
+  UnsignedSolanaTx,
+} from "../../types/index.js";
 import { hasTronHandle } from "../../signing/tron-tx-store.js";
 import { hasHandle } from "../../signing/tx-store.js";
 import { round } from "../../data/format.js";
@@ -136,6 +163,121 @@ export async function pairLedgerTron(args: PairLedgerTronArgs = {}): Promise<{
       "TRON app open — each sign re-opens USB and re-verifies the device address. " +
       "To pair a different slot, call `pair_ledger_tron` again with another `accountIndex`.",
   };
+}
+
+/**
+ * Pair the host's directly-connected Ledger device for Solana signing.
+ * Unlike `pair_ledger_live` (WalletConnect relay for EVM), Solana signs
+ * over USB HID because Ledger Live's WalletConnect integration does not
+ * expose Solana accounts (confirmed 2026-04-23). The Ledger must be
+ * plugged in, unlocked, with the Solana app open. Reads + caches the
+ * device address at path `44'/501'/<accountIndex>'` (default 0 = first
+ * Ledger Live Solana account).
+ */
+export async function pairLedgerSolana(
+  args: PairLedgerSolanaArgs = {},
+): Promise<{
+  address: string;
+  path: string;
+  appVersion: string;
+  accountIndex: number;
+  instructions: string;
+}> {
+  const accountIndex = args.accountIndex ?? 0;
+  const path = solanaPathForAccountIndex(accountIndex);
+  const result = await getSolanaLedgerAddress(path);
+  setPairedSolanaAddress(result);
+  return {
+    address: result.address,
+    path: result.path,
+    appVersion: result.appVersion,
+    accountIndex,
+    instructions:
+      "Solana account paired. You can now call `prepare_solana_native_send` / " +
+      "`prepare_solana_spl_send` with this address and forward the handle via " +
+      "`send_transaction`. Keep the Ledger plugged in with the Solana app open " +
+      "— each sign re-opens USB and re-verifies the device address. If the tx " +
+      "needs to create an Associated Token Account (first-time SPL send to a " +
+      "fresh recipient), the Solana app may require blind-sign mode — the " +
+      "preview will flag it. To pair another slot, call `pair_ledger_solana` " +
+      "again with a different `accountIndex`.",
+  };
+}
+
+export async function prepareSolanaNativeSend(
+  args: PrepareSolanaNativeSendArgs,
+): Promise<UnsignedSolanaTx> {
+  return buildSolanaNativeSend({
+    wallet: args.wallet,
+    to: args.to,
+    amount: args.amount,
+  });
+}
+
+export async function prepareSolanaSplSend(
+  args: PrepareSolanaSplSendArgs,
+): Promise<UnsignedSolanaTx> {
+  return buildSolanaSplSend({
+    wallet: args.wallet,
+    mint: args.mint,
+    to: args.to,
+    amount: args.amount,
+  });
+}
+
+/**
+ * Send a Solana tx: consume handle, re-hash the stored message bytes and
+ * compare against the preview fingerprint, sign over USB HID, stitch the
+ * signature into the serialized tx, broadcast via RPC. Mirror of
+ * `sendTronTransaction`.
+ */
+async function sendSolanaTransaction(args: SendTransactionArgs): Promise<{
+  txHash: string;
+  chain: "solana";
+}> {
+  const tx: UnsignedSolanaTx = consumeSolanaHandle(args.handle);
+  // Proof-of-identity guard: same logic as the TRON sender. Recompute the
+  // domain-tagged hash of the exact message bytes the Ledger will sign
+  // and require equality with the hash the user previewed.
+  if (tx.verification) {
+    const rehash = solanaPayloadFingerprint(tx.messageBase64);
+    if (rehash !== tx.verification.payloadHash) {
+      throw new Error(
+        `SECURITY: Solana payload hash mismatch at send time. Previewed ${tx.verification.payloadHash}, ` +
+          `about to sign ${rehash}. The message bytes changed between preview and send — refusing ` +
+          `to forward to the Ledger. Do NOT retry this handle. Re-prepare from scratch and compare ` +
+          `the new preview carefully.`,
+      );
+    }
+  }
+  // Use the paired path for `from` if available; otherwise fall through to
+  // the default (`44'/501'/0'`) and let the device-address check inside
+  // `signSolanaTxOnLedger` surface a "pair the right slot" error.
+  const paired = getPairedSolanaByAddress(tx.from);
+  const messageBytes = Buffer.from(tx.messageBase64, "base64");
+  const { signature } = await signSolanaTxOnLedger({
+    messageBytes,
+    expectedFrom: tx.from,
+    ...(paired ? { path: paired.path } : {}),
+  });
+
+  // Assemble the final serialized tx: one signature count byte (0x01), the
+  // 64-byte signature, then the message bytes. Matches what
+  // `Transaction.serialize()` produces for a single-signer tx after
+  // `addSignature` — but we construct it by hand so we never need a
+  // `Keypair`/`Signer` object (which would imply a key in the server).
+  const signedTxBytes = Buffer.concat([
+    Buffer.from([1]), // signature count = 1 (single signer)
+    signature,
+    messageBytes,
+  ]);
+
+  const txSignature = await broadcastSolanaTx(signedTxBytes);
+  // Retire the handle only after successful broadcast. A signing or
+  // broadcast failure leaves the handle valid for retry within its 15-min
+  // TTL (though on-chain validity is bounded by the ~60s blockhash window).
+  retireSolanaHandle(args.handle);
+  return { txHash: txSignature, chain: "solana" };
 }
 
 /** Attach eth_call simulation result, gas estimate, and USD cost. */
@@ -702,12 +844,13 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
  */
 export async function sendTransaction(args: SendTransactionArgs): Promise<{
   txHash: `0x${string}` | string;
-  chain: SupportedChain | "tron";
+  chain: SupportedChain | "tron" | "solana";
   nextHandle?: string;
   /**
    * EIP-1559 pre-sign RLP hash the user already matched on-device during
    * preview_send. Echoed back so the post-broadcast block can reassure the
-   * user that what was signed equals what was previewed. TRON omits this.
+   * user that what was signed equals what was previewed. TRON / Solana
+   * omit this (they clear-sign on the device; no hash to match in chat).
    */
   preSignHash?: `0x${string}`;
   /** Echoed back so the send handler can render on-device eyeball values without re-reading the handle. */
@@ -717,6 +860,9 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
 }> {
   if (hasTronHandle(args.handle)) {
     return sendTronTransaction(args);
+  }
+  if (hasSolanaHandle(args.handle)) {
+    return sendSolanaTransaction(args);
   }
   const stashed = getPinnedGas(args.handle);
   if (!stashed) {
@@ -789,6 +935,9 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
 export async function getTransactionStatus(args: GetTransactionStatusArgs) {
   if (args.chain === "tron") {
     return getTronTransactionStatus(args.txHash);
+  }
+  if (args.chain === "solana") {
+    return getSolanaTransactionStatus(args.txHash);
   }
   const client = getClient(args.chain as SupportedChain);
   try {

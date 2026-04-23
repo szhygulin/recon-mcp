@@ -1,0 +1,205 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { Keypair, PublicKey } from "@solana/web3.js";
+
+/**
+ * Builder tests for `prepare_solana_native_send` / `prepare_solana_spl_send`.
+ * Mocks the Solana Connection so we never touch the network.
+ *
+ * Note: we generate fresh on-curve keypairs for the wallet + recipient
+ * because `getAssociatedTokenAddressSync` rejects off-curve owner addresses
+ * by default. Hardcoding random base58 strings would trip that check since
+ * only points on the ed25519 curve are valid pubkeys.
+ */
+
+const WALLET = Keypair.generate().publicKey.toBase58();
+const RECIPIENT = Keypair.generate().publicKey.toBase58();
+const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+const connectionStub = {
+  getBalance: vi.fn(),
+  getAccountInfo: vi.fn(),
+  getTokenAccountBalance: vi.fn(),
+  getTokenSupply: vi.fn(),
+  getLatestBlockhash: vi.fn(),
+  getRecentPrioritizationFees: vi.fn(),
+};
+
+vi.mock("../src/modules/solana/rpc.js", () => ({
+  getSolanaConnection: () => connectionStub,
+  resetSolanaConnection: () => {},
+}));
+
+beforeEach(() => {
+  connectionStub.getBalance.mockReset();
+  connectionStub.getAccountInfo.mockReset();
+  connectionStub.getTokenAccountBalance.mockReset();
+  connectionStub.getTokenSupply.mockReset();
+  connectionStub.getLatestBlockhash.mockReset();
+  connectionStub.getRecentPrioritizationFees.mockReset();
+
+  // Default: no congestion — skip priority fee.
+  connectionStub.getRecentPrioritizationFees.mockResolvedValue([]);
+  // Default blockhash.
+  connectionStub.getLatestBlockhash.mockResolvedValue({
+    blockhash: "HXSG2e3m7nYQL1LkRKksi2r1EH1Sd5sCQqTeyBJVeKkh",
+    lastValidBlockHeight: 123_456_789,
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("buildSolanaNativeSend", () => {
+  it("builds a SystemProgram.transfer for an explicit amount", async () => {
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000); // 5 SOL
+    const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
+    const tx = await buildSolanaNativeSend({
+      wallet: WALLET,
+      to: RECIPIENT,
+      amount: "1.5",
+    });
+
+    expect(tx.chain).toBe("solana");
+    expect(tx.action).toBe("native_send");
+    expect(tx.from).toBe(WALLET);
+    expect(tx.decoded.functionName).toBe("solana.system.transfer");
+    expect(tx.decoded.args.lamports).toBe("1500000000"); // 1.5 SOL
+    expect(tx.messageBase64).toMatch(/^[A-Za-z0-9+/=]+$/); // valid base64
+    expect(tx.handle).toBeDefined();
+    expect(tx.recentBlockhash).toBe("HXSG2e3m7nYQL1LkRKksi2r1EH1Sd5sCQqTeyBJVeKkh");
+    // No priority fee under default (empty) getRecentPrioritizationFees.
+    expect(tx.priorityFeeMicroLamports).toBeUndefined();
+  });
+
+  it("resolves `max` to balance minus fee and safety buffer", async () => {
+    connectionStub.getBalance.mockResolvedValue(2_000_000_000); // 2 SOL
+    const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
+    const tx = await buildSolanaNativeSend({
+      wallet: WALLET,
+      to: RECIPIENT,
+      amount: "max",
+    });
+    // Expected: 2_000_000_000 - 5000 (fee) - 10_000 (buffer) = 1_999_985_000 lamports.
+    expect(tx.decoded.args.lamports).toBe("1999985000");
+  });
+
+  it("refuses when the wallet is short", async () => {
+    connectionStub.getBalance.mockResolvedValue(100_000); // 0.0001 SOL
+    const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
+    await expect(
+      buildSolanaNativeSend({ wallet: WALLET, to: RECIPIENT, amount: "1" }),
+    ).rejects.toThrow(/Insufficient SOL/);
+  });
+
+  it("injects priority fee when getRecentPrioritizationFees p50 is above threshold", async () => {
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000);
+    // Return samples with p50 = 10_000 μlamports/CU (above the 5_000 threshold).
+    const samples = Array.from({ length: 10 }, (_, i) => ({
+      slot: 100 + i,
+      prioritizationFee: 10_000,
+    }));
+    connectionStub.getRecentPrioritizationFees.mockResolvedValue(samples);
+
+    const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
+    const tx = await buildSolanaNativeSend({
+      wallet: WALLET,
+      to: RECIPIENT,
+      amount: "0.1",
+    });
+    expect(tx.priorityFeeMicroLamports).toBe(10_000);
+    expect(tx.computeUnitLimit).toBe(200_000);
+  });
+});
+
+describe("buildSolanaSplSend", () => {
+  it("builds a TransferChecked when recipient ATA exists", async () => {
+    // SOL balance (enough for fee)
+    connectionStub.getBalance.mockResolvedValue(1_000_000_000);
+    // Sender ATA exists
+    connectionStub.getAccountInfo
+      .mockResolvedValueOnce({ data: Buffer.alloc(165), owner: new PublicKey(WALLET) }) // sender ATA
+      .mockResolvedValueOnce({ data: Buffer.alloc(165), owner: new PublicKey(RECIPIENT) }); // recipient ATA
+    connectionStub.getTokenAccountBalance.mockResolvedValue({
+      value: { amount: "100000000", decimals: 6, uiAmount: 100, uiAmountString: "100" },
+    });
+
+    const { buildSolanaSplSend } = await import("../src/modules/solana/actions.js");
+    const tx = await buildSolanaSplSend({
+      wallet: WALLET,
+      mint: USDC_MINT,
+      to: RECIPIENT,
+      amount: "50",
+    });
+
+    expect(tx.action).toBe("spl_send");
+    expect(tx.decoded.functionName).toBe("solana.spl.transferChecked");
+    expect(tx.decoded.args.symbol).toBe("USDC");
+    expect(tx.decoded.args.amountBase).toBe("50000000"); // 50 × 10^6
+    // No ATA creation needed.
+    expect(tx.rentLamports).toBeUndefined();
+    expect(tx.decoded.args.createsRecipientAta).toBeUndefined();
+  });
+
+  it("auto-creates recipient ATA with rent disclosure when missing", async () => {
+    connectionStub.getBalance.mockResolvedValue(100_000_000); // 0.1 SOL
+    connectionStub.getAccountInfo
+      .mockResolvedValueOnce({ data: Buffer.alloc(165), owner: new PublicKey(WALLET) }) // sender ATA exists
+      .mockResolvedValueOnce(null); // recipient ATA missing
+    connectionStub.getTokenAccountBalance.mockResolvedValue({
+      value: { amount: "100000000", decimals: 6, uiAmount: 100, uiAmountString: "100" },
+    });
+
+    const { buildSolanaSplSend } = await import("../src/modules/solana/actions.js");
+    const tx = await buildSolanaSplSend({
+      wallet: WALLET,
+      mint: USDC_MINT,
+      to: RECIPIENT,
+      amount: "1",
+    });
+    expect(tx.rentLamports).toBe(2_039_280);
+    expect(tx.decoded.args.createsRecipientAta).toBe("true");
+    expect(tx.description).toContain("create recipient USDC account");
+  });
+
+  it("refuses if the sender has no ATA for the mint", async () => {
+    connectionStub.getBalance.mockResolvedValue(100_000_000);
+    connectionStub.getAccountInfo.mockResolvedValueOnce(null); // sender ATA missing
+
+    const { buildSolanaSplSend } = await import("../src/modules/solana/actions.js");
+    await expect(
+      buildSolanaSplSend({ wallet: WALLET, mint: USDC_MINT, to: RECIPIENT, amount: "1" }),
+    ).rejects.toThrow(/has no associated token account/);
+  });
+
+  it("refuses when the sender's token balance is short", async () => {
+    connectionStub.getBalance.mockResolvedValue(100_000_000);
+    connectionStub.getAccountInfo
+      .mockResolvedValueOnce({ data: Buffer.alloc(165), owner: new PublicKey(WALLET) })
+      .mockResolvedValueOnce({ data: Buffer.alloc(165), owner: new PublicKey(RECIPIENT) });
+    connectionStub.getTokenAccountBalance.mockResolvedValue({
+      value: { amount: "500000", decimals: 6, uiAmount: 0.5, uiAmountString: "0.5" },
+    });
+
+    const { buildSolanaSplSend } = await import("../src/modules/solana/actions.js");
+    await expect(
+      buildSolanaSplSend({ wallet: WALLET, mint: USDC_MINT, to: RECIPIENT, amount: "10" }),
+    ).rejects.toThrow(/Insufficient USDC/);
+  });
+
+  it("refuses when SOL balance is short for fee + rent (ATA creation case)", async () => {
+    // Only 1_000_000 lamports (0.001 SOL) — not enough for 0.00204 rent + 5k fee.
+    connectionStub.getBalance.mockResolvedValue(1_000_000);
+    connectionStub.getAccountInfo
+      .mockResolvedValueOnce({ data: Buffer.alloc(165), owner: new PublicKey(WALLET) })
+      .mockResolvedValueOnce(null);
+    connectionStub.getTokenAccountBalance.mockResolvedValue({
+      value: { amount: "100000000", decimals: 6, uiAmount: 100, uiAmountString: "100" },
+    });
+
+    const { buildSolanaSplSend } = await import("../src/modules/solana/actions.js");
+    await expect(
+      buildSolanaSplSend({ wallet: WALLET, mint: USDC_MINT, to: RECIPIENT, amount: "1" }),
+    ).rejects.toThrow(/Insufficient SOL for fees/);
+  });
+});

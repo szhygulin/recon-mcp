@@ -5,6 +5,7 @@ import {
   isPeerUnreachable,
 } from "./walletconnect.js";
 import { getPairedTronAddresses } from "./tron-usb-signer.js";
+import { getPairedSolanaAddresses } from "./solana-usb-signer.js";
 import type { SupportedChain } from "../types/index.js";
 
 export interface SessionAccount {
@@ -78,6 +79,20 @@ export interface SessionStatus {
     /** Null when the path is not in the standard `44'/195'/<n>'/0/0` layout. */
     accountIndex: number | null;
   }>;
+  /**
+   * Solana pairings — parallel to the TRON section above. Populated once
+   * the user has run `pair_ledger_solana` (USB HID — Ledger Live does NOT
+   * expose Solana accounts over WalletConnect). Ordered by `accountIndex`.
+   * Absent/empty → agent should call `pair_ledger_solana` before preparing
+   * any `prepare_solana_*` tx.
+   */
+  solana?: Array<{
+    address: string;
+    path: string;
+    appVersion: string;
+    /** Null when the path is not in the standard `44'/501'/<n>'` layout. */
+    accountIndex: number | null;
+  }>;
 }
 
 export const PEER_TRUST_WARNING =
@@ -123,12 +138,25 @@ export async function getSessionStatus(): Promise<SessionStatus> {
           })),
         }
       : {};
+  const solanaPaired = getPairedSolanaAddresses();
+  const solanaSection =
+    solanaPaired.length > 0
+      ? {
+          solana: solanaPaired.map((e) => ({
+            address: e.address,
+            path: e.path,
+            appVersion: e.appVersion,
+            accountIndex: e.accountIndex,
+          })),
+        }
+      : {};
   if (!session)
     return {
       paired: false,
       accounts: [],
       accountDetails: [],
       ...tronSection,
+      ...solanaSection,
     };
   const accountDetails = await getConnectedAccountsDetailed();
   const accounts = accountDetails.map((a) => a.address);
@@ -149,5 +177,6 @@ export async function getSessionStatus(): Promise<SessionStatus> {
       ? { peerUnreachable: true, peerUnreachableGuidance: PEER_UNREACHABLE_GUIDANCE }
       : {}),
     ...tronSection,
+    ...solanaSection,
   };
 }
