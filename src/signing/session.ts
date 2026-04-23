@@ -51,6 +51,17 @@ export interface SessionStatus {
    */
   peerUnreachable?: boolean;
   /**
+   * Actionable guidance for the agent, populated only when `peerUnreachable`
+   * is true. The cached `accounts` / `accountDetails` are still usable for
+   * address resolution (e.g. "my first wallet" → 0x…) but any signing
+   * attempt will hang on the unresponsive relay, so the agent should
+   * proactively prompt the user to re-pair before proceeding to a
+   * prepare_* / send flow. Kept as a string rather than a boolean so the
+   * exact call-to-action lives alongside the flag and the agent can splice
+   * it verbatim into its reply.
+   */
+  peerUnreachableGuidance?: string;
+  /**
    * Present when the user has run `pair_ledger_tron` at least once. TRON
    * doesn't share WalletConnect with EVM — signing goes over USB HID — so
    * this section is independent of the `paired`/`accounts` fields above
@@ -74,6 +85,13 @@ export const PEER_TRUST_WARNING =
   "The paired wallet/URL above is NOT on the Ledger-first-party allowlist; ask the user " +
   "to confirm before calling send_transaction. The ultimate check is that the tx shows up on the " +
   "user's physical Ledger device for on-screen approval.";
+
+export const PEER_UNREACHABLE_GUIDANCE =
+  "WalletConnect session is cached locally but the relay couldn't confirm Ledger Live is currently connected. " +
+  "Cached addresses below are fine for referring to the user's wallet(s) — keep using them for balance/history/portfolio queries — " +
+  "but any signing flow (prepare_* → send_transaction) will hang on the unresponsive peer. " +
+  "Before the next signing operation, ASK the user: 'WalletConnect looks disconnected. Want me to re-pair Ledger Live now via pair_ledger_live?' " +
+  "Only call pair_ledger_live on explicit confirmation. Do NOT auto-re-pair on read-only requests.";
 
 /**
  * Hosts the server treats as first-party Ledger WC peers. Exact match or any
@@ -127,7 +145,9 @@ export async function getSessionStatus(): Promise<SessionStatus> {
     ...(meta?.url ? { peerUrl: meta.url } : {}),
     ...(meta?.description ? { peerDescription: meta.description } : {}),
     ...(warnPeer ? { peerTrustWarning: PEER_TRUST_WARNING } : {}),
-    ...(unreachable ? { peerUnreachable: true } : {}),
+    ...(unreachable
+      ? { peerUnreachable: true, peerUnreachableGuidance: PEER_UNREACHABLE_GUIDANCE }
+      : {}),
     ...tronSection,
   };
 }
