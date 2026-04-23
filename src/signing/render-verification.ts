@@ -709,15 +709,41 @@ const POLL_CADENCE: Record<string, { intervalSec: number; maxPolls: number; budg
   polygon: { intervalSec: 3, maxPolls: 20, budgetLabel: "~1 minute" },
   base: { intervalSec: 3, maxPolls: 20, budgetLabel: "~1 minute" },
   tron: { intervalSec: 3, maxPolls: 20, budgetLabel: "~1 minute" },
+  // Solana: 400ms slots; poll aggressively for the first ~30s (~60 polls)
+  // within the ~60-90s blockhash-validity window. Past that, further
+  // polling is pointless — dropped txs get surfaced by the status tool's
+  // blockhash-expiry check once the baked blockhash is past.
+  solana: { intervalSec: 2, maxPolls: 45, budgetLabel: "~90 seconds" },
 };
 
 export function renderPostSendPollBlock(args: {
   chain: string;
   txHash: string;
   nextHandle?: string;
+  /**
+   * Solana only. When supplied, the poll block tells the agent to pass it
+   * into `get_transaction_status` so the status tool can distinguish
+   * `dropped` (current slot past this) from `pending` (tx still propagating).
+   * Without it, a dropped Solana tx reads as `pending` forever.
+   */
+  lastValidBlockHeight?: number;
 }): string {
-  const { chain, txHash, nextHandle } = args;
+  const { chain, txHash, nextHandle, lastValidBlockHeight } = args;
   const cadence = POLL_CADENCE[chain] ?? POLL_CADENCE.ethereum;
+  const statusCall =
+    chain === "solana" && lastValidBlockHeight !== undefined
+      ? `get_transaction_status({ chain: "solana", txHash: "${txHash}", lastValidBlockHeight: ${lastValidBlockHeight} })`
+      : `get_transaction_status({ chain: "${chain}", txHash: "${txHash}" })`;
+  const solanaDroppedBranch = chain === "solana" && lastValidBlockHeight !== undefined
+    ? [
+        `  5. SOLANA SPECIFIC — if status returns "dropped", the tx's blockhash`,
+        `     expired (current block height is past lastValidBlockHeight=${lastValidBlockHeight})`,
+        `     and the tx is permanently gone. Tell the user the broadcast did`,
+        `     not land and offer to re-run the prepare → preview → send flow`,
+        `     with a fresh blockhash. Do NOT keep polling — "dropped" is`,
+        `     terminal.`,
+      ]
+    : [];
   const lines = [
     "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
     `The tx was forwarded to Ledger and broadcast; a txHash is above. Do NOT`,
@@ -725,8 +751,8 @@ export function renderPostSendPollBlock(args: {
     `yourself and only speak again when you have a real outcome.`,
     ``,
     `Do this, in order:`,
-    `  1. Call get_transaction_status({ chain: "${chain}", txHash: "${txHash}" })`,
-    `     every ~${cadence.intervalSec} seconds until status is "success" or "failed", or until`,
+    `  1. Call ${statusCall}`,
+    `     every ~${cadence.intervalSec} seconds until status is "success" or "failed"${chain === "solana" ? ' or "dropped"' : ''}, or until`,
     `     you have polled for ${cadence.budgetLabel} (~${cadence.maxPolls} polls). If status stays`,
     `     "pending" / "unknown" past that budget, stop polling and tell the`,
     `     user the tx is still pending with the hash so they can watch it`,
@@ -744,6 +770,7 @@ export function renderPostSendPollBlock(args: {
         ` Do NOT send the nextHandle before confirmation; a pre-inclusion` +
         ` simulate reverts with "insufficient allowance".`
       : `  4. No follow-up tx is queued; end your turn after reporting.`,
+    ...solanaDroppedBranch,
     ``,
     `Between polls, stay silent — no "still waiting..." chatter. The user`,
     `only needs to hear from you when the status actually changes.`,

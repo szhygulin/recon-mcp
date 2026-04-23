@@ -658,6 +658,14 @@ export interface UnsignedSolanaTx {
    * fresh hash right before broadcast so the full window is available.
    */
   recentBlockhash: string;
+  /**
+   * Last block height at which `recentBlockhash` remains valid. Captured
+   * from `getLatestBlockhash` at pin time; carried through broadcast and
+   * surfaced by `send_transaction` so the subsequent status-poller can
+   * tell "dropped" (current slot > this) from "not-yet-propagated" when
+   * `getSignatureStatuses` returns null.
+   */
+  lastValidBlockHeight?: number;
   /** Human-readable description for the preview. */
   description: string;
   decoded: {

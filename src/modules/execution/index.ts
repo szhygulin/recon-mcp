@@ -256,8 +256,8 @@ export async function previewSolanaSend(args: {
   // handles without burning a network call.
   getSolanaDraft(args.handle);
   const conn = getSolanaConnection();
-  const { blockhash } = await conn.getLatestBlockhash("confirmed");
-  return pinSolanaHandle(args.handle, blockhash);
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
+  return pinSolanaHandle(args.handle, blockhash, lastValidBlockHeight);
 }
 
 /**
@@ -269,6 +269,7 @@ export async function previewSolanaSend(args: {
 async function sendSolanaTransaction(args: SendTransactionArgs): Promise<{
   txHash: string;
   chain: "solana";
+  lastValidBlockHeight?: number;
 }> {
   const tx: UnsignedSolanaTx = consumeSolanaHandle(args.handle);
   // Proof-of-identity guard: same logic as the TRON sender. Recompute the
@@ -312,7 +313,13 @@ async function sendSolanaTransaction(args: SendTransactionArgs): Promise<{
   // broadcast failure leaves the handle valid for retry within its 15-min
   // TTL (though on-chain validity is bounded by the ~60s blockhash window).
   retireSolanaHandle(args.handle);
-  return { txHash: txSignature, chain: "solana" };
+  return {
+    txHash: txSignature,
+    chain: "solana",
+    ...(tx.lastValidBlockHeight !== undefined
+      ? { lastValidBlockHeight: tx.lastValidBlockHeight }
+      : {}),
+  };
 }
 
 /** Attach eth_call simulation result, gas estimate, and USD cost. */
@@ -892,6 +899,13 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
   to?: `0x${string}`;
   /** Decimal wei string, echoed alongside `preSignHash` for the post-broadcast block. */
   valueWei?: string;
+  /**
+   * Solana only: the last block height at which the tx's baked blockhash
+   * remains valid. Surfaced so `get_transaction_status` can distinguish
+   * "dropped" (current slot past this) from "not-yet-propagated" when
+   * `getSignatureStatuses` returns null.
+   */
+  lastValidBlockHeight?: number;
 }> {
   if (hasTronHandle(args.handle)) {
     return sendTronTransaction(args);
@@ -972,7 +986,12 @@ export async function getTransactionStatus(args: GetTransactionStatusArgs) {
     return getTronTransactionStatus(args.txHash);
   }
   if (args.chain === "solana") {
-    return getSolanaTransactionStatus(args.txHash);
+    return getSolanaTransactionStatus({
+      signature: args.txHash,
+      ...(args.lastValidBlockHeight !== undefined
+        ? { lastValidBlockHeight: args.lastValidBlockHeight }
+        : {}),
+    });
   }
   const client = getClient(args.chain as SupportedChain);
   try {

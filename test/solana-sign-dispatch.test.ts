@@ -159,6 +159,38 @@ describe("sendTransaction dispatch — Solana", () => {
     expect(hasSolanaHandle(draft.handle)).toBe(true);
   });
 
+  it("surfaces lastValidBlockHeight on the send_transaction result so the status poller can detect dropped txs", async () => {
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000);
+    connectionStub.getLatestBlockhash.mockResolvedValueOnce({
+      blockhash: "HXSG2e3m7nYQL1LkRKksi2r1EH1Sd5sCQqTeyBJVeKkh",
+      lastValidBlockHeight: 1_234_567,
+    });
+
+    const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
+    const draft = await buildSolanaNativeSend({
+      wallet: WALLET,
+      to: RECIPIENT,
+      amount: "0.1",
+    });
+    const { previewSolanaSend } = await import("../src/modules/execution/index.js");
+    const pinned = await previewSolanaSend({ handle: draft.handle });
+    expect(pinned.lastValidBlockHeight).toBe(1_234_567);
+
+    getAddressMock.mockResolvedValue({
+      address: WALLET_KEYPAIR.publicKey.toBuffer(),
+    });
+    signTransactionMock.mockResolvedValue({ signature: Buffer.alloc(64, 9) });
+    connectionStub.sendRawTransaction.mockResolvedValue("sig-xyz");
+
+    const { sendTransaction } = await import("../src/modules/execution/index.js");
+    const result = await sendTransaction({
+      handle: draft.handle,
+      confirmed: true,
+    });
+    expect(result.chain).toBe("solana");
+    expect(result.lastValidBlockHeight).toBe(1_234_567);
+  });
+
   it("re-calling preview_solana_send on the same handle re-pins with a newer blockhash", async () => {
     connectionStub.getBalance.mockResolvedValue(5_000_000_000);
     const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");

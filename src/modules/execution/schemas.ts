@@ -254,6 +254,18 @@ export const getTransactionStatusInput = z.object({
       "Transaction identifier. EVM: 32-byte hex (0x-prefixed or bare). TRON: 32-byte bare hex. " +
         "Solana: 64-byte signature as base58 (86–88 chars). All three forms are accepted."
     ),
+  lastValidBlockHeight: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe(
+      "Solana only. Block-height ceiling for the tx's baked blockhash — returned by " +
+        "send_transaction for Solana txs. When supplied and `getSignatureStatuses` " +
+        "returns null (tx not visible), the poller compares against the current block " +
+        "height and reports `dropped` instead of forever `pending` if the window has " +
+        "passed. Omit for EVM / TRON; ignored on those chains."
+    ),
 });
 
 export const getTxVerificationInput = z.object({

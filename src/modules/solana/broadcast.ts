@@ -14,12 +14,16 @@ import { getSolanaConnection } from "./rpc.js";
  * `confirmed` cluster state so we don't false-positive on optimistically-
  * processed-then-reverted slots.
  *
- * `maxRetries: 0` — we prefer to surface RPC-side transient failures to
- * the caller rather than have web3.js silently retry. The handle is
- * already-used by this point; a retry could lead to the tx landing twice
- * in the rare case the first submission's ack was lost (Solana sigs are
- * deterministic, so this would just duplicate the attempt without
- * double-spending, but surfacing the error is still cleaner UX).
+ * `maxRetries: 5` — web3.js rebroadcasts the EXACT same signed bytes
+ * (no re-sign; the tx signature is deterministic) against the RPC up to
+ * 5 times within the blockhash's validity window. This tolerates the
+ * common case where the first leader saw the tx but didn't include it —
+ * subsequent leaders get another shot without the user re-approving on
+ * the Ledger. We previously set this to 0 reasoning "surface transient
+ * failures to the caller" — but the transient failure was silent drop,
+ * not a returned error, so 0 retries meant one leader failure = lost tx.
+ * Double-landing isn't a risk: Solana sigs are deterministic, so the
+ * cluster dedupes identical broadcasts.
  */
 export async function broadcastSolanaTx(signedTxBytes: Buffer): Promise<string> {
   const conn = getSolanaConnection();
@@ -27,7 +31,7 @@ export async function broadcastSolanaTx(signedTxBytes: Buffer): Promise<string> 
     const signature = await conn.sendRawTransaction(signedTxBytes, {
       skipPreflight: false,
       preflightCommitment: "confirmed",
-      maxRetries: 0,
+      maxRetries: 5,
     });
     return signature;
   } catch (e) {

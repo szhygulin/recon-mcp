@@ -114,6 +114,7 @@ export function getSolanaDraft(handle: string): SolanaTxDraft {
 export function pinSolanaHandle(
   handle: string,
   freshBlockhash: string,
+  lastValidBlockHeight?: number,
 ): UnsignedSolanaTx {
   const entry = store.get(handle);
   if (!entry) {
@@ -136,6 +137,7 @@ export function pinSolanaHandle(
     description: meta.description,
     decoded: meta.decoded,
     handle,
+    ...(lastValidBlockHeight !== undefined ? { lastValidBlockHeight } : {}),
     ...(meta.rentLamports !== undefined ? { rentLamports: meta.rentLamports } : {}),
     ...(meta.priorityFeeMicroLamports !== undefined
       ? { priorityFeeMicroLamports: meta.priorityFeeMicroLamports }

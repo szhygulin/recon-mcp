@@ -488,6 +488,7 @@ function sendTransactionHandler(
     preSignHash?: `0x${string}`;
     to?: `0x${string}`;
     valueWei?: string;
+    lastValidBlockHeight?: number;
   }>,
 ) {
   return async (args: SendTransactionArgs) => {
@@ -509,6 +510,9 @@ function sendTransactionHandler(
             chain: String(result.chain),
             txHash: String(result.txHash),
             ...(result.nextHandle ? { nextHandle: result.nextHandle } : {}),
+            ...(result.lastValidBlockHeight !== undefined
+              ? { lastValidBlockHeight: result.lastValidBlockHeight }
+              : {}),
           }),
         },
       ];
@@ -1153,7 +1157,7 @@ async function main() {
     "get_transaction_status",
     {
       description:
-        "Poll a transaction's status via the chain's RPC (EVM) or TronGrid (TRON). Returns pending / success / failed, or unknown if the node hasn't seen it yet. Pass chain='tron' with the bare hex txID for TRON.",
+        "Poll a transaction's status via the chain's RPC (EVM / Solana) or TronGrid (TRON). Returns pending / success / failed, plus 'dropped' on Solana when the baked blockhash has expired past the supplied lastValidBlockHeight and the tx was never seen. Pass chain='tron' with the bare hex txID for TRON; chain='solana' with the base58 signature for Solana. For Solana, ALSO pass the `lastValidBlockHeight` value returned by `send_transaction` — without it the status tool cannot distinguish 'dropped' from 'still propagating' and reports 'pending' forever for txs that silently fell out of the mempool.",
       inputSchema: getTransactionStatusInput.shape,
     },
     handler(getTransactionStatus)
