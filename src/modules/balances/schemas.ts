@@ -10,11 +10,17 @@ const chainEnum = z.enum(ALL_CHAINS as unknown as [string, ...string[]]);
 const walletSchema = z.union([
   z.string().regex(/^0x[a-fA-F0-9]{40}$/),
   z.string().regex(/^T[1-9A-HJ-NP-Za-km-z]{33}$/),
+  // Solana base58 pubkey (ed25519 32 bytes → 43 or 44 chars). The strict
+  // PublicKey-round-trip check happens in src/modules/solana/address.ts at
+  // handler entry; this regex is fast-reject for obvious garbage.
+  z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{43,44}$/),
 ]);
 const tokenSchema = z.union([
   z.literal("native"),
   z.string().regex(/^0x[a-fA-F0-9]{40}$/),
   z.string().regex(/^T[1-9A-HJ-NP-Za-km-z]{33}$/),
+  // SPL mint address — same base58 shape as wallets.
+  z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{43,44}$/),
 ]);
 
 const evmChainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);

@@ -212,6 +212,27 @@ async function configureTron(p: Prompt): Promise<string | undefined> {
   return apiKey;
 }
 
+async function configureSolana(p: Prompt): Promise<string | undefined> {
+  console.log("\n--- Solana (optional — enables SOL + SPL balance reads and history) ---");
+  console.log("Solana is non-EVM with its own ecosystem: SPL tokens via Associated Token");
+  console.log("Accounts, native validator staking, and DeFi protocols like Jupiter/Marinade/");
+  console.log("Jito/Raydium/Orca. Paste the full RPC URL from your provider — Helius is the");
+  console.log("recommended choice (free tier covers typical portfolio use):");
+  console.log("  Helius:    https://mainnet.helius-rpc.com/?api-key=YOUR_KEY");
+  console.log("  QuickNode: https://your-endpoint.solana-mainnet.quiknode.pro/YOUR_TOKEN/");
+  console.log("  Alchemy:   https://solana-mainnet.g.alchemy.com/v2/YOUR_KEY");
+  console.log("Skip with empty input — Solana reads will be disabled.");
+  const existing = readUserConfig()?.solanaRpcUrl;
+  const answer = await p.ask(
+    existing
+      ? "Solana RPC URL [press enter to keep existing]: "
+      : "Solana RPC URL (or blank to skip): "
+  );
+  const url = answer || existing;
+  if (!url) return undefined;
+  return url;
+}
+
 async function configureWalletConnect(p: Prompt): Promise<string | undefined> {
   console.log("\n--- WalletConnect (optional — required for Ledger Live signing) ---");
   console.log("Create a free project at https://cloud.walletconnect.com.");
@@ -314,6 +335,7 @@ function summarizeConfig(cfg: UserConfig): void {
   console.log(`  Etherscan API key:   ${cfg.etherscanApiKey ? "set" : "not set"}`);
   console.log(`  1inch API key:       ${cfg.oneInchApiKey ? "set" : "not set"}`);
   console.log(`  TronGrid API key:    ${cfg.tronApiKey ? "set" : "not set"}`);
+  console.log(`  Solana RPC URL:      ${cfg.solanaRpcUrl ? "set" : "not set"}`);
   console.log(
     `  WalletConnect:       ${cfg.walletConnect?.projectId ? "project ID set" : "not set"}`
   );
@@ -332,6 +354,7 @@ async function editSectionMenu(p: Prompt): Promise<void> {
     { label: "Etherscan API key", action: "etherscan" as const },
     { label: "1inch API key", action: "oneinch" as const },
     { label: "TronGrid API key", action: "tron" as const },
+    { label: "Solana RPC URL", action: "solana" as const },
     { label: "WalletConnect project ID", action: "wc" as const },
     { label: "Pair Ledger Live now", action: "pair" as const },
     { label: "Done — exit setup", action: "done" as const },
@@ -363,6 +386,11 @@ async function editSectionMenu(p: Prompt): Promise<void> {
       case "tron": {
         const k = await configureTron(p);
         if (k !== undefined) patchUserConfig({ tronApiKey: k });
+        break;
+      }
+      case "solana": {
+        const url = await configureSolana(p);
+        if (url !== undefined) patchUserConfig({ solanaRpcUrl: url });
         break;
       }
       case "wc": {
@@ -400,6 +428,11 @@ async function runFullWizard(p: Prompt): Promise<void> {
   const tronApiKey = await configureTron(p);
   if (tronApiKey !== undefined) {
     patchUserConfig({ tronApiKey });
+  }
+
+  const solanaRpcUrl = await configureSolana(p);
+  if (solanaRpcUrl !== undefined) {
+    patchUserConfig({ solanaRpcUrl });
   }
 
   const wcProjectId = await configureWalletConnect(p);

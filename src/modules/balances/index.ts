@@ -6,6 +6,7 @@ import { getTokenPrice } from "../../data/prices.js";
 import { NATIVE_SYMBOL } from "../../config/contracts.js";
 import { readEip1967Implementation } from "../../data/proxy.js";
 import { getTronTokenBalance } from "../tron/balances.js";
+import { getSolanaTokenBalance } from "../solana/balances.js";
 import type {
   GetTokenBalanceArgs,
   GetTokenMetadataArgs,
@@ -14,6 +15,7 @@ import type {
 } from "./schemas.js";
 import type {
   AnyChain,
+  SolanaBalance,
   SupportedChain,
   TokenAmount,
   TronBalance,
@@ -39,13 +41,19 @@ export interface TokenMetadata {
  */
 export async function getTokenBalance(
   args: GetTokenBalanceArgs
-): Promise<TokenAmount | TronBalance> {
+): Promise<TokenAmount | TronBalance | SolanaBalance> {
   const chain = args.chain as AnyChain;
 
   // TRON branches to its own reader — addresses are base58 and the price
   // provider uses a different chain identifier.
   if (chain === "tron") {
     return getTronTokenBalance(args.wallet, args.token);
+  }
+
+  // Solana: base58 pubkey wallet, `token` is either "native" (SOL) or an
+  // SPL mint address. Uses `@solana/web3.js` against the configured RPC.
+  if (chain === "solana") {
+    return getSolanaTokenBalance(args.wallet, args.token);
   }
 
   const wallet = args.wallet as `0x${string}`;

@@ -13,6 +13,11 @@ const tronAddressSchema = z
   .regex(/^T[1-9A-HJ-NP-Za-km-z]{33}$/)
   .describe("Base58 TRON mainnet address (prefix T, 34 chars).");
 
+const solanaAddressSchema = z
+  .string()
+  .regex(/^[1-9A-HJ-NP-Za-km-z]{43,44}$/)
+  .describe("Base58 Solana mainnet address (ed25519 pubkey, 43 or 44 chars).");
+
 /**
  * Raw shape — MCP requires a bare ZodObject (no .refine) so it can expose `.shape`
  * to build the JSON schema. Cross-field validation is enforced in the handler.
@@ -40,6 +45,11 @@ export const getPortfolioSummaryInput = z.object({
     .optional()
     .describe(
       "TRON mainnet address. When provided alongside a single `wallet`, TRX + TRC-20 balances and TRON staking are folded into the same portfolio total (`breakdown.tron`, `tronUsd`, `tronStakingUsd`). Multi-wallet mode + tronAddress is ambiguous and throws — call once per EVM wallet in that case."
+    ),
+  solanaAddress: solanaAddressSchema
+    .optional()
+    .describe(
+      "Solana mainnet address (base58, 43 or 44 chars). When provided, SOL + enumerated SPL token balances are folded into the same portfolio total (`breakdown.solana`, `solanaUsd`). Multi-wallet mode + solanaAddress is ambiguous and throws — call once per EVM wallet in that case. Requires SOLANA_RPC_URL or `solanaRpcUrl` user config (Helius recommended; public mainnet RPC is rate-limited)."
     ),
 });
 

@@ -2,6 +2,7 @@ import { isEvmChain } from "../../types/index.js";
 import type { AnyChain, SupportedChain } from "../../types/index.js";
 import { fetchEvmHistory } from "./evm.js";
 import { fetchTronHistory } from "./tron.js";
+import { fetchSolanaHistory } from "./solana.js";
 import { resolveSelectors } from "./decode.js";
 import {
   lookupHistoricalPrices,
@@ -45,18 +46,27 @@ export async function getTransactionHistory(
       ? Math.min(args.startTimestamp, endTs ?? nowSec)
       : undefined;
 
-  // Shape-match wallet against chain (walletSchema accepts both formats —
-  // the runtime check lives here, same pattern as get_token_balance).
-  const isTronWallet = wallet.startsWith("T");
+  // Shape-match wallet against chain. walletSchema accepts EVM 0x / TRON
+  // base58 (prefix T) / Solana base58 (43-44 chars, any prefix); the runtime
+  // check lives here, same pattern as get_token_balance.
+  const isEvmWallet = wallet.startsWith("0x");
+  const isTronWallet = /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(wallet);
+  const isSolanaWallet = !isEvmWallet && !isTronWallet; // leftover from regex
   const isTronChain = chain === "tron";
+  const isSolanaChain = chain === "solana";
   if (isTronWallet && !isTronChain) {
     throw new Error(
       `Wallet ${wallet} is a TRON address but chain is "${chain}". Pass chain: "tron".`
     );
   }
-  if (!isTronWallet && isTronChain) {
+  if (isSolanaWallet && !isSolanaChain) {
     throw new Error(
-      `Wallet ${wallet} is an EVM address but chain is "tron". Pass a TRON base58 address.`
+      `Wallet ${wallet} is a Solana address but chain is "${chain}". Pass chain: "solana".`
+    );
+  }
+  if (isEvmWallet && (isTronChain || isSolanaChain)) {
+    throw new Error(
+      `Wallet ${wallet} is an EVM address but chain is "${chain}". Pass a base58 non-EVM address for non-EVM chains.`
     );
   }
 
@@ -76,7 +86,7 @@ export async function getTransactionHistory(
     items = [...res.external, ...res.tokenTransfers, ...res.internal];
     truncated = res.truncated;
     errors.push(...res.errors);
-  } else {
+  } else if (chain === "tron") {
     // TRON. `includeInternal` is silently ignored (no first-class internal txs).
     const res = await fetchTronHistory({
       wallet,
@@ -84,6 +94,20 @@ export async function getTransactionHistory(
       includeTokenTransfers,
     });
     items = [...res.external, ...res.tokenTransfers];
+    truncated = res.truncated;
+    errors.push(...res.errors);
+  } else {
+    // Solana. Include flags are advisory — Solana classifies per-tx, not per-endpoint.
+    // `includeInternal` has no meaning here (no "internal" concept beyond CPI,
+    // which we already surface inside program_interaction via balance deltas).
+    const res = await fetchSolanaHistory({ wallet, limit });
+    items = res.items.filter((i) => {
+      if (i.type === "external") return includeExternal;
+      if (i.type === "token_transfer") return includeTokenTransfers;
+      // program_interaction and internal always surface (the user opted
+      // into solana history by calling with chain: "solana" at all).
+      return true;
+    });
     truncated = res.truncated;
     errors.push(...res.errors);
   }
@@ -126,11 +150,21 @@ export async function getTransactionHistory(
       if (item.valueNative !== "0") {
         priceRequests.push({ coinKey: nativeCoinKey(chain), timestamp: item.timestamp });
       }
-    } else {
+    } else if (item.type === "token_transfer") {
       priceRequests.push({
         coinKey: tokenCoinKey(chain, item.tokenAddress),
         timestamp: item.timestamp,
       });
+    } else {
+      // program_interaction (Solana): price every balance delta. SOL deltas
+      // use the native coin key; SPL deltas use the mint address.
+      for (const d of item.balanceDeltas) {
+        const coinKey =
+          d.token === "SOL"
+            ? nativeCoinKey(chain)
+            : tokenCoinKey(chain, d.token);
+        priceRequests.push({ coinKey, timestamp: item.timestamp });
+      }
     }
   }
 
@@ -149,13 +183,28 @@ export async function getTransactionHistory(
             priced += 1;
           }
         }
-      } else {
+      } else if (item.type === "token_transfer") {
         const p = getPrice(prices, tokenCoinKey(chain, item.tokenAddress), item.timestamp);
         if (p !== undefined) {
           const tokenAmt = Number(item.amountFormatted);
           if (Number.isFinite(tokenAmt)) {
             item.valueUsd = round2(tokenAmt * p);
             priced += 1;
+          }
+        }
+      } else {
+        // program_interaction: price each delta. amountFormatted is signed
+        // ("+200" or "-1.5"); Number() parses both.
+        for (const d of item.balanceDeltas) {
+          const coinKey =
+            d.token === "SOL" ? nativeCoinKey(chain) : tokenCoinKey(chain, d.token);
+          const p = getPrice(prices, coinKey, item.timestamp);
+          if (p !== undefined) {
+            const amt = Number(d.amountFormatted);
+            if (Number.isFinite(amt)) {
+              d.valueUsd = round2(amt * p);
+              priced += 1;
+            }
           }
         }
       }

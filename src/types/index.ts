@@ -22,9 +22,12 @@ export const SUPPORTED_CHAINS: readonly SupportedChain[] = [
 ] as const;
 
 /** Non-EVM chains. Kept as its own union so EVM-only tables keep their type. */
-export type SupportedNonEvmChain = "tron";
+export type SupportedNonEvmChain = "tron" | "solana";
 
-export const SUPPORTED_NON_EVM_CHAINS: readonly SupportedNonEvmChain[] = ["tron"] as const;
+export const SUPPORTED_NON_EVM_CHAINS: readonly SupportedNonEvmChain[] = [
+  "tron",
+  "solana",
+] as const;
 
 /** Any chain the server knows about — EVM or non-EVM. */
 export type AnyChain = SupportedChain | SupportedNonEvmChain;
@@ -115,6 +118,13 @@ export interface PortfolioCoverage {
    * getReward/account outage doesn't mask that balances loaded fine.
    */
   tronStaking?: CoverageStatus;
+  /**
+   * Solana balance fetch coverage (SOL + SPL). `covered:false, errored:false`
+   * means no Solana address was queried; errored:true means the Solana RPC
+   * call failed and SOL/SPL are missing from totals. Staking coverage is
+   * deferred to Phase 2.
+   */
+  solana?: CoverageStatus;
   /** Number of token balances whose USD valuation could not be resolved. */
   unpricedAssets: number;
 }
@@ -277,6 +287,37 @@ export interface TronBalance {
   valueUsd?: number;
   priceUsd?: number;
   priceMissing?: boolean;
+}
+
+/**
+ * Solana balance shape — a parallel to TronBalance for SOL + SPL tokens.
+ * `token` is a base58 SPL mint address (~32-44 chars), or "native" for SOL.
+ * SPL balances come from Associated Token Accounts but we surface them by
+ * mint; the ATA is an implementation detail the caller shouldn't care about.
+ */
+export interface SolanaBalance {
+  chain: "solana";
+  /** Base58 SPL mint address, or "native" for SOL. */
+  token: string;
+  symbol: string;
+  decimals: number;
+  amount: string;
+  formatted: string;
+  valueUsd?: number;
+  priceUsd?: number;
+  priceMissing?: boolean;
+}
+
+/**
+ * Solana slice of a portfolio summary. Parallel to TronPortfolioSlice.
+ * Phase 1 does not enumerate native validator staking; defer to Phase 2.
+ */
+export interface SolanaPortfolioSlice {
+  /** Base58 Solana address the balances were resolved for. */
+  address: string;
+  native: SolanaBalance[];
+  spl: SolanaBalance[];
+  walletBalancesUsd: number;
 }
 
 /**
@@ -478,6 +519,12 @@ export interface PortfolioSummary {
    * staking was fetched successfully.
    */
   tronStakingUsd?: number;
+  /**
+   * Solana totals folded into the same aggregate as EVM/TRON. Present when
+   * the caller passed a `solanaAddress`. Phase 1 covers balances only
+   * (SOL native + SPL via ATAs); staking lands in Phase 2.
+   */
+  solanaUsd?: number;
   breakdown: {
     native: TokenAmount[];
     erc20: TokenAmount[];
@@ -486,6 +533,8 @@ export interface PortfolioSummary {
     staking: StakingPosition[];
     /** TRON slice — absent when no TRON address was queried. */
     tron?: TronPortfolioSlice;
+    /** Solana slice — absent when no Solana address was queried. */
+    solana?: SolanaPortfolioSlice;
   };
   coverage: PortfolioCoverage;
 }
@@ -690,6 +739,15 @@ export interface UserConfig {
    * calls to ~15 req/min, which is too tight for portfolio fan-out.
    */
   tronApiKey?: string;
+  /**
+   * Solana mainnet RPC URL. Paste the full URL from your provider (Helius,
+   * QuickNode, Alchemy Solana, Triton, etc.) — most include the API key in
+   * the URL (e.g. `https://mainnet.helius-rpc.com/?api-key=KEY`). The public
+   * mainnet endpoint is rate-limited and unreliable for production use;
+   * configuring a provider is strongly recommended. Env var `SOLANA_RPC_URL`
+   * takes priority over this field.
+   */
+  solanaRpcUrl?: string;
   walletConnect?: {
     projectId?: string;
     /** Topic of the active WC session (so we can resume after restart). */

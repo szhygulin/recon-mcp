@@ -11,6 +11,8 @@ import type { AnyChain } from "../../types/index.js";
 const walletSchema = z.union([
   z.string().regex(/^0x[a-fA-F0-9]{40}$/),
   z.string().regex(/^T[1-9A-HJ-NP-Za-km-z]{33}$/),
+  // Solana base58 pubkey, 43–44 chars.
+  z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{43,44}$/),
 ]);
 
 const chainEnum = z.enum(ALL_CHAINS as unknown as [string, ...string[]]);
@@ -38,7 +40,11 @@ export const getTransactionHistoryInput = z.object({
 
 export type GetTransactionHistoryArgs = z.infer<typeof getTransactionHistoryInput>;
 
-export type HistoryItemType = "external" | "token_transfer" | "internal";
+export type HistoryItemType =
+  | "external"
+  | "token_transfer"
+  | "internal"
+  | "program_interaction";
 
 interface HistoryItemBase {
   type: HistoryItemType;
@@ -76,10 +82,40 @@ export interface InternalHistoryItem extends HistoryItemBase {
   traceId?: string;
 }
 
+/**
+ * Solana program interaction — emitted when a tx calls a non-native program
+ * (Jupiter swap, Marinade stake, Raydium/Orca swap, or any unknown program).
+ * Rather than parse per-protocol IDLs (brittle across upgrades), the history
+ * module derives a balance-delta summary: for each token the wallet held,
+ * what was the net change across the tx? The result is robust to IDL
+ * version drift and answers "what happened to my wallet?" directly.
+ *
+ * `from` is the wallet being queried; `to` is the program ID. `hash` is the
+ * signature. `balanceDeltas` lists every non-zero delta observed for the
+ * wallet's accounts in the tx, keyed by token (SPL mint address or "SOL").
+ */
+export interface ProgramInteractionHistoryItem extends HistoryItemBase {
+  type: "program_interaction";
+  programId: string;
+  programName?: string;
+  programKind?: string;
+  balanceDeltas: Array<{
+    token: string;
+    symbol?: string;
+    decimals?: number;
+    /** Signed integer amount as a decimal string. Negative = out, positive = in. */
+    amount: string;
+    /** Human-formatted signed amount (e.g. "-1.5" or "+200"). */
+    amountFormatted: string;
+    valueUsd?: number;
+  }>;
+}
+
 export type HistoryItem =
   | ExternalHistoryItem
   | TokenTransferHistoryItem
-  | InternalHistoryItem;
+  | InternalHistoryItem
+  | ProgramInteractionHistoryItem;
 
 export interface HistoryResponse {
   chain: AnyChain;

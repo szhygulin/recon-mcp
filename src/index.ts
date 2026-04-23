@@ -488,6 +488,17 @@ async function main() {
         "  and pending unfreezes — via `get_tron_staking` or folded into",
         "  `get_portfolio_summary` when a `tronAddress` is passed. TRON has no",
         "  lending/LP coverage in this server (not deployed there).",
+        "- their Solana balances (SOL + SPL tokens — USDC, USDT, JUP, BONK, JTO,",
+        "  mSOL, jitoSOL — via Associated Token Accounts) when the user supplies a",
+        "  base58 address (43-44 chars, no prefix) via the `solanaAddress` arg on",
+        "  `get_portfolio_summary` or the `chain: \"solana\"` branch of `get_token_balance`.",
+        "  Transaction history on Solana is supported via `get_transaction_history`",
+        "  with `chain: \"solana\"` — native SOL transfers and SPL transfers get specific",
+        "  items; Jupiter swaps, Marinade/Jito liquid staking, Raydium/Orca swaps, and",
+        "  native validator staking surface as `program_interaction` items with",
+        "  balance-delta summaries. Solana signing (send, stake, swap) lands in a",
+        "  follow-up phase — read-only is the current coverage. Requires",
+        "  SOLANA_RPC_URL env var or `solanaRpcUrl` in user config (Helius recommended).",
         "- portfolio value, cross-chain aggregation, health-factor / liquidation risk",
         "- executing on-chain actions: supply, borrow, repay, withdraw, stake, unstake,",
         "  send ETH/tokens, swap, bridge",
@@ -790,7 +801,7 @@ async function main() {
     "get_portfolio_summary",
     {
       description:
-        "One-shot cross-chain portfolio aggregation for one or more wallets. Fans out across Ethereum/Arbitrum/Polygon/Base (unless `chains` narrows it) and assembles: native ETH/MATIC balances, top ERC-20 holdings, Aave V3 and Compound V3 lending positions, Uniswap V3 LP positions, and Lido/EigenLayer staking — each valued in USD via DefiLlama. Pass `tronAddress` (base58, prefix T) alongside a single `wallet` to fold TRX + TRC-20 balances plus TRON staking into the same totals; `breakdown.tron` holds the TRON slice, `tronUsd` the subtotal, and `tronStakingUsd` the staking portion. Returns a `totalUsd`, a `breakdown` by category and by chain, and the raw per-protocol position arrays. Default tool for 'what's in my portfolio?' / 'total value' questions; prefer it over calling each per-protocol reader separately.",
+        "One-shot cross-chain portfolio aggregation for one or more wallets. Fans out across Ethereum/Arbitrum/Polygon/Base/Optimism (unless `chains` narrows it) and assembles: native ETH/MATIC balances, top ERC-20 holdings, Aave V3 and Compound V3 lending positions, Uniswap V3 LP positions, and Lido/EigenLayer staking — each valued in USD via DefiLlama. Pass `tronAddress` (base58, prefix T) alongside a single `wallet` to fold TRX + TRC-20 balances plus TRON staking into the same totals; `breakdown.tron` holds the TRON slice, `tronUsd` the subtotal, and `tronStakingUsd` the staking portion. Pass `solanaAddress` (base58, 43-44 chars) to fold SOL + SPL token balances into the totals; `breakdown.solana` holds the Solana slice and `solanaUsd` the subtotal (Solana staking lands in a follow-up phase). Returns a `totalUsd`, a `breakdown` by category and by chain, and the raw per-protocol position arrays. Default tool for 'what's in my portfolio?' / 'total value' questions; prefer it over calling each per-protocol reader separately.",
       inputSchema: getPortfolioSummaryInput.shape,
     },
     handler(getPortfolioSummary)
@@ -800,7 +811,7 @@ async function main() {
     "get_transaction_history",
     {
       description:
-        "Fetch a wallet's recent on-chain transaction history on a single chain, merged across external (user-initiated) txs, ERC-20/TRC-20 token transfers, and internal (contract-initiated) txs. Results are sorted newest-first, capped at `limit` (default 25, max 50), and annotated with decoded method names (via 4byte.directory) and historical USD values at the time of each tx (via DefiLlama). Supports Ethereum/Arbitrum/Polygon/Base via Etherscan and TRON via TronGrid. TRON does not expose internal txs, so `includeInternal` is silently ignored there. Use this to answer 'what did I do last week?', 'show me my recent swaps', or 'did I already approve X?' without the user pasting tx hashes. Read-only — no signing, no broadcast.",
+        "Fetch a wallet's recent on-chain transaction history on a single chain, merged across external (user-initiated) txs, ERC-20/TRC-20 token transfers, and internal (contract-initiated) txs. Results are sorted newest-first, capped at `limit` (default 25, max 50), and annotated with decoded method names (via 4byte.directory) and historical USD values at the time of each tx (via DefiLlama). Supports Ethereum/Arbitrum/Polygon/Base/Optimism via Etherscan, TRON via TronGrid, and Solana via the configured Solana RPC. On Solana, results include a fourth item type `program_interaction` for DeFi calls (Jupiter swaps, Marinade/Jito liquid staking, Raydium/Orca swaps, native validator staking, or any unknown program) with balance-delta summaries showing net SOL + SPL changes for the wallet across the tx — more useful than raw instruction data for 'what happened to my wallet?'. `includeInternal` has no meaning for TRON (silently ignored) or Solana (doesn't have an 'internal' concept — CPI effects are captured inside program_interaction deltas). Use this to answer 'what did I do last week?', 'show me my recent swaps', or 'did I already approve X?' without the user pasting tx hashes. Read-only — no signing, no broadcast.",
       inputSchema: getTransactionHistoryInput.shape,
     },
     handler(getTransactionHistory)
@@ -1076,7 +1087,7 @@ async function main() {
     "get_token_balance",
     {
       description:
-        "Fetch a wallet's balance of any ERC-20 token or the chain's native coin. Pass `token: \"native\"` for ETH (or chain-native asset) or an ERC-20 contract address. Returns amount, decimals, symbol, and USD value. For TRON, pass `chain: \"tron\"` with a base58 wallet (prefix T) and either `token: \"native\"` for TRX or a base58 TRC-20 address; returns a TronBalance (same fields, base58 token id).",
+        "Fetch a wallet's balance of any ERC-20 token or the chain's native coin. Pass `token: \"native\"` for ETH (or chain-native asset) or an ERC-20 contract address. Returns amount, decimals, symbol, and USD value. For TRON, pass `chain: \"tron\"` with a base58 wallet (prefix T) and either `token: \"native\"` for TRX or a base58 TRC-20 address; returns a TronBalance (same fields, base58 token id). For Solana, pass `chain: \"solana\"` with a base58 wallet (43-44 chars) and either `token: \"native\"` for SOL or an SPL mint address; returns a SolanaBalance (same fields, base58 mint).",
       inputSchema: getTokenBalanceInput.shape,
     },
     handler(getTokenBalance)

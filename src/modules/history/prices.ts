@@ -25,6 +25,7 @@ const NATIVE_COIN_KEY: Record<AnyChain, string> = {
   base: "coingecko:ethereum",
   optimism: "coingecko:ethereum",
   tron: "coingecko:tron",
+  solana: "coingecko:solana",
 };
 
 const LLAMA_CHAIN: Record<AnyChain, string> = {
@@ -34,6 +35,7 @@ const LLAMA_CHAIN: Record<AnyChain, string> = {
   base: "base",
   optimism: "optimism",
   tron: "tron",
+  solana: "solana",
 };
 
 export function nativeCoinKey(chain: AnyChain): string {

@@ -9,12 +9,14 @@ import { getCompoundPositions } from "../compound/index.js";
 import { getMorphoPositions } from "../morpho/index.js";
 import { getTronBalances } from "../tron/balances.js";
 import { getTronStaking } from "../tron/staking.js";
+import { getSolanaBalances } from "../solana/balances.js";
 import type { GetPortfolioSummaryArgs } from "./schemas.js";
 import type {
   LendingPositionUnion,
   MultiWalletPortfolioSummary,
   PortfolioCoverage,
   PortfolioSummary,
+  SolanaPortfolioSlice,
   SupportedChain,
   TokenAmount,
   TronPortfolioSlice,
@@ -93,18 +95,24 @@ export async function getPortfolioSummary(
     : [];
 
   const tronAddress = args.tronAddress;
+  const solanaAddress = args.solanaAddress;
 
   // Branch: single wallet returns the flat summary; multi-wallet aggregates.
-  // TRON is only folded into the single-wallet summary — a multi-wallet view
-  // with a single TRON address would be ambiguous (which EVM wallet does it
-  // "belong to"?), so we require the caller to use single-wallet mode when
-  // pairing with a TRON address.
+  // TRON and Solana are only folded into the single-wallet summary — a
+  // multi-wallet view with a single non-EVM address would be ambiguous
+  // ("which EVM wallet does it belong to?"), so the caller must use
+  // single-wallet mode when pairing with a non-EVM address.
   if (wallets.length === 1) {
-    return buildWalletSummary(wallets[0], chains, tronAddress);
+    return buildWalletSummary(wallets[0], chains, tronAddress, solanaAddress);
   }
   if (tronAddress) {
     throw new Error(
       "`tronAddress` can only be combined with a single EVM `wallet`. For multi-wallet portfolios, call `get_portfolio_summary` once per EVM wallet."
+    );
+  }
+  if (solanaAddress) {
+    throw new Error(
+      "`solanaAddress` can only be combined with a single EVM `wallet`. For multi-wallet portfolios, call `get_portfolio_summary` once per EVM wallet."
     );
   }
 
@@ -161,7 +169,8 @@ function mergeCoverage(entries: { covered: boolean; errored?: boolean; note?: st
 async function buildWalletSummary(
   wallet: `0x${string}`,
   chains: SupportedChain[],
-  tronAddress?: string
+  tronAddress?: string,
+  solanaAddress?: string
 ): Promise<PortfolioSummary> {
   // Each subquery is independent — one failing shouldn't kill the summary. We swap
   // Promise.all for per-task catchers that return empty payloads on error, so a flaky
@@ -181,6 +190,7 @@ async function buildWalletSummary(
     staking: false,
     tron: false,
     tronStaking: false,
+    solana: false,
   };
   const [
     nativeAmounts,
@@ -192,6 +202,7 @@ async function buildWalletSummary(
     staking,
     tronSlice,
     tronStakingSlice,
+    solanaSlice,
   ] = await Promise.all([
       Promise.all(
         chains.map((c) =>
@@ -257,6 +268,14 @@ async function buildWalletSummary(
             return null as TronStakingSlice | null;
           })
         : (Promise.resolve(null) as Promise<TronStakingSlice | null>),
+      // Solana reads are only attempted when the caller passed a solanaAddress.
+      // Same "not attempted" semantics as TRON: null → coverage.solana absent.
+      solanaAddress
+        ? getSolanaBalances(solanaAddress).catch(() => {
+            errors.solana = true;
+            return null as SolanaPortfolioSlice | null;
+          })
+        : (Promise.resolve(null) as Promise<SolanaPortfolioSlice | null>),
     ]);
   const morphoPositions = morphoByChain.flatMap((r) => r.positions);
 
@@ -274,8 +293,11 @@ async function buildWalletSummary(
 
   const tronBalancesUsd = tronSlice?.walletBalancesUsd ?? 0;
   const tronStakingUsd = tronStakingSlice?.totalStakedUsd ?? 0;
+  const solanaBalancesUsd = solanaSlice?.walletBalancesUsd ?? 0;
   const walletBalancesUsd = round(
-    [...native, ...erc20].reduce((sum, t) => sum + (t.valueUsd ?? 0), 0) + tronBalancesUsd,
+    [...native, ...erc20].reduce((sum, t) => sum + (t.valueUsd ?? 0), 0) +
+      tronBalancesUsd +
+      solanaBalancesUsd,
     2
   );
   const lendingNetUsd = round(
@@ -287,6 +309,10 @@ async function buildWalletSummary(
     staking.positions.reduce((sum, p) => sum + (p.stakedAmount.valueUsd ?? 0), 0),
     2
   );
+  // totalUsd folds every accounted-for slice: EVM balances + TRON balances +
+  // Solana balances are already rolled into walletBalancesUsd; TRON staking
+  // is surfaced separately (Phase 2 for Solana staking). EVM-only slices
+  // (lending/LP/staking) are added here.
   const totalUsd = round(
     walletBalancesUsd + lendingNetUsd + lpUsd + stakingUsd + tronStakingUsd,
     2
@@ -309,8 +335,13 @@ async function buildWalletSummary(
   const tronUnpriced = tronSlice
     ? [...tronSlice.native, ...tronSlice.trc20].filter((t) => t.priceMissing).length
     : 0;
+  const solanaUnpriced = solanaSlice
+    ? [...solanaSlice.native, ...solanaSlice.spl].filter((t) => t.priceMissing).length
+    : 0;
   const unpricedAssets =
-    [...native, ...erc20].filter((t) => t.priceMissing).length + tronUnpriced;
+    [...native, ...erc20].filter((t) => t.priceMissing).length +
+    tronUnpriced +
+    solanaUnpriced;
   const coverage: PortfolioCoverage = {
     aave: { covered: !errors.aave, ...(errors.aave ? { errored: true, note: "Aave fetch failed — positions not included in totals." } : {}) },
     compound: { covered: !errors.compound, ...(errors.compound ? { errored: true, note: "Compound V3 fetch failed on at least one market — some positions may be missing from totals." } : {}) },
@@ -324,6 +355,13 @@ async function buildWalletSummary(
             : { covered: true },
           tronStaking: errors.tronStaking
             ? { covered: false, errored: true, note: "TRON staking fetch failed (TronGrid getReward/accounts) — frozen + rewards not included in totals." }
+            : { covered: true },
+        }
+      : {}),
+    ...(solanaAddress
+      ? {
+          solana: errors.solana
+            ? { covered: false, errored: true, note: "Solana balance fetch failed — SOL/SPL not included in totals. Check SOLANA_RPC_URL or the solanaRpcUrl config." }
             : { covered: true },
         }
       : {}),
@@ -361,6 +399,7 @@ async function buildWalletSummary(
     perChain,
     ...(tronBreakdown ? { tronUsd: tronUsdTotal } : {}),
     ...(tronStakingSlice ? { tronStakingUsd: round(tronStakingUsd, 2) } : {}),
+    ...(solanaSlice ? { solanaUsd: round(solanaBalancesUsd, 2) } : {}),
     breakdown: {
       native,
       erc20,
@@ -368,6 +407,7 @@ async function buildWalletSummary(
       lp: lp.positions,
       staking: staking.positions,
       ...(tronBreakdown ? { tron: tronBreakdown } : {}),
+      ...(solanaSlice ? { solana: solanaSlice } : {}),
     },
     coverage,
   };

@@ -55,7 +55,7 @@ export class RpcConfigError extends Error {
  * etc.) can opt out with VAULTPILOT_ALLOW_INSECURE_RPC=1 (legacy alias
  * RECON_ALLOW_INSECURE_RPC is still honored for one release).
  */
-export function validateRpcUrl(chain: SupportedChain, url: string): void {
+export function validateRpcUrl(chainLabel: string, url: string): void {
   if (
     process.env.VAULTPILOT_ALLOW_INSECURE_RPC === "1" ||
     process.env.RECON_ALLOW_INSECURE_RPC === "1"
@@ -70,12 +70,12 @@ export function validateRpcUrl(chain: SupportedChain, url: string): void {
     // API key in the path (e.g. .../v3/<key>). A malformed URL may still carry
     // one, and error messages end up in logs / stderr where keys leak.
     throw new RpcConfigError(
-      `RPC URL for ${chain} is not a valid URL. Fix it via \`vaultpilot-mcp-setup\` or the relevant env var.`
+      `RPC URL for ${chainLabel} is not a valid URL. Fix it via \`vaultpilot-mcp-setup\` or the relevant env var.`
     );
   }
   if (parsed.protocol !== "https:") {
     throw new RpcConfigError(
-      `RPC URL for ${chain} must use https (got ${parsed.protocol}//). ` +
+      `RPC URL for ${chainLabel} must use https (got ${parsed.protocol}//). ` +
         `Plaintext RPCs leak wallet addresses to anyone on the network path. ` +
         `Set VAULTPILOT_ALLOW_INSECURE_RPC=1 only if you're pointing at a local anvil/hardhat fork.`
     );
@@ -83,7 +83,7 @@ export function validateRpcUrl(chain: SupportedChain, url: string): void {
   const host = parsed.hostname.toLowerCase();
   if (isPrivateOrLoopbackHost(host)) {
     throw new RpcConfigError(
-      `RPC URL for ${chain} points at a private/loopback host (${host}). ` +
+      `RPC URL for ${chainLabel} points at a private/loopback host (${host}). ` +
         `This is almost always a mis-pasted config. ` +
         `Set VAULTPILOT_ALLOW_INSECURE_RPC=1 if you intend to hit a local fork.`
     );
@@ -188,5 +188,35 @@ function resolveRpcUrlRaw(chain: SupportedChain, userConfig: UserConfig | null):
   throw new RpcConfigError(
     `No RPC provider configured for chain "${chain}". ` +
       `Run \`vaultpilot-mcp-setup\` to configure Infura, Alchemy, or a custom endpoint.`
+  );
+}
+
+/**
+ * Resolve the Solana mainnet RPC URL. Priority:
+ *   1. SOLANA_RPC_URL env var (pastes cleanly from any provider's dashboard).
+ *   2. `solanaRpcUrl` in user config (set by `vaultpilot-mcp-setup`).
+ *   3. Throws. No silent fallback to public mainnet — Solana's public RPC
+ *      is rate-limited hard enough that defaulting there would set the user
+ *      up for intermittent failures they couldn't diagnose.
+ *
+ * The returned URL passes through `validateRpcUrl` (https-only, no loopback)
+ * before being handed to `Connection` — same safety bar as EVM RPCs.
+ */
+export function resolveSolanaRpcUrl(userConfig: UserConfig | null): string {
+  const envUrl = process.env.SOLANA_RPC_URL;
+  if (envUrl) {
+    validateRpcUrl("solana", envUrl);
+    return envUrl;
+  }
+  const configUrl = userConfig?.solanaRpcUrl;
+  if (configUrl) {
+    validateRpcUrl("solana", configUrl);
+    return configUrl;
+  }
+  throw new RpcConfigError(
+    `No Solana RPC configured. Set the SOLANA_RPC_URL env var to a provider URL ` +
+      `(Helius recommended — https://mainnet.helius-rpc.com/?api-key=YOUR_KEY) or run ` +
+      `\`vaultpilot-mcp-setup\` to stash it in ~/.vaultpilot-mcp/config.json. Solana's ` +
+      `public mainnet RPC is rate-limited and unreliable for production.`
   );
 }
