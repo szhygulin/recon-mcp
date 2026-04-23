@@ -131,6 +131,37 @@ export async function getSignClient(): Promise<InstanceType<typeof SignClient>> 
 }
 
 /**
+ * Error thrown from `requestSendTransaction` when the WC session can't be
+ * confirmed live before publishing the signing request. Issue #75: the old
+ * code called `c.request(...)` unconditionally, which hangs forever if the
+ * peer is gone (Ledger Live quit, session disconnected, device asleep long
+ * enough for the relay to drop the subscription). Now we probe first and
+ * fail fast with this structured error so the agent can ask the user to
+ * re-pair instead of blocking the chat indefinitely.
+ */
+export class WalletConnectSessionUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WalletConnectSessionUnavailableError";
+  }
+}
+
+/**
+ * Error thrown when the WC request itself exceeds the hard wall-clock
+ * timeout. Complements the pre-publish probe: even if the session is alive
+ * at probe time, the peer can go away between probe and `c.request`
+ * resolving, or Ledger Live can accept the request but sit on it without
+ * presenting it to the user. The hard timeout caps the worst case so a
+ * send_transaction eventually returns control to the agent.
+ */
+export class WalletConnectRequestTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WalletConnectRequestTimeoutError";
+  }
+}
+
+/**
  * Ping the peer over the relay with a short timeout. WC's ping resolves when
  * the peer acknowledges; it rejects promptly if the peer has no matching
  * session (explicit "dead"); and it hangs if the peer is offline (we surface
@@ -138,6 +169,19 @@ export async function getSignClient(): Promise<InstanceType<typeof SignClient>> 
  * from a confirmed rejection).
  */
 async function verifySessionAlive(
+  c: InstanceType<typeof SignClient>,
+  topic: string
+): Promise<"alive" | "dead" | "unknown"> {
+  return probeSessionLiveness(c, topic);
+}
+
+/**
+ * Exported variant of the probe for use by `requestSendTransaction` and
+ * test code. Same contract as the internal `verifySessionAlive`. 5s timeout
+ * matches what `getSignClient` uses at restore time, so both paths classify
+ * a slow peer the same way.
+ */
+export async function probeSessionLiveness(
   c: InstanceType<typeof SignClient>,
   topic: string
 ): Promise<"alive" | "dead" | "unknown"> {
@@ -255,6 +299,16 @@ export interface PinnedGasFields {
   gas: bigint;
 }
 
+/**
+ * Hard wall-clock cap on a WC `eth_sendTransaction` request. 120s is long
+ * enough that a user signing on-device (review the tx on the Ledger screen,
+ * press both buttons) has comfortable margin, but short enough that a dead
+ * peer doesn't stall the chat indefinitely. Complements the pre-publish
+ * liveness probe: the probe catches obviously-dead sessions in 5s, this
+ * catches the "peer accepted but never responded" tail.
+ */
+const WC_SEND_REQUEST_TIMEOUT_MS = 120_000;
+
 /** Send an `eth_sendTransaction` request. Ledger Live shows it, user signs on device, we get tx hash back. */
 export async function requestSendTransaction(
   tx: UnsignedTx,
@@ -262,10 +316,36 @@ export async function requestSendTransaction(
 ): Promise<`0x${string}`> {
   const c = await getSignClient();
   if (!currentSession) {
-    throw new Error(
-      "No active WalletConnect session. Pair Ledger Live first via `pair_ledger_live` or `vaultpilot-mcp-setup`."
+    throw new WalletConnectSessionUnavailableError(
+      "No active WalletConnect session. Pair Ledger Live first via `pair_ledger_live` or `vaultpilot-mcp-setup`.",
     );
   }
+
+  // Issue #75: probe session liveness BEFORE publishing. If the peer is
+  // gone (Ledger Live closed, session disconnected, device asleep long
+  // enough to drop the relay subscription), `c.request(...)` below would
+  // hang indefinitely and the agent would have no signal to surface. A
+  // 5s ping-probe catches the dead-session case in bounded time and
+  // raises an actionable structured error instead.
+  const liveness = await probeSessionLiveness(c, currentSession.topic);
+  if (liveness === "dead") {
+    throw new WalletConnectSessionUnavailableError(
+      "WalletConnect session has been ended by the peer (Ledger Live disconnected it, " +
+        "or the relay rejected the topic). Open Ledger Live → Settings → Connected " +
+        "Apps → VaultPilot and reconnect, or run `pair_ledger_live` to start a fresh " +
+        "session. The handle is still valid for the next 15 minutes, so you can retry " +
+        "send_transaction with the same handle once WC is reconnected.",
+    );
+  }
+  if (liveness === "unknown") {
+    throw new WalletConnectSessionUnavailableError(
+      "WalletConnect peer is not responding (Ledger Live may be closed, backgrounded, " +
+        "or on a device that's asleep). Open Ledger Live and make sure the VaultPilot " +
+        "WC session is active, then retry send_transaction with the same handle. If " +
+        "the session was dropped entirely, run `pair_ledger_live` to re-pair.",
+    );
+  }
+
   const chainId = CHAIN_IDS[tx.chain];
   const from = tx.from ?? (await getConnectedAccounts())[0];
   if (!from) throw new Error("Cannot determine sender address from WalletConnect session.");
@@ -298,7 +378,29 @@ export async function requestSendTransaction(
     },
   };
 
-  const hash = (await c.request(request)) as `0x${string}`;
+  // Hard wall-clock cap so even if the peer accepts the request but never
+  // responds (common failure mode when Ledger Live is backgrounded mid-sign),
+  // the tool eventually surfaces control back to the agent. Issue #75.
+  let timedOut = false;
+  const hash = await Promise.race([
+    c.request(request) as Promise<`0x${string}`>,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => {
+        timedOut = true;
+        reject(
+          new WalletConnectRequestTimeoutError(
+            `WalletConnect signing request did not complete within ${WC_SEND_REQUEST_TIMEOUT_MS / 1000}s. ` +
+              "The peer may be unresponsive or the user may have walked away from the Ledger. " +
+              "The handle is still valid for retry (15-minute TTL from prepare time).",
+          ),
+        );
+      }, WC_SEND_REQUEST_TIMEOUT_MS),
+    ),
+  ]).catch((e: unknown) => {
+    if (timedOut) throw e;
+    // Any other `c.request` rejection surfaces as-is.
+    throw e;
+  });
   return hash;
 }
 
