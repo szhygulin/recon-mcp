@@ -847,66 +847,255 @@ function renderSolanaSplVerificationBlock(tx: UnsignedSolanaTx): string {
 
 /**
  * Per-call agent-task directive for Solana prepare results. Mirrors the EVM
- * pattern: the server authors the exact shape the agent's user-facing reply
- * must take, so a narrowly-compromised agent can't silently strip the
- * Message Hash or the blind-sign warning. Native sends skip the hash
- * rendering (nothing to match); SPL sends force the agent to relay the
- * `**\`hash\`**` wrapper literally so the hash renders with bold+code
- * contrast in every client (verified in live runs that plain backticks
- * blended into prose).
+ * `renderPreviewVerifyAgentTaskBlock` shape: two mandatory integrity checks
+ * (instruction-decode, and — for blind-sign SPL — pair-consistency on the
+ * Ledger Message Hash) plus an optional user-prompted second-LLM check.
+ *
+ * Solana has no `preview_send` step (the message bytes + blockhash are
+ * already pinned at prepare time), so all checks run in the prepare agent-
+ * task block rather than a later preview block. Native SOL sends drop the
+ * pair-consistency check — SystemProgram.Transfer clear-signs on-device so
+ * the user already sees decoded fields; no hash-match path fires.
  */
 export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
-  if (tx.action === "native_send") {
-    return [
-      "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
-      "Produce a COMPACT bullet summary of the prepared native SOL send. Do",
-      "NOT relay the VERIFY-BEFORE-SIGNING block verbatim. Required shape:",
-      "  - Headline: \"Prepared native SOL send — <amount> SOL to <short addr>\"",
-      "  - From: <from address>",
-      "  - To: <to address>",
-      "  - Amount: <human SOL amount>",
-      "  - Fee: <fee in SOL>",
-      "End with ONE line: \"Reply 'send' to forward to the Ledger — the",
-      "Solana app will clear-sign (shows amount + recipient on-device).\"",
-      "No Message Hash is shown for native sends; do NOT fabricate one.",
-    ].join("\n");
-  }
-  const ledgerHash = solanaLedgerMessageHash(tx.messageBase64);
-  return [
-    "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
-    "Produce a COMPACT bullet summary of the prepared SPL token send. Do",
-    "NOT relay the VERIFY-BEFORE-SIGNING block verbatim. Required shape:",
-    "  - Headline: \"Prepared SPL send — <amount> <symbol> to <short addr>\"",
-    "  - From: <from address>",
-    "  - To: <to address>",
-    "  - Mint: <mint address> (<symbol if known>)",
-    "  - Amount: <human amount + symbol>",
-    "  - Rent: <rent in SOL if ATA creation, else omit the bullet>",
-    "  - Fee: <fee in SOL>",
+  const isSpl = tx.action === "spl_send";
+  const ledgerHash = isSpl ? solanaLedgerMessageHash(tx.messageBase64) : null;
+
+  const checksPayload = {
+    instructionDecode: {
+      autoRun: true,
+      threat: "MCP-side Solana message tampering",
+      keywords: ["Solana", "tampering"],
+    },
+    ...(isSpl
+      ? {
+          pairConsistencyLedgerHash: {
+            autoRun: true,
+            threat: "MCP signing different bytes than it displayed",
+            keywords: ["displayed"],
+          },
+        }
+      : {}),
+    secondLlm: {
+      autoRun: false,
+      threat: "coordinated agent compromise",
+      keywords: ["coordinated", "agent"],
+    },
+  };
+
+  const summaryShape = isSpl
+    ? [
+        "  - Headline: \"Prepared SPL send — <amount> <symbol> to <short addr>\"",
+        "  - From: <from address>",
+        "  - To: <to address>",
+        "  - Mint: <mint address> (<symbol if known>)",
+        "  - Amount: <human amount + symbol>",
+        "  - Rent: <rent in SOL if ATA creation, else omit the bullet>",
+        "  - Fee: <fee in SOL>",
+      ]
+    : [
+        "  - Headline: \"Prepared native SOL send — <amount> SOL to <short addr>\"",
+        "  - From: <from address>",
+        "  - To: <to address>",
+        "  - Amount: <human SOL amount>",
+        "  - Fee: <fee in SOL>",
+      ];
+
+  const lines = [
+    "[AGENT TASK — RUN THESE CHECKS NOW, DO NOT ASK THE USER]",
+    isSpl
+      ? "You MUST run BOTH of the following integrity checks UNPROMPTED and"
+      : "You MUST run the INSTRUCTION-DECODE integrity check UNPROMPTED and",
+    "report results in a prominent CHECKS PERFORMED block. The user already",
+    "consented to verification by calling `prepare_solana_*` — do NOT surface",
+    isSpl
+      ? "a yes/no menu for these two. They run every send, no exceptions."
+      : "a yes/no menu for this check. It runs every send, no exceptions.",
     "",
-    "THEN append EXACTLY this block to your reply — verbatim characters,",
-    "including the **`…`** wrappers (bold + single-backtick inline code).",
-    "Do NOT strip the Markdown — backticks alone render too subtly and",
-    "users have missed them under device-screen time pressure in live",
-    "runs. Do NOT paraphrase:",
+    "Step 1: Produce a COMPACT bullet summary of the prepared tx — do NOT",
+    "relay the VERIFY-BEFORE-SIGNING block verbatim. Required shape:",
+    ...summaryShape,
     "",
-    "    ═══════ LEDGER MESSAGE HASH — MATCH ON-DEVICE ═══════",
-    `    Hash: **\`${ledgerHash}\`**`,
-    "    Your Solana app will BLIND-SIGN (not clear-sign) — it shows the",
-    "    hash above under 'Message Hash'. If the device value differs,",
-    "    REJECT on the device. Any difference means tampering between this",
-    "    reply and the Ledger — do not approve.",
-    "    One-time setup: 'Allow blind signing' must be ON in the Solana",
-    "    app Settings, or the app refuses the tx.",
-    "    ════════════════════════════════════════════════════",
+    "Step 2: Run the checks below. Step 3: emit the CHECKS PERFORMED block",
+    "(template further down) with your verdicts. Step 4: end with the single-",
+    "line prompt specified at the bottom.",
     "",
-    "End with ONE line: \"Reply 'send' to forward to the Ledger — match",
-    "the hash above against your device screen before tapping Approve.\"",
+    "CHECK 1 — AGENT-SIDE INSTRUCTION DECODE",
+    "  Protects against: MCP-side Solana message tampering. If the server",
+    "  rewrote the message bytes between the compact summary and the bytes",
+    "  stored under the handle, your independent decode of `messageBase64`",
+    "  disagrees with your own summary.",
     "",
-    "Whenever you reference this hash elsewhere in your reply (headline,",
-    "post-broadcast summary, etc.) use the same `**\\`hash\\`**` wrapper —",
-    "inconsistent emphasis slows the user's visual match.",
-  ].join("\n");
+    "  Run this one-liner (splice the `messageBase64` value from the prepare",
+    "  result — it's the field of the same name on the JSON response):",
+    "",
+    "    node -e \"const {Message}=require('@solana/web3.js');",
+    "    const m=Message.from(Buffer.from('<messageBase64>','base64'));",
+    "    console.log(JSON.stringify({instructions:m.instructions.map(i=>({",
+    "    programId:m.accountKeys[i.programIdIndex].toBase58(),",
+    "    accounts:i.accounts.map(a=>m.accountKeys[a].toBase58()),",
+    "    dataHex:Buffer.from(i.data,'base64').toString('hex')})),",
+    "    blockhash:m.recentBlockhash}, null, 2))\"",
+    "",
+    "  What you should see (compare against your bullet summary above):",
+    isSpl
+      ? [
+          "    - For SPL send: one instruction with programId",
+          "      TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA (SPL Token Program),",
+          "      accounts [source_ata, mint, dest_ata, owner], dataHex starting",
+          "      with `0c` (tag 12 = TransferChecked), followed by u64le(amount)",
+          "      and u8(decimals). If ATA creation is included, there is also an",
+          "      instruction with programId",
+          "      ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL (Associated Token",
+          "      Account Program) — that's the recipient-ATA-creation bullet in",
+          "      your summary.",
+          "    - Priority fee: two ComputeBudget111111111111111111111111111111",
+          "      instructions may appear (setComputeUnitLimit / setComputeUnitPrice)",
+          "      — only present when the network was congested at prepare time.",
+        ].join("\n")
+      : [
+          "    - One instruction with programId 11111111111111111111111111111111",
+          "      (System Program), accounts [from, to], dataHex starting with",
+          "      `02000000` (u32le tag 2 = Transfer), followed by u64le(lamports).",
+          "    - Priority fee: two ComputeBudget111111111111111111111111111111",
+          "      instructions may appear (setComputeUnitLimit / setComputeUnitPrice)",
+          "      — only present when the network was congested at prepare time.",
+        ].join("\n"),
+    "",
+    "  If the decoded programId / accounts / amount disagree with your",
+    "  bullet summary, mark ✗ MISMATCH. If the decode throws or you can't",
+    "  parse it, mark ⚠ DECODE UNAVAILABLE and tell the user the SECOND-LLM",
+    "  check (option 2) is the remaining gap-closer. Report ✓ MATCH only",
+    "  when the decoded instructions line up with your summary.",
+    "",
+    ...(isSpl
+      ? [
+          "CHECK 2 — PAIR-CONSISTENCY LEDGER HASH",
+          "  Protects against: the server reporting messageBase64 M with",
+          "  ledgerHash=hash(Y) where Y≠M, then forwarding Y to the Ledger. The",
+          "  on-device match alone does NOT catch that (device sees hash(Y),",
+          "  chat sees hash(Y), they agree); only a local recompute of hash(M)",
+          "  from the stated messageBase64 catches the discrepancy.",
+          "",
+          "  Run this one-liner (splice the `messageBase64` from the prepare",
+          "  result):",
+          "",
+          "    node --input-type=module -e \"import bs58 from 'bs58';",
+          "    import {createHash} from 'crypto';",
+          "    console.log(bs58.encode(createHash('sha256').update(",
+          "    Buffer.from('<messageBase64>','base64')).digest()))\"",
+          "",
+          `  Compare the output to ${ledgerHash}. Report ✓ MATCH or ✗ MISMATCH.`,
+          "  If MATCH, the bytes the server plans to sign match the bytes it",
+          "  showed you AND the hash you'll match on-device is the genuine",
+          "  hash of those bytes.",
+          "",
+        ]
+      : []),
+    "CHECKS PAYLOAD (the threat taxonomy + required keywords the user-facing",
+    "block below MUST cover — paraphrase naturally but every listed keyword",
+    "must appear verbatim somewhere in the matching line):",
+    "",
+    "```json",
+    JSON.stringify(checksPayload, null, 2),
+    "```",
+    "",
+    "After the checks run, emit EXACTLY this block shape to the user — CAPS",
+    "headers, ✓/✗/⚠/⏸ symbols, the keywords above embedded in each threat",
+    "clause.",
+    "",
+    "NOTATION — READ THIS BEFORE COPYING THE BLOCK:",
+    "  Placeholders you REPLACE in your output:",
+    "    {✓|✗|⚠}            pick one symbol based on your verdict",
+    "    <one-line verdict> your own prose describing the result",
+    "  Literal characters you KEEP EXACTLY (Markdown rendering directives):",
+    "    `…`                base58 hash in single backticks → inline code",
+    "    **`…`**            bold + inline code (highest-contrast emphasis)",
+    "",
+    "    ═══════ CHECKS PERFORMED ═══════",
+    "    {✓|✗|⚠} INSTRUCTION DECODE — <one-line verdict>.",
+    "        (protects against MCP-side Solana tampering)",
+    ...(isSpl
+      ? [
+          "    {✓|✗} PAIR-CONSISTENCY LEDGER HASH — <one-line verdict>.",
+          "        (protects against MCP signing different bytes than it displayed)",
+        ]
+      : []),
+    "    □ SECOND-LLM CHECK — optional, available on request.",
+    "        (protects against a coordinated agent compromise)",
+    "    ────────────────────────────────",
+    "    NEXT ON-DEVICE — final check happens on your Ledger screen:",
+    ...(isSpl
+      ? [
+          "      • BLIND-SIGN (this tx — Solana app shows 'Message Hash'):",
+          `          check the value on-device is exactly **\`${ledgerHash}\`**.`,
+          "          Any difference → REJECT.",
+          "          Prerequisite: Allow blind signing must be ON in Solana app Settings.",
+        ]
+      : [
+          "      • CLEAR-SIGN (this tx: native SOL send — the Solana app shows",
+          "        amount + recipient on-device). Hash matching does NOT apply.",
+          "        Confirm the on-device values equal your compact summary",
+          "        above. Any difference → REJECT.",
+        ]),
+    "    ════════════════════════════════",
+    "",
+    ...(isSpl
+      ? [
+          "Render the Message Hash with BOTH bold AND single-backtick inline",
+          "code — i.e. `**\\`<hash>\\`**` — exactly as shown in the template",
+          "above. Backticks alone render too subtly in some clients; bold+code",
+          "reads with clear contrast everywhere. Do NOT strip either marker.",
+          "Whenever you reference the hash elsewhere (headline, post-broadcast",
+          "summary, etc.) use the same wrapper — inconsistent emphasis slows",
+          "the user's visual match.",
+          "",
+        ]
+      : [
+          "No hash is rendered for native SOL sends; the Solana app clear-signs",
+          "SystemProgram.Transfer and shows amount + recipient on-device, so",
+          "there is nothing for the user to match against. Do NOT fabricate",
+          "a hash for the on-device line.",
+          "",
+        ]),
+    "After the CHECKS PERFORMED block, append EXACTLY one line, no menu:",
+    "",
+    "    Want an independent second-LLM check? Reply (2). Otherwise reply 'send'.",
+    "",
+    "If ANY mandatory check fails (✗), LEAD your reply with a prominent",
+    '"✗ <CHECK NAME> FAILED — DO NOT SIGN." line on its own, BEFORE the',
+    "CHECKS PERFORMED block. The pass/fail is the news.",
+    "",
+    "SECOND-LLM CHECK — if the user replies (2):",
+    "  Call `get_verification_artifact({ handle: <handle> })` and relay ONLY",
+    "  the artifact's `pasteableBlock` field VERBATIM to the user — a single",
+    "  self-contained string with explicit START/END copy markers, instructions,",
+    "  and the embedded JSON payload. Do NOT also dump the full artifact JSON,",
+    "  do NOT wrap the block in your own commentary between the markers, do",
+    "  NOT reformat or translate any line. The user copies from the START",
+    "  marker to the END marker into a second, ideally different-provider LLM",
+    "  session — that session has no shared context with this one, so it",
+    "  decodes the bytes from scratch. Do NOT pre-decode the bytes yourself",
+    "  in the same reply. Before/after the pasteableBlock, remind the user to",
+    "  compare the second agent's plain-English description against what they",
+    isSpl
+      ? "  asked for and match the Message Hash inside the paste block against"
+      : "  asked for and confirm the amount/recipient match what the Solana app",
+    isSpl
+      ? "  the Ledger screen before approving."
+      : "  clear-signs on-device before approving.",
+    "",
+    "  This is the only check that survives a fully-coordinated agent-AND-MCP",
+    "  compromise.",
+    "",
+    "SEND-CALL CONTRACT — when the user replies \"send\" (after the mandatory",
+    "check(s) passed), call `send_transaction` with these args:",
+    "  - handle: <the handle from the prepare_solana_* result>",
+    "  - confirmed: true",
+    "Solana has no preview_send step (message bytes + blockhash are pinned",
+    "at prepare time), so only the two args above are needed.",
+  ];
+  return lines.join("\n");
 }
 
 export type { SupportedChain };

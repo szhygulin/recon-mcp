@@ -83,26 +83,39 @@ describe("renderSolanaVerificationBlock", () => {
 });
 
 describe("renderSolanaAgentTaskBlock", () => {
-  it("spl_send: forces the agent to render the **`hash`** block verbatim", () => {
+  it("spl_send: auto-runs CHECK 1 + CHECK 2, renders Message Hash in bold+code, gates send_transaction", () => {
     const tx = makeSolanaTx("spl_send");
     const expectedHash = solanaLedgerMessageHash(tx.messageBase64);
     const block = renderSolanaAgentTaskBlock(tx);
-    expect(block).toContain("DO NOT FORWARD THIS BLOCK");
-    expect(block).toContain("LEDGER MESSAGE HASH");
+    // Header tells agent to auto-run (no yes/no menu).
+    expect(block).toContain("RUN THESE CHECKS NOW");
+    // Both checks listed.
+    expect(block).toContain("CHECK 1 — AGENT-SIDE INSTRUCTION DECODE");
+    expect(block).toContain("CHECK 2 — PAIR-CONSISTENCY LEDGER HASH");
+    // Hash is spliced into the recompute target AND the on-device line.
+    expect(block).toContain(expectedHash);
     expect(block).toContain(`**\`${expectedHash}\`**`);
+    // Blind-sign prerequisite surfaced.
     expect(block).toContain("Allow blind signing");
+    // Second-LLM escape hatch documented.
+    expect(block).toContain("get_verification_artifact");
+    // Send-call contract spelled out (no previewToken for Solana).
+    expect(block).toContain("SEND-CALL CONTRACT");
+    expect(block).toContain("confirmed: true");
+    expect(block).not.toContain("previewToken");
   });
 
-  it("native_send: no hash-to-match block, no blind-sign-enable instruction", () => {
+  it("native_send: CHECK 1 only, no CHECK 2, clear-sign on-device branch", () => {
     const tx = makeSolanaTx("native_send");
     const hash = solanaLedgerMessageHash(tx.messageBase64);
     const block = renderSolanaAgentTaskBlock(tx);
-    expect(block).toContain("clear-sign");
-    // Must NOT contain the hash value itself — there's nothing to match.
-    // (The template does mention "Message Hash" textually, as an
-    // anti-hallucination reminder to the agent; that's fine.)
+    expect(block).toContain("CHECK 1 — AGENT-SIDE INSTRUCTION DECODE");
+    expect(block).not.toContain("CHECK 2 — PAIR-CONSISTENCY LEDGER HASH");
+    expect(block).toContain("CLEAR-SIGN");
+    // No hash to match against for native.
     expect(block).not.toContain(hash);
-    expect(block).not.toContain("MATCH ON-DEVICE");
     expect(block).not.toContain("Allow blind signing");
+    // But CHECK 1's decode recipe is still there.
+    expect(block).toContain("@solana/web3.js");
   });
 });
