@@ -134,6 +134,9 @@
     "typescript": "^5.6.0",
     "vitest": "^4.1.4"
   },
+  "overrides": {
+    "uuid": "^14.0.0"
+  },
   "engines": {
     "node": ">=18.17.0"
   }
