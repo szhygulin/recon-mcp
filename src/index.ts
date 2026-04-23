@@ -60,6 +60,7 @@ import {
   prepareLidoUnstake,
   prepareEigenLayerDeposit,
   prepareNativeSend,
+  prepareWethUnwrap,
   prepareTokenSend,
   previewSend,
   sendTransaction,
@@ -80,6 +81,7 @@ import {
   prepareLidoUnstakeInput,
   prepareEigenLayerDepositInput,
   prepareNativeSendInput,
+  prepareWethUnwrapInput,
   prepareTokenSendInput,
   previewSendInput,
   sendTransactionInput,
@@ -1234,6 +1236,16 @@ async function main() {
       inputSchema: prepareNativeSendInput.shape,
     },
     txHandler("prepare_native_send", prepareNativeSend)
+  );
+
+  server.registerTool(
+    "prepare_weth_unwrap",
+    {
+      description:
+        "Build an unsigned WETH → native ETH unwrap transaction via a direct `WETH.withdraw(uint256)` call on the canonical WETH9 contract for the target chain. Supported chains: ethereum, arbitrum, polygon, base, optimism. Pass an explicit decimal amount (e.g. `\"0.5\"`) or the literal `\"max\"` to unwrap the full WETH balance. WETH is always 18 decimals. No approval is required — the wallet burns its own balance and receives native ETH back in the same call; the call is cheaper than routing through a DEX/aggregator. Balance is checked pre-build and the call refuses with a clear message if the wallet is short, rather than letting the tx revert on-chain. For the symmetric wrap direction (native ETH → WETH), use `prepare_native_send` with the WETH contract as `to` — sending ETH to the WETH9 fallback triggers `deposit()` automatically.",
+      inputSchema: prepareWethUnwrapInput.shape,
+    },
+    txHandler("prepare_weth_unwrap", prepareWethUnwrap)
   );
 
   server.registerTool(

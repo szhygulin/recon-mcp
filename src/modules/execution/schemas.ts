@@ -88,6 +88,17 @@ export const prepareNativeSendInput = z.object({
     ),
 });
 
+export const prepareWethUnwrapInput = z.object({
+  wallet: walletSchema,
+  chain: chainEnum.default("ethereum"),
+  amount: z
+    .string()
+    .describe(
+      'Human-readable WETH amount, NOT raw wei. Example: "0.5" for 0.5 WETH. ' +
+        'Pass "max" to unwrap the full WETH balance. WETH is always 18 decimals on every supported chain.'
+    ),
+});
+
 export const prepareTokenSendInput = z.object({
   wallet: walletSchema,
   chain: chainEnum.default("ethereum"),
@@ -215,6 +226,7 @@ export type PrepareLidoStakeArgs = z.infer<typeof prepareLidoStakeInput>;
 export type PrepareLidoUnstakeArgs = z.infer<typeof prepareLidoUnstakeInput>;
 export type PrepareEigenLayerDepositArgs = z.infer<typeof prepareEigenLayerDepositInput>;
 export type PrepareNativeSendArgs = z.infer<typeof prepareNativeSendInput>;
+export type PrepareWethUnwrapArgs = z.infer<typeof prepareWethUnwrapInput>;
 export type PrepareTokenSendArgs = z.infer<typeof prepareTokenSendInput>;
 export type PreviewSendArgs = z.infer<typeof previewSendInput>;
 export type SendTransactionArgs = z.infer<typeof sendTransactionInput>;

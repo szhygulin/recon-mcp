@@ -44,6 +44,7 @@ import {
   buildLidoUnstake,
   buildEigenLayerDeposit,
 } from "../staking/actions.js";
+import { buildWethUnwrap } from "../weth/actions.js";
 import { getTokenPrice } from "../../data/prices.js";
 import type {
   PairLedgerTronArgs,
@@ -55,6 +56,7 @@ import type {
   PrepareLidoUnstakeArgs,
   PrepareEigenLayerDepositArgs,
   PrepareNativeSendArgs,
+  PrepareWethUnwrapArgs,
   PrepareTokenSendArgs,
   PreviewSendArgs,
   SendTransactionArgs,
@@ -301,6 +303,16 @@ export async function prepareNativeSend(args: PrepareNativeSendArgs): Promise<Un
     description: `Send ${args.amount} native coin to ${to} on ${chain}`,
     decoded: { functionName: "transfer", args: { to, amount: args.amount } },
   });
+}
+
+export async function prepareWethUnwrap(args: PrepareWethUnwrapArgs): Promise<UnsignedTx> {
+  return enrichTx(
+    await buildWethUnwrap({
+      wallet: args.wallet as `0x${string}`,
+      chain: args.chain as SupportedChain,
+      amount: args.amount,
+    }),
+  );
 }
 
 export async function prepareTokenSend(args: PrepareTokenSendArgs): Promise<UnsignedTx> {
