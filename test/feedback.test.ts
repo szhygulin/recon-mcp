@@ -202,6 +202,69 @@ describe("requestCapability (prefilled URL mode)", () => {
     expect(res.bodyTruncated).toBe(false);
   });
 
+  // Issue #89 — the prefilled URL blew past terminal URL-length limits on
+  // moderate bodies and stopped rendering as clickable; ghCommand gives the
+  // agent a shell snippet that bypasses the URL path entirely via HEREDOC.
+  it("returns a gh issue create shell snippet with the full body via HEREDOC (#89)", async () => {
+    const longBody = "Body line that needs to survive intact. ".repeat(100);
+    const res = (await requestCapability({
+      summary: "Long body that would blow past URL limits",
+      description: longBody,
+    })) as {
+      ghCommand: string;
+      body: string;
+      title: string;
+      labels: string[];
+      bodyTruncated: boolean;
+    };
+    expect(res.ghCommand).toMatch(/^gh issue create/);
+    expect(res.ghCommand).toContain("--repo szhygulin/vaultpilot-mcp");
+    // Title and labels are single-quoted shell args.
+    expect(res.ghCommand).toContain(`--title '${res.title}'`);
+    expect(res.ghCommand).toContain("--label 'agent-request'");
+    // Full body rides through HEREDOC — NOT URL-encoded, NOT truncated, even
+    // when the URL form had to truncate.
+    expect(res.body).toBe(longBody.trim() === longBody ? longBody : res.body);
+    expect(res.ghCommand).toContain(res.body);
+    // HEREDOC open + close markers with the chosen tag.
+    expect(res.ghCommand).toMatch(
+      /--body "\$\(cat <<'VAULTPILOT_FEEDBACK_EOF_[a-z0-9]+'/,
+    );
+    expect(res.ghCommand).toMatch(/\nVAULTPILOT_FEEDBACK_EOF_[a-z0-9]+\n\)"/);
+  });
+
+  it("single-quote-escapes titles containing apostrophes so the gh snippet remains valid shell (#89)", async () => {
+    // Common natural-language input — the naive `--title '...'` breaks on
+    // this; the shellSingleQuote helper is what makes it robust. Title is
+    // prefixed with `[agent-request] ` by requestCapability itself, so the
+    // apostrophe sits mid-string.
+    const res = (await requestCapability({
+      summary: "Claude's attempt to support a new protocol",
+      description: "Description sufficient to pass the zod min-length check.",
+    })) as { ghCommand: string; title: string };
+    // Embedded apostrophe escaped via the standard '\'' dance.
+    expect(res.ghCommand).toContain("Claude'\\''s");
+    // And the whole title is otherwise single-quoted — so the shell sees one
+    // continuous --title arg rather than fragmenting on the apostrophe.
+    expect(res.ghCommand).toContain(
+      "--title '[agent-request] Claude'\\''s attempt to support a new protocol'",
+    );
+  });
+
+  it("refuses to build a gh snippet when the body contains the HEREDOC terminator (#89 edge case)", async () => {
+    // Extremely unlikely from an honest agent, but ship a guard so we
+    // don't emit a snippet that would interpret part of the body as shell
+    // text. Matches the errOR-and-fallback posture already used for
+    // post-endpoint size caps.
+    await expect(
+      requestCapability({
+        summary: "Body collides with HEREDOC tag",
+        description:
+          "Pretend description that ends with the terminator:\nVAULTPILOT_FEEDBACK_EOF_7a3f9b",
+      }),
+    ).rejects.toThrow(/HEREDOC terminator/);
+  });
+
   it("propagates rate-limit rejection as a thrown error", async () => {
     // Seed an event "just now" so min-interval rejects the next call. The
     // persisted file is written by the first call; the second hits the cap.

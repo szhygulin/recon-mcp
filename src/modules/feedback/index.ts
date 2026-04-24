@@ -10,6 +10,14 @@ const MAX_POST_BODY_BYTES = 16_384;
 const MAX_PREFILLED_URL_BYTES = 7168;
 const TRUNCATION_MARKER =
   "\n\n_...(body truncated to fit in GitHub's prefilled-URL length limit — paste the full context into the issue after opening)_";
+/**
+ * HEREDOC terminator for the `ghCommand` shell snippet. Must be an unusual
+ * string that agent-supplied body content is vanishingly unlikely to contain.
+ * If a body ever does contain this literal line, `buildGhCommand` throws so
+ * the caller falls back to the URL path rather than shipping a broken shell
+ * snippet.
+ */
+const GH_HEREDOC_TAG = "VAULTPILOT_FEEDBACK_EOF_7a3f9b";
 
 /**
  * Neutralize GitHub @-mentions in agent-supplied strings before they enter the
@@ -65,17 +73,29 @@ export async function requestCapability(args: RequestCapabilityArgs) {
   }
 
   const { url: issueUrl, truncated } = buildPrefilledIssueUrl(payload);
+  const ghCommand = buildGhCommand(payload);
   return {
     status: "prefilled_url" as const,
     message:
-      "No data has been transmitted. Show this URL to the user — opening it prefills a GitHub issue on the vaultpilot-mcp repo; " +
-      "submission requires the user to click 'Submit new issue'." +
+      "No data has been transmitted. TWO submission paths — pick whichever suits the " +
+      "user's environment: " +
+      "(a) `ghCommand` — a ready-to-run `gh issue create` shell snippet. If the user " +
+      "has the GitHub CLI installed and authenticated (common for developer audiences, " +
+      "esp. Claude Code / Cursor users), run it via the Bash tool. The body is passed " +
+      "via HEREDOC so multi-KB descriptions work without URL-length limits or shell " +
+      "escaping. Returns the created issue URL on success. " +
+      "(b) `issueUrl` — a prefilled GitHub issue URL to render as a Markdown link; " +
+      "the user opens it in a browser and clicks 'Submit new issue'. No gh CLI " +
+      "required. Note: URLs over a few KB may not render as clickable in terminal " +
+      "chat clients, forcing copy/paste." +
       (truncated
-        ? " The issue body was truncated to fit GitHub's prefilled-URL length limit; tell the user to paste the full context into the issue before submitting."
+        ? " Only the URL body was truncated to fit GitHub's prefilled-URL length limit; ghCommand carries the full body and is preferred when available. Tell the user to paste the full context into the issue manually if they go with the URL path."
         : ""),
     issueUrl,
+    ghCommand,
     repo: `${REPO_OWNER}/${REPO_NAME}`,
     title,
+    body,
     labels,
     bodyTruncated: truncated,
     rateLimit: RATE_LIMITS,
@@ -122,6 +142,52 @@ function buildIssueBody(opts: {
     "._";
   lines.push("---", footer);
   return lines.join("\n");
+}
+
+/**
+ * Escape a string for use inside a POSIX shell single-quoted argument. The
+ * only char that can't appear inside `'...'` is `'` itself; the standard
+ * workaround ends the quoted run, emits an escaped literal quote, and starts
+ * a new quoted run: `can't` → `'can'\''t'`.
+ */
+function shellSingleQuote(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * Build a ready-to-run `gh issue create` shell snippet that ships the full
+ * issue body via HEREDOC. The HEREDOC form is chosen deliberately:
+ *
+ * - URL-encoded `--body` inherits the ~7 KB prefilled-URL limit (issue #89)
+ *   — the very limit this command is meant to bypass.
+ * - Single-quoted `--body '...'` fails on bodies containing single quotes
+ *   (easy to hit — e.g. "Claude's attempt to..."), forcing brittle escape
+ *   dance.
+ * - HEREDOC inside `"$(cat <<'TAG' ... TAG)"` passes the body bytes literally
+ *   through command substitution; no per-char escaping needed.
+ *
+ * Throws if the body contains the HEREDOC terminator as a standalone line,
+ * so the caller can fall back to the URL path instead of shipping a snippet
+ * that would interpret part of the body as shell text.
+ */
+function buildGhCommand(payload: IssuePayload): string {
+  const bodyLines = payload.body.split("\n");
+  for (const line of bodyLines) {
+    if (line.trim() === GH_HEREDOC_TAG) {
+      throw new Error(
+        `Body contains the HEREDOC terminator '${GH_HEREDOC_TAG}' as a standalone line; cannot safely embed in a gh issue create snippet. Fall back to the issueUrl path or trim the body.`,
+      );
+    }
+  }
+  const cmdHead = [
+    "gh issue create \\",
+    `  --repo ${REPO_OWNER}/${REPO_NAME} \\`,
+    `  --title ${shellSingleQuote(payload.title)} \\`,
+    `  --label ${shellSingleQuote(payload.labels.join(","))} \\`,
+    `  --body "$(cat <<'${GH_HEREDOC_TAG}'`,
+  ].join("\n");
+  const cmdTail = `${GH_HEREDOC_TAG}\n)"`;
+  return `${cmdHead}\n${payload.body}\n${cmdTail}`;
 }
 
 function buildPrefilledIssueUrl(payload: IssuePayload): { url: string; truncated: boolean } {
