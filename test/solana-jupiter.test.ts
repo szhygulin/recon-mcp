@@ -362,7 +362,11 @@ describe("renderSolanaAgentTaskBlock — jupiter_swap handling", () => {
     const block = renderSolanaAgentTaskBlock(tx);
     // Blind-sign branch on on-device line.
     expect(block).toContain("BLIND-SIGN");
-    expect(block).toContain("Jupiter routing");
+    // v1.6 Phase 2: "Jupiter routing" subtype label was dropped from the
+    // on-device line (uniform blind-sign message for all blind-sign
+    // actions) — the summary's "via Jupiter" headline bullet still
+    // identifies it as a swap.
+    expect(block).toContain("via Jupiter");
     // Hash spliced into the on-device line as a bare base58 value. The
     // Markdown emphasis wrappers (`**\`…\`**`) were dropped because they
     // leak through as literal characters in Claude Code's preformatted
@@ -375,8 +379,9 @@ describe("renderSolanaAgentTaskBlock — jupiter_swap handling", () => {
     expect(block).toContain("PAIR-CONSISTENCY LEDGER HASH");
     // Summary shape mentions Jupiter + route.
     expect(block).toContain("via Jupiter");
-    // DURABLE-NONCE MODE explainer (Jupiter uses nonceAdvance too).
-    expect(block).toContain("DURABLE-NONCE MODE");
+    // v1.6 Phase 2: DURABLE-NONCE MODE explainer compressed to an inline
+    // sentence — Jupiter uses nonceAdvance like the other blind-sign sends.
+    expect(block).toContain("durable-nonce-protected");
     expect(block).toContain("Nonce:");
   });
 });

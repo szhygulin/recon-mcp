@@ -1733,257 +1733,89 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
     `    })();"`,
   ];
 
+  // v1.6 Phase 2: compressed full-path template. Input-side prose reduced
+  // (threat-model rationale lives in SECURITY.md; historical context lives
+  // in git log/code comments; meta-formatting hints removed). Output-side
+  // CHECKS PERFORMED template reduced to structured terse lines; on-device
+  // hash still rendered on its own bare line. Security content (integrity
+  // checks themselves, fail-loud rule, second-LLM escape hatch, on-device
+  // match) retained verbatim.
+  const onDeviceLine = isBlindSign
+    ? `• BLIND-SIGN — Message Hash on-device MUST equal: ${ledgerHash}  (Allow blind signing must be ON in Solana app Settings; any difference → REJECT)`
+    : isNonceClose
+      ? "• CLEAR-SIGN — Solana app shows nonceAdvance + nonceWithdraw; confirm destination = your wallet, lamports = full balance. Any difference → REJECT."
+      : "• CLEAR-SIGN — Solana app shows amount + recipient on-device. Confirm fields match your summary. Any difference → REJECT.";
+  const pairConsistencyLine = needsPairConsistency
+    ? `  {✓|✗} PAIR-CONSISTENCY LEDGER HASH — <verdict>  (protects against MCP signing different bytes than displayed)\n      ⏱ Timings: <echo the timingsMs JSON from the script output — input-latency attribution>`
+    : null;
+  const nonceNote = hasAdvanceNonceIx
+    ? "This tx is durable-nonce-protected (ix[0] = nonceAdvance); no ~60s blockhash expiry."
+    : null;
+
   const lines = [
     "[AGENT TASK — RUN THESE CHECKS NOW, DO NOT ASK THE USER]",
     needsPairConsistency
-      ? "You MUST run BOTH of the following integrity checks UNPROMPTED and"
-      : "You MUST run the INSTRUCTION-DECODE integrity check UNPROMPTED and",
-    "report results in a prominent CHECKS PERFORMED block. The user already",
-    "consented to verification by calling `prepare_solana_*` — do NOT surface",
-    needsPairConsistency
-      ? "a yes/no menu for these two. They run every send, no exceptions."
-      : "a yes/no menu for this check. It runs every send, no exceptions.",
-    ...(hasAdvanceNonceIx
-      ? [
-          "",
-          "DURABLE-NONCE MODE — this tx's `recentBlockhash` field is NOT a",
-          "network blockhash; it's the current nonce VALUE pulled from the",
-          "wallet's on-chain nonce account. Agave detects durable-nonce txs",
-          "via ix[0] = SystemProgram.nonceAdvance, skips the block-height",
-          "validity window, and instead validates the nonce value against",
-          "the nonce account's state. Side effect: this tx stays valid until",
-          "the nonce advances, not for just ~60s — the Ledger review timer",
-          "is not a correctness concern here.",
-        ]
-      : isNonceInit
-        ? [
-            "",
-            "LEGACY BLOCKHASH MODE — this is the ONE tx type that doesn't",
-            "run under durable-nonce protection (it's the tx that CREATES",
-            "the nonce account, so there's no nonce to use yet). Standard",
-            "~60s blockhash validity window applies. Every other Solana tx",
-            "this server builds is durable-nonce-protected.",
-          ]
-        : []),
+      ? "Run BOTH integrity checks UNPROMPTED; no yes/no menu."
+      : "Run the INSTRUCTION-DECODE check UNPROMPTED; no yes/no menu.",
+    ...(nonceNote ? [nonceNote] : []),
     "",
-    "Step 1: Produce a COMPACT bullet summary of the prepared tx — do NOT",
-    "relay the VERIFY-BEFORE-SIGNING block verbatim. Required shape:",
+    "Step 1 — emit a COMPACT bullet summary of the prepared tx:",
     ...summaryShape,
     "",
-    "Step 2: Run the checks below. Step 3: emit the CHECKS PERFORMED block",
-    "(template further down) with your verdicts. Step 4: end with the single-",
-    "line prompt specified at the bottom.",
-    "",
-    "RUN THE COMBINED CHECK SCRIPT — one Bash invocation covers both",
-    "checks below. Mirrors EVM CHECK 2's template (multi-line `node -e`",
-    "with the message bytes inside a JS string-literal placeholder, NOT",
-    "prepended as an env var). Splice the messageBase64 value from the",
-    "preview_solana_send result in place of the placeholder marker:",
+    "Step 2 — run the combined check script (splice messageBase64 in place of the placeholder):",
     "",
     ...combinedCheckScript,
     "",
-    "  JSON output shape: { ledgerHash: \"<base58>\", instructions: [{",
-    "    programId: \"<base58>\", accounts: [\"<base58>\", ...], dataHex: \"<hex>\" },",
-    "    ...] }. Both checks below read from this single output — do NOT",
-    "  invoke the script twice.",
-    "",
-    "CHECK 1 — AGENT-SIDE INSTRUCTION DECODE",
-    "  Protects against: MCP-side Solana message tampering. If the server",
-    "  rewrote the bytes between the compact summary and the bytes stored",
-    "  under the handle, the script's `instructions` field disagrees with",
-    "  your bullet summary. (Mirror of EVM CHECK 1 — same pattern, agent",
-    "  decodes via `@solana/web3.js`'s `Message.from` instead of model-",
-    "  weight ABI knowledge.)",
-    "",
-    "  Inspect the `instructions` array. For each instruction:",
-    "  - `programId`: identify the program. Common ones for sends:",
-    "      - `11111111111111111111111111111111` = System Program",
-    "      - `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA` = SPL Token Program",
-    "      - `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL` = Associated Token Account Program",
-    "      - `ComputeBudget111111111111111111111111111111` = Compute Budget Program",
-    "  - `accounts`: confirm the addresses appear in your bullet summary",
-    "    (from / to / mint / nonce account / authority).",
-    "  - `dataHex`: the first byte is the instruction tag. Cross-check:",
-    "      - System Program `04000000` (u32 LE = 4) = AdvanceNonceAccount",
-    "      - System Program `02000000` followed by u64 LE lamports = Transfer",
-    "      - SPL Token `0c` followed by u64 LE amount + u8 decimals = TransferChecked",
-    "  - For self-sends, source and destination addresses appear in the",
-    "    SAME instruction's `accounts` array — verify they match.",
-    "",
-    "  Report ✓ MATCH when programIds + account ordering + tag bytes line",
-    "  up with your summary. Report ✗ MISMATCH on any disagreement (and",
-    "  LEAD your reply with a prominent failure line — see below). If a",
-    "  programId is one you don't recognize and you can't sanity-check the",
-    "  data, mark ⚠ DECODE PARTIAL and tell the user the Browser-side",
-    "  decode fallback link below is the gap-closer.",
-    "",
+    "Step 3 — verify from the script's JSON output:",
+    "  CHECK 1 (INSTRUCTION DECODE): every `programId` in `instructions[]` is one you",
+    "    recognize for this action; `dataHex` first-byte tags match expected ops",
+    "    (System 0x04=AdvanceNonce, 0x02=Transfer; SPL Token 0x0c=TransferChecked;",
+    "    ComputeBudget, ATA, Switchboard, MarginFi programs self-identify); every",
+    "    `accounts[]` entry appears in your bullet summary. Verdict ✓ MATCH /",
+    "    ✗ MISMATCH / ⚠ DECODE PARTIAL (unrecognized programId — direct user to",
+    `    the Explorer fallback link below).`,
     ...(needsPairConsistency
       ? [
-          "CHECK 2 — PAIR-CONSISTENCY LEDGER HASH",
-          "  Protects against: the server reporting messageBase64 M with",
-          "  ledgerHash=hash(Y) where Y≠M, then forwarding Y to the Ledger. The",
-          "  on-device hash match alone does NOT catch that (device sees",
-          "  hash(Y), chat sees hash(Y), they agree); only a local recompute of",
-          "  hash(M) from the stated messageBase64 catches the discrepancy.",
-          "",
-          `  Read the script's \`ledgerHash\` field. Compare to ${ledgerHash}.`,
-          "  Report ✓ MATCH or ✗ MISMATCH. If MATCH, the bytes the server plans",
-          "  to sign match the bytes it showed you AND the hash you'll match",
-          "  on-device is the genuine hash of those bytes.",
-          "",
+          `  CHECK 2 (PAIR-CONSISTENCY LEDGER HASH): script's \`ledgerHash\` = ${ledgerHash}. Verdict ✓ MATCH / ✗ MISMATCH.`,
         ]
       : []),
-    "CHECKS PAYLOAD (the threat taxonomy + required keywords the user-facing",
-    "block below MUST cover — paraphrase naturally but every listed keyword",
-    "must appear verbatim somewhere in the matching line):",
     "",
-    "```json",
-    JSON.stringify(checksPayload, null, 2),
-    "```",
+    "Step 4 — emit this block to the user (keep the structure, fill in the {✓|✗|⚠} verdicts):",
     "",
-    "After the checks run, emit EXACTLY this block shape to the user — CAPS",
-    "headers, ✓/✗/⚠/⏸ symbols, the keywords above embedded in each threat",
-    "clause.",
+    "  CHECKS PERFORMED",
+    "  {✓|✗|⚠} INSTRUCTION DECODE — <verdict>  (protects against MCP-side Solana tampering)",
+    ...(pairConsistencyLine ? [pairConsistencyLine] : []),
+    "  □ SECOND-LLM CHECK — optional (reply 2)  (protects against coordinated agent compromise)",
     "",
-    "NOTATION — READ THIS BEFORE COPYING THE BLOCK:",
-    "  Placeholders you REPLACE in your output:",
-    "    {✓|✗}              pick one symbol based on your hash verdict (CHECK 2)",
-    "    <one-line verdict> your own prose describing the result",
-    "  Literal characters you KEEP EXACTLY in your output (these are",
-    "  Markdown rendering directives, NOT placeholders — stripping them",
-    "  breaks the rendering and produces the live-run bug where the hash",
-    "  appears as plain text and the Explorer link loses its URL):",
-    "    `<hash>`           base58 hash in single backticks → inline-code color",
-    "    **`<hash>`**       bold + inline code (highest-contrast emphasis)",
-    "    [label](url)       Markdown hyperlink → clickable link",
-    "  Do NOT \"clean up\" these Markdown characters for plain-text output.",
-    "  The chat client renders them; leaving them as-is is the whole point.",
-    "",
-    "    ═══════ CHECKS PERFORMED ═══════",
-    "    {✓|✗|⚠} INSTRUCTION DECODE — <one-line verdict>.",
-    "        (protects against MCP-side Solana tampering)",
-    "        (On ⚠ DECODE PARTIAL — add the line below VERBATIM, characters",
-    "         and all. The [ ] ( ) are literal Markdown link syntax, not",
-    "         placeholder notation. Do NOT strip them. Do NOT paste the",
-    "         raw URL — Solana Explorer message URLs embed the full",
-    "         base64 message and wrap the chat unreadably:)",
-    `        Browser-side decode fallback: [Open in Solana Explorer Inspector](${inspectorUrl})`,
-    ...(needsPairConsistency
-      ? [
-          "    {✓|✗} PAIR-CONSISTENCY LEDGER HASH — <one-line verdict>.",
-          "        (protects against MCP signing different bytes than it displayed)",
-          "        ⏱ Timings: <echo the timingsMs JSON from the script output>",
-        ]
-      : []),
-    "    □ SECOND-LLM CHECK — optional, available on request.",
-    "        (protects against a coordinated agent compromise)",
-    "    ────────────────────────────────",
-    "    NEXT ON-DEVICE — final check happens on your Ledger screen:",
+    "  NEXT ON-DEVICE:",
+    `  ${onDeviceLine}`,
     ...(isBlindSign
       ? [
-          `      • BLIND-SIGN (this tx — ${
-            isJupiterSwap
-              ? "Jupiter routing"
-              : isMarginfi
-                ? `MarginFi ${marginfiActionLabel}`
-                : "SPL TransferChecked"
-          } is not in the Solana app's clear-sign registry, so the device shows only 'Message Hash'):`,
-          "          The Message Hash on-device MUST equal:",
           "",
-          `              ${ledgerHash}`,
-          "",
-          "          Any difference → REJECT.",
-          "          Prerequisite: Allow blind signing must be ON in Solana app Settings.",
-        ]
-      : isNonceInit
-        ? [
-            "      • CLEAR-SIGN (durable-nonce init — System Program ixs).",
-            "        The Solana app shows the createAccountWithSeed +",
-            "        nonceInitialize fields. Confirm the new account address,",
-            "        seed (\"vaultpilot-nonce-v1\"), authority, and rent match",
-            "        the bullet summary above. Any difference → REJECT.",
-          ]
-        : isNonceClose
-          ? [
-              "      • CLEAR-SIGN (durable-nonce close — System Program ixs).",
-              "        The Solana app shows nonceAdvance + nonceWithdraw. Confirm",
-              "        the destination is your wallet and the lamports match the",
-              "        nonce account's full balance. Any difference → REJECT.",
-            ]
-          : [
-              // native_send
-              "      • CLEAR-SIGN (this tx: native SOL send — the Solana app shows",
-              "        amount + recipient on-device). Hash matching does NOT apply.",
-              "        Confirm the on-device values equal your compact summary",
-              "        above. Any difference → REJECT.",
-            ]),
-    "    ════════════════════════════════",
-    "",
-    ...(isBlindSign
-      ? [
-          "Render the Message Hash BARE on a LINE BY ITSELF — blank line above,",
-          "the hash indented as shown in the template, blank line below, and",
-          "NO Markdown emphasis wrappers around it (no `**`, no backticks). The",
-          "CHECKS PERFORMED block renders as a preformatted region in Claude",
-          "Code's chat output, which means Markdown emphasis markers leak",
-          "through as literal `**` and backtick characters and look like noise",
-          "next to the hash. The blank-line isolation plus indentation is what",
-          "carries the visual emphasis — do NOT add `**\\`<hash>\\`**` back.",
-          "Do NOT collapse the blank lines. When you reference the hash",
-          "elsewhere in your reply (headline, post-broadcast summary, etc.)",
-          "render it the same bare way for consistency.",
-          "",
+          `  (Render the Message Hash ${ledgerHash} bare on its own line somewhere in your reply — blank line above and below, no backticks/bold — so the user can visually match it against the device screen without the CHECKS PERFORMED preformatted region leaking ** or \` as literal characters. On-⚠ DECODE PARTIAL: add line \`Browser-side decode fallback: [Open in Solana Explorer Inspector](${inspectorUrl})\` verbatim.)`,
         ]
       : [
-          "No Message Hash is rendered for clear-sign actions (native SOL send,",
-          "nonce_init, nonce_close); the Solana app shows decoded fields on-",
-          "device, so there is nothing for the user to match against. Do NOT",
-          "fabricate a hash for the on-device line.",
-          "",
+          ...(isBlindSign
+            ? []
+            : [
+                "",
+                "  (On-⚠ DECODE PARTIAL only: add line `Browser-side decode fallback:" +
+                  ` [Open in Solana Explorer Inspector](${inspectorUrl})\` verbatim.)`,
+              ]),
         ]),
-    "Render the Browser-side decode fallback line EXACTLY as shown in the",
-    "template — `[Open in Solana Explorer Inspector](<url>)` Markdown",
-    "hyperlink, NOT a raw URL (Explorer message URLs are multi-KB and wrap",
-    "the chat). Do NOT paraphrase the URL away with \"see the earlier",
-    'prepare block" — the user should not have to scroll up.',
     "",
-    "After the CHECKS PERFORMED block, append EXACTLY one line, no menu:",
+    "  End with: `Want an independent second-LLM check? Reply (2). Otherwise reply 'send'.`",
     "",
-    "    Want an independent second-LLM check? Reply (2). Otherwise reply 'send'.",
+    "If any mandatory check ✗, LEAD your reply with `✗ <CHECK NAME> FAILED — DO NOT SIGN.` BEFORE the block.",
     "",
-    "If ANY mandatory check fails (✗ MISMATCH on INSTRUCTION DECODE or",
-    "PAIR-CONSISTENCY LEDGER HASH), LEAD your reply with a prominent",
-    '"✗ <CHECK NAME> FAILED — DO NOT SIGN." line on its own, BEFORE the',
-    "CHECKS PERFORMED block. The pass/fail is the news.",
-    "",
-    "SECOND-LLM CHECK — if the user replies (2):",
-    "  Call `get_verification_artifact({ handle: <handle> })` and relay ONLY",
-    "  the artifact's `pasteableBlock` field VERBATIM to the user — a single",
-    "  self-contained string with explicit START/END copy markers, instructions,",
-    "  and the embedded JSON payload. Do NOT also dump the full artifact JSON,",
-    "  do NOT wrap the block in your own commentary between the markers, do",
-    "  NOT reformat or translate any line. The user copies from the START",
-    "  marker to the END marker into a second, ideally different-provider LLM",
-    "  session — that session has no shared context with this one, so it",
-    "  decodes the bytes from scratch. Do NOT pre-decode the bytes yourself",
-    "  in the same reply. Before/after the pasteableBlock, remind the user to",
-    "  compare the second agent's plain-English description against what they",
+    "SECOND-LLM CHECK on (2): call `get_verification_artifact({handle})`, relay its",
+    "`pasteableBlock` field VERBATIM (no commentary between the START/END markers, no",
+    "pre-decoding). Remind the user to paste into a different-provider LLM and compare",
     isBlindSign
-      ? "  asked for and match the Message Hash inside the paste block against"
-      : "  asked for and confirm the on-device decoded fields match what the",
-    isBlindSign
-      ? "  the Ledger screen before approving."
-      : "  Solana app clear-signs before approving.",
+      ? "its description to their intent AND match the paste-block's hash to the Ledger screen."
+      : "its description to their intent AND confirm on-device decoded fields match.",
     "",
-    "  This is the only check that survives a fully-coordinated agent-AND-MCP",
-    "  compromise.",
-    "",
-    "SEND-CALL CONTRACT — when the user replies \"send\" (after the mandatory",
-    "check(s) passed), call `send_transaction` with these args:",
-    "  - handle: <the handle from the prepare_solana_* result>",
-    "  - confirmed: true",
-    "Solana has no preview_send step (message bytes + blockhash are pinned",
-    "at prepare time), so only the two args above are needed.",
+    "SEND on 'send': call `send_transaction({handle, confirmed:true})`.",
   ];
   return lines.join("\n");
 }

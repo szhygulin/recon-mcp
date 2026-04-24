@@ -226,9 +226,10 @@ describe("renderSolanaAgentTaskBlock", () => {
     const block = renderSolanaAgentTaskBlock(tx);
     // Header tells agent to auto-run (no yes/no menu).
     expect(block).toContain("RUN THESE CHECKS NOW");
-    // Both checks listed using EVM CHECK 1's exact "AGENT-SIDE ... DECODE" naming.
-    expect(block).toContain("CHECK 1 — AGENT-SIDE INSTRUCTION DECODE");
-    expect(block).toContain("CHECK 2 — PAIR-CONSISTENCY LEDGER HASH");
+    // v1.6 Phase 2: both checks named in the compressed shape
+    // ("CHECK 1 (INSTRUCTION DECODE)" / "CHECK 2 (PAIR-CONSISTENCY LEDGER HASH)").
+    expect(block).toContain("CHECK 1 (INSTRUCTION DECODE)");
+    expect(block).toContain("CHECK 2 (PAIR-CONSISTENCY LEDGER HASH)");
     // Hash is spliced into the recompute target AND the on-device line.
     expect(block).toContain(expectedHash);
     // The on-device hash line renders the hash BARE (no `**` / backtick
@@ -241,9 +242,8 @@ describe("renderSolanaAgentTaskBlock", () => {
     expect(block).toContain("Allow blind signing");
     // Second-LLM escape hatch documented.
     expect(block).toContain("get_verification_artifact");
-    // Send-call contract spelled out (no previewToken for Solana).
-    expect(block).toContain("SEND-CALL CONTRACT");
-    expect(block).toContain("confirmed: true");
+    // v1.6 Phase 2: send-call contract compressed to a one-liner.
+    expect(block).toContain("send_transaction({handle, confirmed:true})");
     expect(block).not.toContain("previewToken");
   });
 
@@ -251,8 +251,8 @@ describe("renderSolanaAgentTaskBlock", () => {
     const tx = makeSolanaTx("native_send");
     const hash = solanaLedgerMessageHash(tx.messageBase64);
     const block = renderSolanaAgentTaskBlock(tx);
-    expect(block).toContain("CHECK 1 — AGENT-SIDE INSTRUCTION DECODE");
-    expect(block).not.toContain("CHECK 2 — PAIR-CONSISTENCY LEDGER HASH");
+    expect(block).toContain("CHECK 1 (INSTRUCTION DECODE)");
+    expect(block).not.toContain("CHECK 2 (PAIR-CONSISTENCY LEDGER HASH)");
     expect(block).toContain("CLEAR-SIGN");
     // No hash to match against for native.
     expect(block).not.toContain(hash);
@@ -340,16 +340,20 @@ describe("renderSolanaAgentTaskBlock", () => {
     // (nonce_init is short-circuited entirely; see its own test below.)
     for (const action of ["native_send", "nonce_close"] as const) {
       const block = renderSolanaAgentTaskBlock(makeSolanaTx(action));
-      expect(block).not.toContain("CHECK 2 — PAIR-CONSISTENCY LEDGER HASH");
+      expect(block).not.toContain("CHECK 2 (PAIR-CONSISTENCY LEDGER HASH)");
       // No `node -e` command for hash recompute either.
       expect(block).not.toMatch(/node --input-type=module -e/);
     }
   });
 
-  it("DURABLE-NONCE MODE is documented for sends/close (nonce_init is short-circuited)", () => {
+  it("durable-nonce protection is noted for sends/close (nonce_init is short-circuited)", () => {
+    // v1.6 Phase 2: compressed to a single inline line
+    // "This tx is durable-nonce-protected (ix[0] = nonceAdvance); no ~60s
+    // blockhash expiry." — replaces the earlier multi-paragraph DURABLE-NONCE
+    // MODE explainer to cut input-side tokens.
     for (const action of ["native_send", "spl_send", "nonce_close"] as const) {
       const block = renderSolanaAgentTaskBlock(makeSolanaTx(action));
-      expect(block).toContain("DURABLE-NONCE MODE");
+      expect(block).toContain("durable-nonce-protected");
       // Summary shape mentions the Nonce bullet.
       expect(block).toContain("Nonce:");
     }
@@ -413,6 +417,8 @@ describe("renderSolanaAgentTaskBlock", () => {
     // user confirm against the decoded view.
     const block = renderSolanaAgentTaskBlock(makeSolanaTx("nonce_close"));
     expect(block).toContain("durable-nonce close");
-    expect(block).toContain("DURABLE-NONCE MODE");
+    // v1.6 Phase 2 compressed the "DURABLE-NONCE MODE" explainer paragraph
+    // into a single inline sentence.
+    expect(block).toContain("durable-nonce-protected");
   });
 });
