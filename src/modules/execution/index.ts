@@ -611,14 +611,34 @@ export async function previewSolanaSend(args: {
             // Swallow — diagnosis is additive, not gating.
           }
         }
-        throw new Error(
-          header +
-            logTail +
-            diagnosis +
-            `\nRefusing to surface the Ledger hash — the tx would revert on broadcast. ` +
-            `Resolve the underlying issue (e.g. withdraw conflicting collateral, wait for oracle freshness, ` +
-            `pick a different bank) and call prepare_* again.`,
+        // Issue #125 — split the two NotEnoughSamples failure modes. A
+        // "Rotating mega slot" log line immediately before the Anchor
+        // 6030 means the feed is mid oracle-set rotation: consensus can't
+        // be reached for ~60–120s regardless of how many samples we
+        // requested (#120's N=3 tuning doesn't help during rotation).
+        // The right user action is to WAIT, not loop-retry. The plain
+        // stale-samples branch still tells the user to re-prepare.
+        const isNotEnoughSamples = sim.anchorError?.code === 6030;
+        const { isSwitchboardRotation } = await import(
+          "../solana/simulate.js"
         );
+        const rotating =
+          isNotEnoughSamples && isSwitchboardRotation(sim.logs);
+        const remediation = rotating
+          ? `\nThis is a transient SWITCHBOARD ORACLE ROTATION ("Rotating mega slot" ` +
+            `in the logs) — the feed is between oracle sets and consensus is ` +
+            `temporarily unreachable. Wait 60–120s before retrying; tight retry ` +
+            `loops will fail identically until rotation completes. No code bug ` +
+            `on our side; no fix on retry. Durable nonce was not advanced.`
+          : isNotEnoughSamples
+            ? `\nOracle samples fetched at preview time are already past their ` +
+              `max-staleness window. This is unusual at preview time (the fetch ` +
+              `is seconds-old) and typically indicates extreme RPC lag or a ` +
+              `freshly-rotated feed. Call prepare_* again to fetch fresh samples.`
+            : `\nRefusing to surface the Ledger hash — the tx would revert on broadcast. ` +
+              `Resolve the underlying issue (e.g. withdraw conflicting collateral, wait for oracle freshness, ` +
+              `pick a different bank) and call prepare_* again.`;
+        throw new Error(header + logTail + diagnosis + remediation);
       }
       pinned.simulation = sim;
     } catch (e) {
