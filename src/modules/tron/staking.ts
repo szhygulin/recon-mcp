@@ -1,3 +1,4 @@
+import { fetchWithTimeout } from "../../data/http.js";
 import { cache } from "../../data/cache.js";
 import { CACHE_TTL } from "../../config/cache.js";
 import { TRONGRID_BASE_URL, TRX_DECIMALS, isTronAddress } from "../../config/tron.js";
@@ -78,7 +79,7 @@ async function fetchTrxPrice(): Promise<number | undefined> {
   const hit = cache.get<number>(key);
   if (hit !== undefined) return hit;
   try {
-    const res = await fetch("https://coins.llama.fi/prices/current/coingecko:tron");
+    const res = await fetchWithTimeout("https://coins.llama.fi/prices/current/coingecko:tron");
     if (!res.ok) return undefined;
     const body = (await res.json()) as LlamaResponse;
     const price = body.coins["coingecko:tron"]?.price;
@@ -95,7 +96,7 @@ async function fetchTrxPrice(): Promise<number | undefined> {
 async function trongridGet<T>(path: string, apiKey: string | undefined): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) headers["TRON-PRO-API-KEY"] = apiKey;
-  const res = await fetch(`${TRONGRID_BASE_URL}${path}`, { headers });
+  const res = await fetchWithTimeout(`${TRONGRID_BASE_URL}${path}`, { headers });
   if (!res.ok) {
     throw new Error(`TronGrid ${path} returned ${res.status} ${res.statusText}`);
   }
@@ -109,7 +110,7 @@ async function trongridPost<T>(
 ): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) headers["TRON-PRO-API-KEY"] = apiKey;
-  const res = await fetch(`${TRONGRID_BASE_URL}${path}`, {
+  const res = await fetchWithTimeout(`${TRONGRID_BASE_URL}${path}`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),

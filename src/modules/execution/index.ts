@@ -675,6 +675,46 @@ async function sendSolanaTransaction(args: SendTransactionArgs): Promise<{
   durableNonce?: { noncePubkey: string; nonceValue: string };
 }> {
   const tx: UnsignedSolanaTx = consumeSolanaHandle(args.handle);
+  // Preview-gate enforcement (parity with the EVM path). These two args
+  // prove the agent ran `preview_solana_send` AND surfaced the CHECKS
+  // PERFORMED block before the user replied "send". Missing / mismatched
+  // values mean the agent either skipped preview entirely, collapsed
+  // preview + send into one silent step, or replayed an old token after
+  // a refresh — in all three cases the user hasn't had a chance to match
+  // the on-device Message Hash against the chat-side value and the
+  // defense collapses for blind-sign flows (SPL / MarginFi / Jupiter).
+  // Error text is verbose on purpose — the agent reads it and self-corrects.
+  if (!args.previewToken) {
+    throw new Error(
+      "Missing `previewToken` arg on send_transaction. preview_solana_send " +
+        "returned a `previewToken` field in its top-level JSON response — " +
+        "pass it back here verbatim. This is the schema-enforced proof " +
+        "that the preview step actually ran and that the CHECKS PERFORMED " +
+        "block was surfaced to the user. If you skipped preview_solana_send, " +
+        "call it first.",
+    );
+  }
+  if (args.userDecision !== "send") {
+    throw new Error(
+      "Missing `userDecision: \"send\"` arg on send_transaction. Set this " +
+        "AFTER presenting the CHECKS PERFORMED block from preview_solana_send " +
+        "and receiving the user's explicit 'send' reply. The literal proves " +
+        "the preview-time gate was shown to the user rather than silently " +
+        "bypassed.",
+    );
+  }
+  if (tx.previewToken && args.previewToken !== tx.previewToken) {
+    throw new Error(
+      "SECURITY: `previewToken` does not match the current pin on this " +
+        "Solana handle. The benign explanation is that preview_solana_send " +
+        "was re-called after the token was captured (e.g. to refresh a stale " +
+        "nonce) — in that case, the new pin has a new token AND a new Message " +
+        "Hash the user MUST re-match on-device. Do NOT retry with the old " +
+        "token: call preview_solana_send again, surface the fresh CHECKS " +
+        "PERFORMED block and the new blind-sign hash to the user, and pass " +
+        "the new token.",
+    );
+  }
   // Proof-of-identity guard: same logic as the TRON sender. Recompute the
   // domain-tagged hash of the exact message bytes the Ledger will sign
   // and require equality with the hash the user previewed.
@@ -984,6 +1024,25 @@ async function sendTronTransaction(args: SendTransactionArgs): Promise<{
   chain: "tron";
 }> {
   const tx: UnsignedTronTx = consumeTronHandle(args.handle);
+  // Preview-gate enforcement. TRON has no preview step — prepare_tron_*
+  // produces the signable artifact directly — so the gate here is just
+  // the `userDecision: "send"` literal, without a token. It pins the
+  // same careless-mistake invariant as on EVM: an agent collapsing
+  // prepare + send into a single silent step without pausing to surface
+  // the VERIFY block gets a clear-error refusal naming the missing arg.
+  // TRON clear-signs every supported action on-device, so even if a
+  // hostile agent forges this literal, the Ledger screen's decoded
+  // fields are the source of truth — but skipping the reply is the
+  // UX-honesty bar we want to enforce.
+  if (args.userDecision !== "send") {
+    throw new Error(
+      "Missing `userDecision: \"send\"` arg on send_transaction. Set this " +
+        "AFTER presenting the VERIFY-BEFORE-SIGNING block from the " +
+        "prepare_tron_* tool result and receiving the user's explicit " +
+        "'send' reply. The literal proves the prepare-time summary was " +
+        "shown to the user rather than silently bypassed.",
+    );
+  }
   // Proof-of-identity guard: recompute the domain-tagged hash of the EXACT
   // rawDataHex that the USB signer is about to hand to the Ledger, and
   // require equality with the hash the user previewed. A drift here means

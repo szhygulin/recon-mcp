@@ -1,3 +1,4 @@
+import { fetchWithTimeout } from "../../data/http.js";
 import { PublicKey, TransactionInstruction } from "@solana/web3.js";
 import { assertSolanaAddress } from "./address.js";
 import { getSolanaConnection } from "./rpc.js";
@@ -180,7 +181,7 @@ export async function getJupiterQuote(
     // cap that still lets most routes through (Jupiter's own UI default).
     maxAccounts: "40",
   });
-  const res = await fetch(`${JUPITER_BASE}/quote?${qs}`);
+  const res = await fetchWithTimeout(`${JUPITER_BASE}/quote?${qs}`);
   if (!res.ok) {
     const body = await res.text();
     throw new Error(
@@ -292,7 +293,7 @@ export async function buildJupiterSwap(
       ? { prioritizationFeeLamports: p.prioritizationFeeLamports }
       : {}),
   };
-  const res = await fetch(`${JUPITER_BASE}/swap-instructions`, {
+  const res = await fetchWithTimeout(`${JUPITER_BASE}/swap-instructions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),

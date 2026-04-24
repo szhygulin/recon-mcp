@@ -50,6 +50,7 @@ export const prepareSolanaNativeSendInput = z.object({
   to: solanaAddressSchema,
   amount: z
     .string()
+    .max(50)
     .describe(
       'Human-readable SOL amount (up to 9 decimals). Example: "0.5" for 0.5 SOL. ' +
         'Pass "max" to send the full balance minus tx fee and a small safety buffer.'
@@ -64,6 +65,7 @@ export const prepareSolanaSplSendInput = z.object({
   to: solanaAddressSchema,
   amount: z
     .string()
+    .max(50)
     .describe(
       "Human-readable token amount. Decimals are resolved from the mint (canonical table " +
         "for USDC/USDT/JUP/BONK/JTO/mSOL/jitoSOL; otherwise on-chain `getTokenSupply`). " +
@@ -100,6 +102,7 @@ export const getSolanaSwapQuoteInput = z.object({
   ),
   amount: z
     .string()
+    .max(50)
     .regex(/^\d+$/)
     .describe(
       "Raw integer amount in base units (NOT decimal-adjusted). For ExactIn swaps " +
@@ -206,6 +209,7 @@ export const prepareMarginfiSupplyInput = z.object({
   ...marginfiBankTarget,
   amount: z
     .string()
+    .max(50)
     .describe(
       'Human-readable decimal amount to supply (e.g. "1.5" for 1.5 USDC). Decimals resolved ' +
         'from the bank\'s mint — do NOT pass raw base units.'
@@ -217,6 +221,7 @@ export const prepareMarginfiWithdrawInput = z.object({
   ...marginfiBankTarget,
   amount: z
     .string()
+    .max(50)
     .describe(
       'Human-readable decimal amount to withdraw. Pre-flight refuses if the withdraw would ' +
         'push the health factor below the maintenance threshold.'
@@ -235,6 +240,7 @@ export const prepareMarginfiBorrowInput = z.object({
   ...marginfiBankTarget,
   amount: z
     .string()
+    .max(50)
     .describe(
       'Human-readable decimal amount to borrow. Pre-flight refuses if the account has zero ' +
         'free collateral.'
@@ -246,6 +252,7 @@ export const prepareMarginfiRepayInput = z.object({
   ...marginfiBankTarget,
   amount: z
     .string()
+    .max(50)
     .describe(
       'Human-readable decimal amount to repay against outstanding debt in this bank.'
     ),
@@ -284,6 +291,7 @@ const baseAaveAction = z.object({
   asset: addressSchema,
   amount: z
     .string()
+    .max(50)
     .describe(
       'Human-readable decimal amount of `asset`, NOT raw wei/base units. ' +
         'Example: "1.5" for 1.5 USDC, "0.01" for 0.01 ETH. Pass "max" for full-balance withdraw/repay.'
@@ -305,12 +313,14 @@ export const prepareLidoStakeInput = z.object({
   wallet: walletSchema,
   amountEth: z
     .string()
+    .max(50)
     .describe('Human-readable ETH amount, NOT raw wei. Example: "0.5" for 0.5 ETH.'),
 });
 export const prepareLidoUnstakeInput = z.object({
   wallet: walletSchema,
   amountStETH: z
     .string()
+    .max(50)
     .describe(
       'Human-readable stETH amount, NOT raw wei. Example: "0.5" for 0.5 stETH (18 decimals).'
     ),
@@ -323,6 +333,7 @@ export const prepareEigenLayerDepositInput = z.object({
   token: addressSchema,
   amount: z
     .string()
+    .max(50)
     .describe(
       'Human-readable decimal amount of `token`, NOT raw wei/base units. Example: "0.5" for 0.5 stETH.'
     ),
@@ -335,6 +346,7 @@ export const prepareNativeSendInput = z.object({
   to: addressSchema,
   amount: z
     .string()
+    .max(50)
     .describe(
       'Human-readable native-asset amount, NOT raw wei. Example: "0.5" for 0.5 ETH (or 0.5 MATIC on polygon).'
     ),
@@ -345,6 +357,7 @@ export const prepareWethUnwrapInput = z.object({
   chain: chainEnum.default("ethereum"),
   amount: z
     .string()
+    .max(50)
     .describe(
       'Human-readable WETH amount, NOT raw wei. Example: "0.5" for 0.5 WETH. ' +
         'Pass "max" to unwrap the full WETH balance. WETH is always 18 decimals on every supported chain.'
@@ -358,6 +371,7 @@ export const prepareTokenSendInput = z.object({
   to: addressSchema,
   amount: z
     .string()
+    .max(50)
     .describe(
       'Human-readable decimal amount, NOT raw wei/base units. Example: "10" for 10 USDC. ' +
         'Decimals resolved from the token contract. Pass "max" to send the full balance.'
@@ -386,21 +400,22 @@ export const sendTransactionInput = z.object({
     .string()
     .optional()
     .describe(
-      "EVM-only (ignored for TRON). Opaque token returned by the preceding `preview_send` call " +
-        "in its top-level JSON response. Must be passed back verbatim here — a mismatch or " +
-        "omission proves preview_send was skipped or re-run with `refresh: true` after capture, " +
-        "and send_transaction refuses. Closes the gap where the agent collapses preview_send + " +
-        "send_transaction into one step without surfacing the EXTRA CHECKS YOU CAN RUN BEFORE " +
-        "REPLYING 'SEND' menu to the user."
+      "Required for EVM and Solana (ignored for TRON — TRON has no preview step). " +
+        "Opaque token returned by the preceding `preview_send` (EVM) or `preview_solana_send` " +
+        "(Solana) call in its top-level JSON response. Must be passed back verbatim here — a " +
+        "mismatch or omission proves preview was skipped or re-run after capture, and " +
+        "send_transaction refuses. Closes the gap where the agent collapses preview + send into " +
+        "one step without surfacing the CHECKS PERFORMED block to the user."
     ),
   userDecision: z
     .literal("send")
     .optional()
     .describe(
-      "EVM-only (ignored for TRON). The agent sets this to the literal \"send\" AFTER presenting " +
-        "the EXTRA CHECKS menu from preview_send's agent-task block and receiving the user's " +
-        "explicit 'send' reply. Schema-enforced contract that the preview-time gate was surfaced " +
-        "to the user, not skipped. Missing value → send_transaction refuses with a clear error."
+      "Required on every chain (EVM / Solana / TRON). The agent sets this to the literal " +
+        "\"send\" AFTER presenting the CHECKS PERFORMED block (EVM / Solana) or the " +
+        "VERIFY-BEFORE-SIGNING block (TRON) and receiving the user's explicit 'send' reply. " +
+        "Schema-enforced contract that the preview-time / prepare-time summary was surfaced to " +
+        "the user, not skipped. Missing value → send_transaction refuses with a clear error."
     ),
 });
 

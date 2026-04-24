@@ -7,6 +7,7 @@ import { stETHAbi, wstETHAbi } from "../../abis/lido.js";
 import { getTokenPrice } from "../../data/prices.js";
 import { makeTokenAmount, round } from "../../data/format.js";
 import type { StakingPosition, SupportedChain } from "../../types/index.js";
+import { fetchWithTimeout } from "../../data/http.js";
 
 /**
  * Lido staking positions across Ethereum (stETH + wstETH) and Arbitrum
@@ -177,7 +178,7 @@ async function fetchLidoPositions(wallet: `0x${string}`, chains: SupportedChain[
 export async function getLidoApr(): Promise<number | undefined> {
   return cache.remember("yields:lido-eth", CACHE_TTL.YIELD, async () => {
     try {
-      const res = await fetch("https://yields.llama.fi/pools");
+      const res = await fetchWithTimeout("https://yields.llama.fi/pools");
       if (!res.ok) return undefined;
       const body = (await res.json()) as { data: Array<{ project: string; symbol: string; apy: number; chain: string }> };
       const pool = body.data.find(

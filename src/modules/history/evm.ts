@@ -15,7 +15,6 @@ import type {
 
 const SERVER_ROW_CAP = 100;
 const MAX_SYMBOL_LEN = 32;
-const MAX_NAME_LEN = 64;
 
 interface TxListItem {
   hash: string;
@@ -91,7 +90,6 @@ function toTokenTransfer(t: TokenTxItem): TokenTransferHistoryItem | null {
   if (/https?|www\.|claim|visit|airdrop|\.com|\.io|\.app|\.xyz|\.net/.test(rawNameLower)) return null;
 
   const rawSymbol = sanitizeDisplayString(t.tokenSymbol, MAX_SYMBOL_LEN);
-  sanitizeDisplayString(t.tokenName, MAX_NAME_LEN);
   const tokenSymbol = rawSymbol || "UNKNOWN";
   const tokenDecimals = Number(t.tokenDecimal);
   if (!Number.isFinite(tokenDecimals) || tokenDecimals < 0 || tokenDecimals > 36) return null;

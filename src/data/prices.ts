@@ -1,6 +1,7 @@
 import { cache } from "./cache.js";
 import { CACHE_TTL } from "../config/cache.js";
 import type { SupportedChain } from "../types/index.js";
+import { fetchWithTimeout } from "./http.js";
 
 /**
  * DefiLlama free price API.
@@ -84,7 +85,7 @@ export async function getTokenPrices(queries: PriceQuery[]): Promise<Map<string,
     const keys = chunk.map(queryToLlamaKey).join(",");
     const url = `${DEFILLAMA_BASE}/prices/current/${encodeURIComponent(keys)}`;
     try {
-      const res = await fetch(url);
+      const res = await fetchWithTimeout(url);
       if (!res.ok) continue;
       const body = (await res.json()) as LlamaResponse;
       for (const q of chunk) {

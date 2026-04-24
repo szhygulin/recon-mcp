@@ -248,7 +248,7 @@ describe("sendTransaction — TRON handle routing", () => {
     });
     expect(hasTronHandle(tx.handle!)).toBe(true);
 
-    const result = await sendTransaction({ handle: tx.handle!, confirmed: true });
+    const result = await sendTransaction({ handle: tx.handle!, confirmed: true, userDecision: "send" });
     expect(result).toEqual({ txHash: "ab".repeat(32), chain: "tron" });
     expect(hasTronHandle(tx.handle!)).toBe(false);
     expect(trxInstance.signTransaction).toHaveBeenCalledWith(
@@ -293,7 +293,7 @@ describe("sendTransaction — TRON handle routing", () => {
       amount: "1",
     });
     await expect(
-      sendTransaction({ handle: tx.handle!, confirmed: true })
+      sendTransaction({ handle: tx.handle!, confirmed: true, userDecision: "send" })
     ).rejects.toThrow(/User rejected/);
     expect(hasTronHandle(tx.handle!)).toBe(true);
   });
@@ -442,7 +442,7 @@ describe("pair_ledger_tron + get_ledger_status", () => {
       to: DEVICE_ADDRESS,
       amount: "1",
     });
-    const result = await sendTransaction({ handle: tx.handle!, confirmed: true });
+    const result = await sendTransaction({ handle: tx.handle!, confirmed: true, userDecision: "send" });
     expect(result.txHash).toBe("ef".repeat(32));
     expect(trxInstance.signTransaction).toHaveBeenCalledWith(
       "44'/195'/1'/0/0",

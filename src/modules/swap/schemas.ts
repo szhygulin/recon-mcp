@@ -17,6 +17,7 @@ const baseSwapSchema = z.object({
   toToken: tokenSchema,
   amount: z
     .string()
+    .max(50)
     .describe(
       'Human-readable decimal amount, NOT raw wei/base units. Example: "1.5" for ' +
         '1.5 USDC, "0.01" for 0.01 ETH. Interpreted as fromToken input by default; ' +

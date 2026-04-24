@@ -1,5 +1,6 @@
 import { TRONGRID_BASE_URL } from "../../config/tron.js";
 import { resolveTronApiKey, readUserConfig } from "../../config/user-config.js";
+import { fetchWithTimeout } from "../../data/http.js";
 
 /**
  * TRON tx-status polling via TronGrid. Mirrors the EVM
@@ -45,7 +46,7 @@ async function trongridPost<T>(path: string, body: Record<string, unknown>): Pro
   const apiKey = resolveTronApiKey(readUserConfig());
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) headers["TRON-PRO-API-KEY"] = apiKey;
-  const res = await fetch(`${TRONGRID_BASE_URL}${path}`, {
+  const res = await fetchWithTimeout(`${TRONGRID_BASE_URL}${path}`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),

@@ -107,7 +107,7 @@ describe("sendTransaction dispatch — Solana", () => {
 
     // preview pins a fresh blockhash and stores messageBase64 on the handle.
     const { previewSolanaSend } = await import("../src/modules/execution/index.js");
-    await previewSolanaSend({ handle: draft.handle });
+    const pinned = await previewSolanaSend({ handle: draft.handle });
 
     // 2. Wire up the Ledger mock to return the expected wallet address + a
     //    well-formed 64-byte signature.
@@ -121,11 +121,14 @@ describe("sendTransaction dispatch — Solana", () => {
     const fakeTxSig = "5J7sCLXMksr5Ki8DGHxsEaKx1c3xXVUfd6gK3D4u4TjtMsm4zQW7n3SK6PX5N6C5wRV5U6XF5Q2YK3r7fHgM1R9t";
     connectionStub.sendRawTransaction.mockResolvedValue(fakeTxSig);
 
-    // 4. Send.
+    // 4. Send — pass the previewToken minted by preview_solana_send + the
+    //    userDecision literal to satisfy the preview gate.
     const { sendTransaction } = await import("../src/modules/execution/index.js");
     const result = await sendTransaction({
       handle: draft.handle,
       confirmed: true,
+      previewToken: pinned.previewToken,
+      userDecision: "send",
     });
 
     expect(result.chain).toBe("solana");
@@ -170,7 +173,7 @@ describe("sendTransaction dispatch — Solana", () => {
       amount: "0.1",
     });
     const { previewSolanaSend } = await import("../src/modules/execution/index.js");
-    await previewSolanaSend({ handle: draft.handle });
+    const pinned = await previewSolanaSend({ handle: draft.handle });
 
     // Ledger returns a DIFFERENT address — simulates wrong device connected
     // or a tampered `from` field.
@@ -181,7 +184,12 @@ describe("sendTransaction dispatch — Solana", () => {
 
     const { sendTransaction } = await import("../src/modules/execution/index.js");
     await expect(
-      sendTransaction({ handle: draft.handle, confirmed: true }),
+      sendTransaction({
+        handle: draft.handle,
+        confirmed: true,
+        previewToken: pinned.previewToken,
+        userDecision: "send",
+      }),
     ).rejects.toThrow(/SECURITY.*does not match/);
 
     // Broadcast was NOT called.
@@ -227,6 +235,8 @@ describe("sendTransaction dispatch — Solana", () => {
     const result = await sendTransaction({
       handle: draft.handle,
       confirmed: true,
+      previewToken: pinned.previewToken,
+      userDecision: "send",
     });
     expect(result.chain).toBe("solana");
     expect(result.lastValidBlockHeight).toBeUndefined();

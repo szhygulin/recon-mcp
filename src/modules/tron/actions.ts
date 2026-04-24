@@ -1,3 +1,4 @@
+import { fetchWithTimeout } from "../../data/http.js";
 import {
   TRONGRID_BASE_URL,
   TRX_DECIMALS,
@@ -57,7 +58,7 @@ async function trongridPost<T>(
 ): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) headers["TRON-PRO-API-KEY"] = apiKey;
-  const res = await fetch(`${TRONGRID_BASE_URL}${path}`, {
+  const res = await fetchWithTimeout(`${TRONGRID_BASE_URL}${path}`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),

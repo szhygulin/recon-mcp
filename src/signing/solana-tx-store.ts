@@ -245,6 +245,13 @@ export function pinSolanaHandle(
   }
   const messageBase64 = messageBytes.toString("base64");
 
+  // Mint a fresh preview token on every pin. Re-calling preview_solana_send
+  // (e.g. after a user pause) invalidates any prior token — mirror of the
+  // EVM `refresh: true` semantics. send_transaction's gate rejects a
+  // mismatched token and tells the agent to re-surface the current CHECKS
+  // block.
+  const previewToken = randomUUID();
+
   const pinnedBase: UnsignedSolanaTx = {
     chain: "solana",
     action: meta.action,
@@ -254,6 +261,7 @@ export function pinSolanaHandle(
     description: meta.description,
     decoded: meta.decoded,
     handle,
+    previewToken,
     // lastValidBlockHeight is meaningless for durable-nonce txs (they
     // never expire via block-height) — only carry it through when meta
     // indicates this is a legacy-blockhash tx.

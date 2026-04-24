@@ -778,6 +778,16 @@ export interface UnsignedSolanaTx {
   /** Opaque handle — see solana-tx-store.ts. `send_transaction` consumes this. */
   handle?: string;
   /**
+   * Server-minted UUID, set by `preview_solana_send` (every pin — fresh on
+   * `refresh`). Echoed back through `send_transaction`'s `previewToken`
+   * arg to prove the agent actually ran preview AND surfaced the CHECKS
+   * PERFORMED block before the user replied "send". Mirrors the EVM
+   * `previewToken` gate — a hostile agent can still forge it after a real
+   * preview, so this is a careless-mistake backstop, not a coordinated-
+   * lying defense.
+   */
+  previewToken?: string;
+  /**
    * Pre-sign verification payload, stamped by `issueSolanaHandle` on every
    * prepared Solana tx. Mirrors the TRON / EVM verification shape.
    */

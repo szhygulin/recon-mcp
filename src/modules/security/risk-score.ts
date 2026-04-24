@@ -1,6 +1,7 @@
 import { cache } from "../../data/cache.js";
 import { CACHE_TTL } from "../../config/cache.js";
 import { round } from "../../data/format.js";
+import { fetchWithTimeout } from "../../data/http.js";
 
 interface LlamaProtocol {
   name: string;
@@ -26,7 +27,7 @@ async function fetchLlamaProtocol(slug: string): Promise<LlamaProtocol | null> {
   const key = `risk:llama:${slug.toLowerCase()}`;
   return cache.remember(key, CACHE_TTL.PROTOCOL_RISK, async () => {
     try {
-      const res = await fetch(`https://api.llama.fi/protocol/${encodeURIComponent(slug)}`);
+      const res = await fetchWithTimeout(`https://api.llama.fi/protocol/${encodeURIComponent(slug)}`);
       if (!res.ok) return null;
       return (await res.json()) as LlamaProtocol;
     } catch {

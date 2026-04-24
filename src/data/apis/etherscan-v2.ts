@@ -1,6 +1,7 @@
 import { CHAIN_IDS } from "../../types/index.js";
 import type { SupportedChain } from "../../types/index.js";
 import { resolveEtherscanApiKey, readUserConfig } from "../../config/user-config.js";
+import { fetchWithTimeout } from "../http.js";
 
 /**
  * Etherscan V2 unified client.
@@ -68,7 +69,7 @@ export async function etherscanV2Fetch<T>(
     apikey: apiKey,
   });
 
-  const res = await fetch(`${V2_BASE}?${qs.toString()}`);
+  const res = await fetchWithTimeout(`${V2_BASE}?${qs.toString()}`);
   if (!res.ok) {
     // Don't include the URL — it carries apikey. Surface status only.
     throw new Error(`Etherscan V2 ${chain} ${params.action} returned ${res.status}`);
@@ -111,7 +112,7 @@ export async function etherscanV2FetchRaw<T>(
     apikey: apiKey,
   });
 
-  const res = await fetch(`${V2_BASE}?${qs.toString()}`);
+  const res = await fetchWithTimeout(`${V2_BASE}?${qs.toString()}`);
   if (!res.ok) {
     throw new Error(`Etherscan V2 ${chain} ${params.action} returned ${res.status}`);
   }

@@ -36,6 +36,7 @@ const baseMarketAction = z.object({
   marketId: marketIdSchema,
   amount: z
     .string()
+    .max(50)
     .describe(
       'Human-readable decimal amount, NOT raw wei/base units. ' +
         'Example: "10" for 10 USDC. Pass "max" for full-balance withdraw/repay.'

@@ -1,3 +1,4 @@
+import { fetchWithTimeout } from "../../data/http.js";
 import { cache } from "../../data/cache.js";
 import { CACHE_TTL } from "../../config/cache.js";
 import { resolveTronApiKey, readUserConfig } from "../../config/user-config.js";
@@ -68,7 +69,7 @@ interface TrongridTrc20Response {
 async function trongridGet<T>(path: string, apiKey: string | undefined): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) headers["TRON-PRO-API-KEY"] = apiKey;
-  const res = await fetch(`${TRONGRID_BASE_URL}${path}`, { headers });
+  const res = await fetchWithTimeout(`${TRONGRID_BASE_URL}${path}`, { headers });
   if (!res.ok) {
     // TRON-PRO-API-KEY never lands in the URL for TronGrid, so surfacing
     // path + status is safe.

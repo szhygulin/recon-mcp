@@ -1,6 +1,7 @@
 import { TRONGRID_BASE_URL, TRX_DECIMALS, isTronAddress } from "../../config/tron.js";
 import { resolveTronApiKey, readUserConfig } from "../../config/user-config.js";
 import type { TronWitnessInfo, TronWitnessList, TronVoteAllocation } from "../../types/index.js";
+import { fetchWithTimeout } from "../../data/http.js";
 
 /**
  * TRON mainnet reward constants used for the voter-APR estimate. These are the
@@ -56,7 +57,7 @@ interface TrongridV1AccountResponse {
 async function trongridGet<T>(path: string, apiKey: string | undefined): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) headers["TRON-PRO-API-KEY"] = apiKey;
-  const res = await fetch(`${TRONGRID_BASE_URL}${path}`, { headers });
+  const res = await fetchWithTimeout(`${TRONGRID_BASE_URL}${path}`, { headers });
   if (!res.ok) {
     throw new Error(`TronGrid ${path} returned ${res.status} ${res.statusText}`);
   }

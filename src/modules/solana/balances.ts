@@ -1,3 +1,4 @@
+import { fetchWithTimeout } from "../../data/http.js";
 import { PublicKey } from "@solana/web3.js";
 import { cache } from "../../data/cache.js";
 import { CACHE_TTL } from "../../config/cache.js";
@@ -52,7 +53,7 @@ async function fetchSolanaPrices(mints: string[]): Promise<Map<string, number>> 
 
   try {
     const url = `https://coins.llama.fi/prices/current/${encodeURIComponent(uncached.join(","))}`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     if (!res.ok) return out;
     const body = (await res.json()) as LlamaResponse;
     for (const k of uncached) {

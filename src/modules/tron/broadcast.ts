@@ -1,6 +1,7 @@
 import { TRONGRID_BASE_URL } from "../../config/tron.js";
 import { resolveTronApiKey, readUserConfig } from "../../config/user-config.js";
 import type { UnsignedTronTx } from "../../types/index.js";
+import { fetchWithTimeout } from "../../data/http.js";
 
 /**
  * `/wallet/broadcasttransaction` response. TronGrid encodes failures as
@@ -51,7 +52,7 @@ export async function broadcastTronTx(
     visible: true,
   };
 
-  const res = await fetch(`${TRONGRID_BASE_URL}/wallet/broadcasttransaction`, {
+  const res = await fetchWithTimeout(`${TRONGRID_BASE_URL}/wallet/broadcasttransaction`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),

@@ -1,6 +1,7 @@
 import { cache } from "../../data/cache.js";
 import { CACHE_TTL } from "../../config/cache.js";
 import type { AnyChain } from "../../types/index.js";
+import { fetchWithTimeout } from "../../data/http.js";
 
 /**
  * DefiLlama historical-price client.
@@ -101,7 +102,7 @@ export async function lookupHistoricalPrices(
       const coinList = Array.from(coins).join(",");
       const url = `${LLAMA_BASE}/${timestamp}/${encodeURIComponent(coinList)}`;
       try {
-        const res = await fetch(url);
+        const res = await fetchWithTimeout(url);
         if (!res.ok) {
           missed = true;
           return;

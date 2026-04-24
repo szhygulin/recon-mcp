@@ -1,4 +1,5 @@
 import { CHAIN_IDS, type SupportedChain } from "../../types/index.js";
+import { fetchWithTimeout } from "../../data/http.js";
 
 /**
  * 1inch Aggregation API v6.0 client. Used for intra-chain swap comparison against LiFi.
@@ -41,7 +42,7 @@ export async function fetchOneInchQuote(req: OneInchQuoteRequest): Promise<OneIn
   url.searchParams.set("includeTokensInfo", "true");
   url.searchParams.set("includeGas", "true");
 
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     headers: {
       Authorization: `Bearer ${req.apiKey}`,
       Accept: "application/json",

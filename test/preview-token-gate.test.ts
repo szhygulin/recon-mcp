@@ -188,16 +188,16 @@ describe("send_transaction preview-token gate (EVM)", () => {
   });
 });
 
-describe("send_transaction preview-token gate (TRON bypass)", () => {
+describe("send_transaction preview-token gate (TRON — userDecision only)", () => {
   beforeEach(() => vi.resetModules());
   afterEach(() => vi.restoreAllMocks());
 
-  it("TRON handles do not require previewToken or userDecision (gate is EVM-only)", async () => {
-    // TRON has no preview_send step — the gate would be meaningless there.
-    // Verify the EVM-branch refusals don't fire for TRON by calling
-    // sendTransaction with ONLY { handle, confirmed } and asserting the
-    // error we hit is TRON-specific (e.g. no paired TRON address), not our
-    // preview-token error.
+  it("TRON handles require userDecision (not previewToken — no preview step on TRON)", async () => {
+    // TRON has no preview step so there's no `previewToken` to issue — but
+    // the `userDecision: "send"` literal still applies: it's the careless-
+    // mistake backstop that the agent surfaced the VERIFY-BEFORE-SIGNING
+    // block to the user before calling send_transaction. Missing the
+    // literal must fail BEFORE any USB signing attempt.
     vi.doMock("../src/signing/tron-usb-signer.js", () => ({
       getTronLedgerAddress: vi.fn().mockRejectedValue(new Error("no tron app")),
       signTronTxOnLedger: vi.fn(),
@@ -221,15 +221,123 @@ describe("send_transaction preview-token gate (TRON bypass)", () => {
     const { sendTransaction } = await import(
       "../src/modules/execution/index.js"
     );
-    // We intentionally omit previewToken + userDecision. On EVM this would
-    // throw "Missing `previewToken`" — on TRON the call must bypass the gate
-    // and proceed into the USB signing path (which we then see fail for an
-    // unrelated reason, confirming we got past the gate).
+    // Missing userDecision on TRON → refuse with the gate error (before
+    // touching USB). Pins the invariant: hostile-agent-friendly flows
+    // can't route through the TRON branch to bypass the preview-gate check.
     await expect(
       sendTransaction({
         handle: stamped.handle!,
         confirmed: true,
       }),
+    ).rejects.toThrow(/userDecision/);
+
+    // But the TRON gate does NOT require `previewToken` — there's no
+    // preview step to mint one. Passing only `userDecision` proceeds past
+    // the gate and hits the downstream USB-signing failure for unrelated
+    // reasons, confirming we got past the gate.
+    await expect(
+      sendTransaction({
+        handle: stamped.handle!,
+        confirmed: true,
+        userDecision: "send",
+      }),
     ).rejects.not.toThrow(/previewToken|userDecision/);
+  });
+});
+
+describe("send_transaction preview-token gate (Solana)", () => {
+  beforeEach(() => vi.resetModules());
+  afterEach(() => vi.restoreAllMocks());
+
+  /**
+   * Set up enough mocks for a Solana draft + preview + send pipeline to
+   * reach the gate checks. We only need the gate enforcement to fire —
+   * getting past it to USB signing is out of scope here; the address-
+   * mismatch and simulation-revert paths already have their own tests.
+   */
+  async function makeSolanaHandleAndPreview() {
+    const { Keypair } = await import("@solana/web3.js");
+    const wallet = Keypair.generate().publicKey.toBase58();
+    const recipient = Keypair.generate().publicKey.toBase58();
+    const connectionStub = {
+      getBalance: vi.fn().mockResolvedValue(5_000_000_000),
+      getAccountInfo: vi.fn(),
+      getLatestBlockhash: vi.fn().mockResolvedValue({
+        blockhash: "GfnhkAa2iy8cZV7X5SyyYmCHxFQjEbBuyyUSCBokixB9",
+        lastValidBlockHeight: 1000,
+      }),
+      simulateTransaction: vi.fn().mockResolvedValue({
+        context: { slot: 1 },
+        value: { err: null, logs: [], unitsConsumed: 5000 },
+      }),
+      getRecentPrioritizationFees: vi.fn().mockResolvedValue([]),
+    };
+    vi.doMock("../src/modules/solana/rpc.js", () => ({
+      getSolanaConnection: () => connectionStub,
+      resetSolanaConnection: () => {},
+    }));
+    const NONCE_VALUE = "GfnhkAa2iy8cZV7X5SyyYmCHxFQjEbBuyyUSCBokixB9";
+    vi.doMock("../src/modules/solana/nonce.js", async (origImport) => {
+      const actual =
+        await origImport<typeof import("../src/modules/solana/nonce.js")>();
+      return {
+        ...actual,
+        getNonceAccountValue: vi.fn().mockResolvedValue({
+          nonce: NONCE_VALUE,
+          authority: { toBase58: () => wallet, equals: () => true },
+        }),
+      };
+    });
+    const { buildSolanaNativeSend } = await import(
+      "../src/modules/solana/actions.js"
+    );
+    const draft = await buildSolanaNativeSend({
+      wallet,
+      to: recipient,
+      amount: "0.1",
+    });
+    const { previewSolanaSend } = await import(
+      "../src/modules/execution/index.js"
+    );
+    const pinned = await previewSolanaSend({ handle: draft.handle });
+    return { handle: draft.handle, pinned };
+  }
+
+  it("Solana handles require BOTH previewToken AND userDecision", async () => {
+    const { handle } = await makeSolanaHandleAndPreview();
+    const { sendTransaction } = await import(
+      "../src/modules/execution/index.js"
+    );
+    // Missing previewToken → refuse with that specific error first.
+    await expect(
+      sendTransaction({ handle, confirmed: true, userDecision: "send" }),
+    ).rejects.toThrow(/previewToken/);
+    // Present previewToken but missing userDecision → refuse with that error.
+    await expect(
+      sendTransaction({ handle, confirmed: true, previewToken: "anything" }),
+    ).rejects.toThrow(/userDecision/);
+  });
+
+  it("Solana handles refuse mismatched previewToken (post-refresh replay)", async () => {
+    const { handle, pinned } = await makeSolanaHandleAndPreview();
+    const { sendTransaction } = await import(
+      "../src/modules/execution/index.js"
+    );
+    // Present, correct userDecision, but token doesn't match what pin minted.
+    await expect(
+      sendTransaction({
+        handle,
+        confirmed: true,
+        previewToken: "00000000-0000-0000-0000-000000000000",
+        userDecision: "send",
+      }),
+    ).rejects.toThrow(/does not match the current pin/);
+    // Sanity: the real token from pinned would have been accepted (we don't
+    // run the signer here, just want to prove the refusal above is about the
+    // mismatch, not about token structure).
+    expect(pinned.previewToken).toBeDefined();
+    expect(pinned.previewToken).not.toBe(
+      "00000000-0000-0000-0000-000000000000",
+    );
   });
 });

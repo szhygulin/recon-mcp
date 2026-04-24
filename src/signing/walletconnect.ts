@@ -1,6 +1,7 @@
 import { SignClient } from "@walletconnect/sign-client";
 import type { SessionTypes } from "@walletconnect/types";
 import { getSdkError } from "@walletconnect/utils";
+import { chmodSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { CHAIN_IDS, CHAIN_ID_TO_NAME, type SupportedChain, type UnsignedTx } from "../types/index.js";
 import { EVM_ADDRESS } from "../shared/address-patterns.js";
@@ -10,6 +11,53 @@ import {
   resolveWalletConnectProjectId,
   getConfigDir,
 } from "../config/user-config.js";
+
+/**
+ * Recursively tighten permissions on the WalletConnect storage tree so the
+ * session symkey (held in `wc@2/core/.../keychain`) is readable only by the
+ * process owner. The `SignClient` storage backend writes files under the
+ * process umask (typically 022 → 0644); on a shared host any local user could
+ * read those files and decrypt relay traffic for the active session.
+ *
+ * We enforce 0700 on directories and 0600 on files. Applied idempotently on
+ * every `getSignClient()` call — cheap, and catches the case where the user's
+ * config dir was created by an older release that didn't set `mode: 0o700`.
+ * Swallows ENOENT / EACCES silently (another user-owned file in the same
+ * path, or a race during concurrent init) — the signing flow's on-device
+ * hash match remains the authoritative defense even if file perms are wrong.
+ */
+function tightenWcStoragePerms(root: string): void {
+  if (!existsSync(root)) return;
+  try {
+    const stack: string[] = [root];
+    while (stack.length > 0) {
+      const p = stack.pop()!;
+      let st;
+      try {
+        st = statSync(p);
+      } catch {
+        continue;
+      }
+      try {
+        chmodSync(p, st.isDirectory() ? 0o700 : 0o600);
+      } catch {
+        // Best-effort; if chmod fails (e.g. not our file), skip and keep going.
+      }
+      if (st.isDirectory()) {
+        let entries: string[] = [];
+        try {
+          entries = readdirSync(p);
+        } catch {
+          continue;
+        }
+        for (const entry of entries) stack.push(join(p, entry));
+      }
+    }
+  } catch {
+    // Defensive top-level swallow; perm-tightening failure must never break
+    // the signing pipeline (device checks are the real boundary).
+  }
+}
 
 /**
  * Default WalletConnect Cloud project ID. Users should provide their own via
@@ -72,6 +120,9 @@ export async function getSignClient(): Promise<InstanceType<typeof SignClient>> 
   // Without this, the SignClient defaults to an unstorage path in cwd — which Claude Code
   // kills on exit, leaving the saved session topic useless (no keys to decrypt the relay).
   const storageDbPath = join(getConfigDir(), "walletconnect.db");
+  // Defensive re-tighten before SignClient touches the tree (catches the
+  // post-restart state where older releases created the dir world-readable).
+  tightenWcStoragePerms(getConfigDir());
   client = await SignClient.init({
     projectId: getProjectId(),
     metadata: {
@@ -82,6 +133,9 @@ export async function getSignClient(): Promise<InstanceType<typeof SignClient>> 
     },
     storageOptions: { database: storageDbPath },
   });
+  // Re-tighten after SignClient.init — it may have created new files under
+  // the process umask (default 022). Idempotent; cheap.
+  tightenWcStoragePerms(getConfigDir());
 
   // Attempt to restore the most recent session. Prefer the explicit topic from user config,
   // but fall back to the most recent active session if the topic is missing or stale (can
