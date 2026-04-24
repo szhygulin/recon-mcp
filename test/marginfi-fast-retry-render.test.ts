@@ -114,7 +114,10 @@ describe("renderSolanaPrepareSummaryBlock — fast-retry advisory banner", () =>
     expect(out).toMatch(/FAST-RETRY ELIGIBLE/);
     expect(out).toContain("abc12345");
     expect(out).toMatch(/NotEnoughSamples/);
-    expect(out).toMatch(/'send full'/);
+    // The orphaned "send full" verb was removed (no such code path). The
+    // banner now points users at re-preparing for intent changes.
+    expect(out).not.toMatch(/'send full'/);
+    expect(out).toMatch(/re-run\s+prepare_marginfi_borrow/);
     // The banner must appear BEFORE the PREPARED header — otherwise the
     // user scrolls past it reading the summary first.
     expect(out.indexOf("FAST-RETRY ELIGIBLE")).toBeLessThan(
@@ -175,6 +178,14 @@ describe("renderSolanaAgentTaskBlock — abridged template when tx.fastRetry is 
 
     // Fallback instruction if the agent has no memory of the prior approval.
     expect(out).toMatch(/DO NOT trust this FAST-RETRY header/);
+
+    // v1.5 measurement instrumentation: the abridged CHECK A script drops
+    // @solana/web3.js entirely (inline base58) and prints a timingsMs JSON
+    // object so the user can attribute latency. Surface via a ⏱ Timings
+    // line in the CHECKS PERFORMED template.
+    expect(out).not.toMatch(/require\('@solana\/web3\.js'\)/);
+    expect(out).toMatch(/timingsMs/);
+    expect(out).toMatch(/⏱ Timings:/);
   });
 
   it("the full template renders when tx.fastRetry is absent on marginfi_borrow", () => {
@@ -185,5 +196,12 @@ describe("renderSolanaAgentTaskBlock — abridged template when tx.fastRetry is 
     // Full template carries the "INSTRUCTION DECODE" phrase, abridged does not.
     expect(out).toMatch(/INSTRUCTION DECODE/);
     expect(out).not.toMatch(/FAST-RETRY MODE/);
+
+    // v1.5 measurement instrumentation: the full combined script stays
+    // on @solana/web3.js (needed for Message/VersionedMessage/Connection)
+    // but carries its own timingsMs breakdown + ⏱ Timings echo line.
+    expect(out).toMatch(/require\('@solana\/web3\.js'\)/);
+    expect(out).toMatch(/timingsMs/);
+    expect(out).toMatch(/⏱ Timings:/);
   });
 });
