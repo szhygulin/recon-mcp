@@ -133,23 +133,24 @@ export function getClient(chain: SupportedChain): PublicClient {
   // via RPC_BATCH=1. Multicall3 still batches at the contract layer regardless.
   const batchEnabled = process.env.RPC_BATCH === "1";
   // retryCount/retryDelay: viem's http transport retries on 429 (and
-  // other transient 4xx/5xx) with exponential backoff `retryDelay *
-  // 2^attempt`. An earlier iteration bumped these to 5/600ms to ride out
-  // sustained Infura saturation; live testing (#88 trace, 6-minute hangs
-  // on multi-wallet portfolio fan-outs) showed that aggressive retry
-  // multiplies wall-clock pain under rate-limit — each retry attempt adds
-  // 600ms-10s of blocked time, and when hundreds of calls retry in
-  // parallel, the user watches the tool "think" for minutes before any
-  // coverage fails. Correct direction: REDUCE requests at the source
-  // (Morpho discovery is now opt-in, the dominant hotspot) rather than
-  // retry harder. Original `3/500` stays — worst-case ~3.5s is a sane
-  // bound for a request that's going to fail anyway.
+  // other transient 4xx/5xx) with exponential backoff — the predicate
+  // in viem's `shouldRetry` already includes 429, 503, 504, etc. An
+  // earlier iteration at 5/600 made wall-clock pain far worse because
+  // hundreds of parallel calls were each multiplying 18s of blocked
+  // retry; reverted to 3/500. Now that we've cut the parallelism-at-
+  // source (cross-wallet batch probe, Morpho opt-in, cap=2 limiter),
+  // the remaining requests are the ones that matter — so a modest bump
+  // to 4/700 gives us a ~10.5s worst case (700/1400/2800/5600 backoff)
+  // that rides out sustained free-tier saturation without the pre-
+  // reduction death spiral. User's explicit ask on the #88 trace:
+  // "make sure that rate limited requests retried" — framework-level
+  // 429 retry was already happening; this just extends the window.
   const client = createPublicClient({
     chain: VIEM_CHAINS[chain],
     transport: limitedHttp(chain, url, {
       batch: batchEnabled,
-      retryCount: 3,
-      retryDelay: 500,
+      retryCount: 4,
+      retryDelay: 700,
     }),
   });
   clients.set(chain, client);

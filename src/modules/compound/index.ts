@@ -180,6 +180,96 @@ async function probeCompoundMarkets(
   );
 }
 
+/**
+ * Cross-wallet batch prefetch for Compound exposure probes. Issues ONE
+ * multicall per chain containing `balanceOf` + `borrowBalanceOf` for
+ * every (wallet × market) pair; results are split per-wallet and
+ * stored in the probe cache. Called by the portfolio aggregator before
+ * the per-wallet fan-out so each per-wallet `getCompoundPositions`
+ * hits the cache instead of firing its own probe.
+ *
+ * Issue #88 retest at cap=2 concurrency still 429'd because N-wallets
+ * × M-chains probe multicalls saturated the free-tier key even with
+ * the limiter queuing them. This batch collapses `wallets × chains`
+ * probe multicalls to `chains` probe multicalls (one per chain,
+ * regardless of wallet count) — a 4× reduction on a 4-wallet call and
+ * more for bigger sets. Whole-multicall rejection populates the cache
+ * with errored entries for every wallet on that chain so the per-
+ * wallet reads see the failure signal.
+ */
+export async function prefetchCompoundProbes(
+  wallets: `0x${string}`[],
+  chains: SupportedChain[],
+): Promise<void> {
+  if (wallets.length === 0 || chains.length === 0) return;
+  await Promise.all(chains.map((chain) => prefetchChainProbes(wallets, chain)));
+}
+
+async function prefetchChainProbes(
+  wallets: `0x${string}`[],
+  chain: SupportedChain,
+): Promise<void> {
+  const markets = listMarkets(chain);
+  if (markets.length === 0) return;
+  const client = getClient(chain);
+  const contracts = wallets.flatMap((wallet) =>
+    markets.flatMap((m) => [
+      { address: m.address, abi: cometAbi, functionName: "balanceOf" as const, args: [wallet] as const },
+      { address: m.address, abi: cometAbi, functionName: "borrowBalanceOf" as const, args: [wallet] as const },
+    ]),
+  );
+  try {
+    const results = await client.multicall({ contracts, allowFailure: true });
+    // Walk results and split per-wallet. Each wallet occupies a
+    // contiguous `markets.length * 2` slice in the same order we built
+    // `contracts`.
+    let i = 0;
+    for (const wallet of wallets) {
+      const active: { name: string; address: `0x${string}` }[] = [];
+      const errored: { name: string; error: string }[] = [];
+      for (const market of markets) {
+        const supply = results[i++];
+        const borrow = results[i++];
+        if (supply.status !== "success") {
+          errored.push({
+            name: market.name,
+            error: `probe balanceOf(${multicallErrorMessage(supply)}) — RPC issue, full position read skipped`,
+          });
+          continue;
+        }
+        if (borrow.status !== "success") {
+          errored.push({
+            name: market.name,
+            error: `probe borrowBalanceOf(${multicallErrorMessage(borrow)}) — RPC issue, full position read skipped`,
+          });
+          continue;
+        }
+        const supplied = supply.result as bigint;
+        const borrowed = borrow.result as bigint;
+        if (supplied > 0n || borrowed > 0n) {
+          active.push({ name: market.name, address: market.address });
+        }
+      }
+      cache.set(
+        `compound-probe:${chain}:${wallet.toLowerCase()}`,
+        { active, errored },
+        CACHE_TTL.POSITION,
+      );
+    }
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    const error = `probe multicall rejected (${reason}) — no exposure signal available`;
+    for (const wallet of wallets) {
+      const errored = markets.map((m) => ({ name: m.name, error }));
+      cache.set(
+        `compound-probe:${chain}:${wallet.toLowerCase()}`,
+        { active: [], errored },
+        CACHE_TTL.POSITION,
+      );
+    }
+  }
+}
+
 async function runCompoundProbe(
   wallet: `0x${string}`,
   chain: SupportedChain,
