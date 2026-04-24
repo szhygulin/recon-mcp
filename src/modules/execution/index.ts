@@ -539,6 +539,7 @@ export async function previewSolanaSend(args: {
   const draft = getSolanaDraft(args.handle);
   const conn = getSolanaConnection();
 
+  let pinned: UnsignedSolanaTx;
   if (draft.meta.nonce) {
     // Durable-nonce path: refresh the nonce value in case someone else
     // advanced it between prepare and preview (edge case — another tx
@@ -556,13 +557,65 @@ export async function previewSolanaSend(args: {
     }
     // Update meta so pinSolanaHandle's consistency check passes.
     draft.meta.nonce.value = fresh.nonce;
-    return pinSolanaHandle(args.handle, fresh.nonce);
+    pinned = pinSolanaHandle(args.handle, fresh.nonce);
+  } else {
+    // Legacy recent-blockhash path — only reachable for `nonce_init` now,
+    // since every send/close is durable-nonce-protected.
+    const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash(
+      "confirmed",
+    );
+    pinned = pinSolanaHandle(args.handle, blockhash, lastValidBlockHeight);
   }
 
-  // Legacy recent-blockhash path — only reachable for `nonce_init` now,
-  // since every send/close is durable-nonce-protected.
-  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
-  return pinSolanaHandle(args.handle, blockhash, lastValidBlockHeight);
+  // Pre-sign simulation gate (issue #115). Run `simulateTransaction` on the
+  // pinned versioned tx so program-level reverts (MarginFi OperationBorrowOnly,
+  // stale-oracle rejects, bank-paused asserts, etc.) surface BEFORE the user
+  // is asked to blind-sign on Ledger. Mirrors the EVM enrichTx path which
+  // runs eth_call at prepare_* time.
+  //
+  // Skip for `nonce_init`: that's a legacy-message one-time setup (createAccount
+  // + nonceInitialize) with no interesting revert surface worth a pre-sign
+  // RPC. Every other Solana action here is v0.
+  if (pinned.action !== "nonce_init") {
+    const { simulatePinnedSolanaTx } = await import("../solana/simulate.js");
+    try {
+      const sim = await simulatePinnedSolanaTx(conn, pinned.messageBase64);
+      if (!sim.ok) {
+        const header = sim.anchorError
+          ? `Pre-sign simulation REJECTED the ${pinned.action} tx — ` +
+            `${sim.anchorError.name} (${sim.anchorError.code}): ${sim.anchorError.message}.`
+          : `Pre-sign simulation REJECTED the ${pinned.action} tx. Raw err: ${sim.err ?? "(unknown)"}.`;
+        const logTail = sim.logs && sim.logs.length
+          ? `\nLast program logs:\n  ${sim.logs.slice(-8).join("\n  ")}`
+          : "";
+        throw new Error(
+          header +
+            logTail +
+            `\nRefusing to surface the Ledger hash — the tx would revert on broadcast. ` +
+            `Resolve the underlying issue (e.g. withdraw conflicting collateral, wait for oracle freshness, ` +
+            `pick a different bank) and call prepare_* again.`,
+        );
+      }
+      pinned.simulation = sim;
+    } catch (e) {
+      // Distinguish our own throw (preview-level rejection — re-raise) from
+      // an RPC-level error (transient — swallow and proceed without the
+      // simulation field; broadcast-side preflight is the backstop).
+      if (
+        e instanceof Error &&
+        /Pre-sign simulation REJECTED/.test(e.message)
+      ) {
+        throw e;
+      }
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[vaultpilot/solana] pre-sign simulate RPC failed: ${e instanceof Error ? e.message : String(e)}. ` +
+          `Proceeding without simulation — broadcast-side preflight will still catch reverts.`,
+      );
+    }
+  }
+
+  return pinned;
 }
 
 /**
