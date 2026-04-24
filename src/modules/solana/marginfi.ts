@@ -1140,11 +1140,6 @@ async function wrapWithNonce(
   const altPubkeys = await getMarginfiGroupAltAddresses();
   const alts = await resolveAddressLookupTables(conn, altPubkeys);
 
-  const instructions: TransactionInstruction[] = [
-    buildAdvanceNonceIx(ctx.noncePubkey, ctx.fromPubkey),
-    ...bankIxs,
-  ];
-
   const accountIndex = p.accountIndex ?? 0;
   const nonceAccountStr = ctx.noncePubkey.toBase58();
   const marginfiAccountStr = ctx.marginfiAccount.toBase58();
@@ -1158,18 +1153,90 @@ async function wrapWithNonce(
   for (const balance of ctx.wrapper.activeBalances) {
     if (balance.active) touchedBanks.add(balance.bankPk.toBase58());
   }
+  const touchedBanksArr = [...touchedBanks];
+
+  // Issue #116 ask C — auto-prepend Switchboard Pull oracle cranks when
+  // any touched bank uses a SwitchboardPull feed. These feeds only land
+  // on-chain via an explicit update ix; without it the risk engine
+  // rejects with `RiskEngineInitRejected (6009)` even when health is fine.
+  // The MarginFi UI does this same prepend automatically.
+  //
+  // Best-effort: if `createUpdateFeedIx` throws (Switchboard Crossbar
+  // gateway down, loadProgramFromConnection fails, etc.) we log and
+  // proceed without crank. The #115 sim gate still catches the revert
+  // and the #116 diagnosis will name the stale oracle — no worse than
+  // before this PR for the bad-gateway edge case.
+  const client = await getMarginfiClient(conn, ctx.fromPubkey);
+  const { buildSwitchboardCrankIxs, patchSecp256k1CrankIxPosition } =
+    await import("./swb-crank.js");
+  let crankInstructions: TransactionInstruction[] = [];
+  let crankLuts: AddressLookupTableAccount[] = [];
+  let crankedOracles: string[] = [];
+  try {
+    const result = await buildSwitchboardCrankIxs(
+      conn,
+      ctx.fromPubkey,
+      touchedBanksArr,
+      client,
+    );
+    crankInstructions = result.instructions;
+    crankLuts = result.luts;
+    crankedOracles = result.oracles;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[vaultpilot/marginfi] Switchboard crank prepend failed (${e instanceof Error ? e.message : String(e)}). ` +
+        `Proceeding without crank — if a touched bank needs fresh oracle data, ` +
+        `the pre-sign simulation gate will catch it with a diagnosis naming the stale feed.`,
+    );
+  }
+
+  // Assemble the final ix list:
+  //   ix[0] = nonceAdvance  (REQUIRED — Agave detects durable-nonce txs by
+  //                          checking ix[0] specifically; any other position
+  //                          falls back to the ~90s blockhash window)
+  //   ix[1] = ComputeBudget.setComputeUnitLimit  (only when crank adds
+  //            SWB ixs; marginfi borrow alone fits in the 200k default,
+  //            but SWB secp256k1 verify + marginfi risk engine combined
+  //            peaked at ~400k CU in live probes — 1.4M is the SDK's
+  //            simulate-health default, same headroom used here)
+  //   ix[2] = Secp256k1 sig-verify pre-compile  (crank ix 0; MUST have
+  //            its three instruction_index bytes patched to point to its
+  //            new position — the SDK hard-codes 0, which only works when
+  //            it's the very first tx instruction; live-probed to fail
+  //            with Custom:2 otherwise)
+  //   ix[3] = Switchboard submit  (crank ix 1; positions-insensitive)
+  //   ix[4..] = MarginFi action ixs
+  const { ComputeBudgetProgram } = await import("@solana/web3.js");
+  const nonceIx = buildAdvanceNonceIx(ctx.noncePubkey, ctx.fromPubkey);
+  const computeIx = ComputeBudgetProgram.setComputeUnitLimit({
+    units: 1_400_000,
+  });
+  const prefix: TransactionInstruction[] =
+    crankInstructions.length > 0 ? [nonceIx, computeIx] : [nonceIx];
+  const patchedCrank = crankInstructions.map((ix, idx) =>
+    patchSecp256k1CrankIxPosition(ix, prefix.length + idx),
+  );
+  const instructions: TransactionInstruction[] = [
+    ...prefix,
+    ...patchedCrank,
+    ...bankIxs,
+  ];
 
   const draft: SolanaTxDraft = {
     kind: "v0",
     payerKey: ctx.fromPubkey,
     instructions,
-    addressLookupTableAccounts: alts,
+    addressLookupTableAccounts: [...alts, ...crankLuts],
     meta: {
       action: actionAction,
       from: p.wallet,
       description:
         `MarginFi ${actionLabel}: ${ctx.amountUi.toFixed()} ${ctx.symbol} ` +
-        `(account ${marginfiAccountStr.slice(0, 8)}…, bank ${ctx.bank.address.toBase58().slice(0, 8)}…)`,
+        `(account ${marginfiAccountStr.slice(0, 8)}…, bank ${ctx.bank.address.toBase58().slice(0, 8)}…)` +
+        (crankedOracles.length > 0
+          ? ` — auto-cranking ${crankedOracles.length} Switchboard oracle(s)`
+          : ""),
       decoded: {
         functionName: `marginfi.${actionAction.replace("marginfi_", "lending_account_")}`,
         args: {
@@ -1188,7 +1255,11 @@ async function wrapWithNonce(
         authority: ctx.fromPubkey.toBase58(),
         value: ctx.nonceValue,
       },
-      marginfiTouchedBanks: [...touchedBanks],
+      marginfiTouchedBanks: touchedBanksArr,
+      marginfiOracleCranks: {
+        oracles: crankedOracles,
+        instructionCount: crankInstructions.length,
+      },
     },
   };
 

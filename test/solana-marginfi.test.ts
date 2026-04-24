@@ -60,6 +60,7 @@ vi.mock("../src/modules/solana/nonce.js", async (importOriginal) => {
 // suite without the 147MB transitive footprint on each test.
 const wrapperFetchMock = vi.fn();
 const makeInitIxMock = vi.fn();
+const createUpdateFeedIxMock = vi.fn();
 vi.mock("@mrgnlabs/marginfi-client-v2", () => ({
   MarginfiClient: {
     fetch: vi.fn(),
@@ -70,6 +71,10 @@ vi.mock("@mrgnlabs/marginfi-client-v2", () => ({
   instructions: {
     makeInitMarginfiAccountPdaIx: (...args: unknown[]) => makeInitIxMock(...args),
   },
+  // Switchboard crank prepend (issue #116 ask C) — mocked out so tests
+  // can exercise the wrapWithNonce branching without pulling in the
+  // real Switchboard Crossbar HTTP client.
+  createUpdateFeedIx: (...args: unknown[]) => createUpdateFeedIxMock(...args),
   getConfig: () => ({
     programId: new PublicKey("MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA"),
     groupPk: new PublicKey("4qp6Fx6tnZkY5Wropq9wUYgtFxXKwE6viZxFHg3rdAG8"),
@@ -215,6 +220,11 @@ beforeEach(async () => {
   wrapperFetchMock.mockReset();
   makeInitIxMock.mockReset();
   makeInitIxMock.mockResolvedValue(dummyIx("init"));
+  createUpdateFeedIxMock.mockReset();
+  // Default: no SwitchboardPull oracle touched → crank helper returns
+  // empty ixs. Individual tests exercising the crank path override
+  // to return real-ish secp+submit ixs.
+  createUpdateFeedIxMock.mockResolvedValue({ instructions: [], luts: [] });
 
   const mfn = await import("../src/modules/solana/marginfi.js");
   mfn.__clearMarginfiClientCache();
@@ -1130,6 +1140,347 @@ describe("marginfiTouchedBanks stamping on draft meta (issue #116)", () => {
     // inactive entry excluded.
     expect(draft.meta.marginfiTouchedBanks!.sort()).toEqual(
       [BANK_USDC.toBase58(), OTHER_BANK.toBase58()].sort(),
+    );
+  });
+});
+
+/**
+ * Issue #116 ask C — when a MarginFi action touches a SwitchboardPull
+ * bank, auto-prepend a Switchboard crank ix so the SOL/etc. oracle is
+ * fresh at risk-engine check time. Without this, every borrow/withdraw
+ * against SOL collateral hits RiskEngineInitRejected until a foreign
+ * cranker happens to have run recently.
+ */
+describe("Switchboard crank prepend (issue #116 ask C)", () => {
+  const SECP256K1_PROGRAM = "KeccakSecp256k11111111111111111111111111111";
+  const SWB_PROGRAM = "SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv";
+  const NONCE_VALUE = "GfnhkAa2iy8cZV7X5SyyYmCHxFQjEbBuyyUSCBokixB9";
+  const SOL_BANK_PK = new PublicKey(
+    "CCKtUs6Cgwo4aaQUmBPmyoApH2gUDErxNZCAntD6LYGh",
+  );
+  const SOL_ORACLE_PK = new PublicKey(
+    "4Hmd6PdjVA9auCoScE12iaBogfwS4ZXQ6VZoBeqanwWW",
+  );
+
+  /** Build a plausible-shaped Secp256k1 ix — 129 bytes of data, num_sigs=1,
+   *  all three instruction_index fields initialized to 0 (SDK default). */
+  function fakeSecp256k1Ix(): TransactionInstruction {
+    const data = Buffer.alloc(129, 0);
+    data.writeUInt8(1, 0); // num_signatures
+    data.writeUInt16LE(12, 1); // signature_offset
+    data.writeUInt8(0, 3); // signature_instruction_index (hardcoded 0 by SDK)
+    data.writeUInt16LE(77, 4); // eth_address_offset
+    data.writeUInt8(0, 6); // eth_address_instruction_index
+    data.writeUInt16LE(97, 7); // message_data_offset
+    data.writeUInt16LE(32, 9); // message_data_size
+    data.writeUInt8(0, 11); // message_instruction_index
+    return new TransactionInstruction({
+      programId: new PublicKey(SECP256K1_PROGRAM),
+      keys: [],
+      data,
+    });
+  }
+
+  function fakeSwbSubmitIx(): TransactionInstruction {
+    return new TransactionInstruction({
+      programId: new PublicKey(SWB_PROGRAM),
+      keys: [{ pubkey: SOL_ORACLE_PK, isSigner: false, isWritable: true }],
+      data: Buffer.alloc(36, 0),
+    });
+  }
+
+  /** Install a client whose `banks` map carries an oracleSetup the
+   *  crank helper will recognize as SwitchboardPull. */
+  async function installClientWithSwbBank(): Promise<void> {
+    const mfn = await import("../src/modules/solana/marginfi.js");
+    const banks = new Map<string, unknown>();
+    banks.set(SOL_BANK_PK.toBase58(), {
+      address: SOL_BANK_PK,
+      mint: new PublicKey(USDC_MINT),
+      tokenSymbol: "SOL",
+      oracleKey: SOL_ORACLE_PK,
+      config: {
+        oracleSetup: "SwitchboardPull",
+        oracleKeys: [SOL_ORACLE_PK],
+        oracleMaxAge: 70,
+        assetWeightInit: new BigNumber(0.8),
+        liabilityWeightInit: new BigNumber(1.1),
+      },
+      isPaused: false,
+    });
+    // Also add the target USDC bank (findBankForMint reaches for this).
+    banks.set(BANK_USDC.toBase58(), {
+      address: BANK_USDC,
+      mint: new PublicKey(USDC_MINT),
+      tokenSymbol: "USDC",
+      oracleKey: new PublicKey("Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX"),
+      config: {
+        oracleSetup: "PythPushOracle",
+        oracleKeys: [
+          new PublicKey("Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX"),
+        ],
+        oracleMaxAge: 300,
+        assetWeightInit: new BigNumber(0.9),
+        liabilityWeightInit: new BigNumber(1.1),
+      },
+      isPaused: false,
+    });
+    mfn.__setMarginfiClientCacheEntry({
+      getBankByMint: (mint: PublicKey) =>
+        mint.toBase58() === USDC_MINT ? banks.get(BANK_USDC.toBase58()) : null,
+      banks,
+      oraclePrices: new Map(),
+    });
+  }
+
+  async function setupWithActiveSolBalance(): Promise<void> {
+    const { getNonceAccountValue } = await import(
+      "../src/modules/solana/nonce.js"
+    );
+    (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nonce: NONCE_VALUE,
+      authority: WALLET_KEYPAIR.publicKey,
+    });
+    connectionStub.getAccountInfo.mockResolvedValue({
+      data: Buffer.alloc(0),
+      owner: new PublicKey("11111111111111111111111111111111"),
+      lamports: 1,
+      executable: false,
+    });
+    await installClientWithSwbBank();
+    // Wrapper reports an active balance on the SOL bank so the touched-
+    // banks set includes both USDC (target) and SOL (SwitchboardPull).
+    wrapperFetchMock.mockResolvedValue({
+      address: new PublicKey("11111111111111111111111111111111"),
+      activeBalances: [{ active: true, bankPk: SOL_BANK_PK }],
+      makeDepositIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("deposit")], keys: [] }),
+      makeWithdrawIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("withdraw")], keys: [] }),
+      makeBorrowIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("borrow")], keys: [] }),
+      makeRepayIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("repay")], keys: [] }),
+      computeHealthComponents: () => ({
+        assets: new BigNumber(0),
+        liabilities: new BigNumber(0),
+      }),
+      computeHealthComponentsLegacy: () => ({
+        assets: new BigNumber(70),
+        liabilities: new BigNumber(0),
+      }),
+      computeFreeCollateral: () => new BigNumber(70),
+    });
+  }
+
+  it("prepends secp256k1 + submit ixs, patches instruction_index to the new position", async () => {
+    await setupWithActiveSolBalance();
+    // Crank helper returns 2 ixs: fake secp256k1 (indices hardcoded to 0)
+    // + a fake submit ix.
+    createUpdateFeedIxMock.mockResolvedValue({
+      instructions: [fakeSecp256k1Ix(), fakeSwbSubmitIx()],
+      luts: [],
+    });
+    const { buildMarginfiBorrow } = await import(
+      "../src/modules/solana/marginfi.js"
+    );
+    const { getSolanaDraft } = await import(
+      "../src/signing/solana-tx-store.js"
+    );
+    const res = await buildMarginfiBorrow({
+      wallet: WALLET,
+      symbol: "USDC",
+      amount: "1",
+    });
+    const draft = getSolanaDraft(res.handle);
+    if (draft.kind !== "v0") throw new Error("expected v0");
+    // Final layout: nonceAdvance(0), ComputeBudget(1), secp256k1(2), swb-submit(3), borrow(4)
+    expect(draft.instructions).toHaveLength(5);
+    expect(draft.instructions[0]!.programId.toBase58()).toBe(SYSTEM_PROGRAM);
+    expect(draft.instructions[1]!.programId.toBase58()).toBe(
+      "ComputeBudget111111111111111111111111111111",
+    );
+    expect(draft.instructions[2]!.programId.toBase58()).toBe(SECP256K1_PROGRAM);
+    expect(draft.instructions[3]!.programId.toBase58()).toBe(SWB_PROGRAM);
+    // Patched ix at position 2 should have its three instruction_index bytes
+    // rewritten from 0 (SDK default) to 2 (actual position).
+    const secp = draft.instructions[2]!;
+    expect(secp.data.readUInt8(3)).toBe(2); // signature_instruction_index
+    expect(secp.data.readUInt8(6)).toBe(2); // eth_address_instruction_index
+    expect(secp.data.readUInt8(11)).toBe(2); // message_instruction_index
+    // Meta carries the crank info for verification-block rendering.
+    expect(draft.meta.marginfiOracleCranks).toBeDefined();
+    expect(draft.meta.marginfiOracleCranks!.oracles).toEqual([
+      SOL_ORACLE_PK.toBase58(),
+    ]);
+    expect(draft.meta.marginfiOracleCranks!.instructionCount).toBe(2);
+    // Description includes the user-visible cue.
+    expect(res.description).toMatch(/auto-cranking 1 Switchboard oracle/);
+  });
+
+  it("skips the crank (no ComputeBudget prepend) when no SwitchboardPull bank is touched", async () => {
+    const { getNonceAccountValue } = await import(
+      "../src/modules/solana/nonce.js"
+    );
+    (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue({
+      nonce: NONCE_VALUE,
+      authority: WALLET_KEYPAIR.publicKey,
+    });
+    connectionStub.getAccountInfo.mockResolvedValue({
+      data: Buffer.alloc(0),
+      owner: new PublicKey("11111111111111111111111111111111"),
+      lamports: 1,
+      executable: false,
+    });
+    // Install a client whose touched banks are ALL PythPushOracle — the
+    // crank helper's filter should match none and return empty.
+    const mfn = await import("../src/modules/solana/marginfi.js");
+    const banks = new Map<string, unknown>();
+    banks.set(BANK_USDC.toBase58(), {
+      address: BANK_USDC,
+      mint: new PublicKey(USDC_MINT),
+      tokenSymbol: "USDC",
+      oracleKey: new PublicKey("Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX"),
+      config: {
+        oracleSetup: "PythPushOracle",
+        oracleKeys: [
+          new PublicKey("Dpw1EAVrSB1ibxiDQyTAW6Zip3J4Btk2x4SgApQCeFbX"),
+        ],
+        oracleMaxAge: 300,
+        assetWeightInit: new BigNumber(0.9),
+        liabilityWeightInit: new BigNumber(1.1),
+      },
+      isPaused: false,
+    });
+    mfn.__setMarginfiClientCacheEntry({
+      getBankByMint: () => banks.get(BANK_USDC.toBase58()),
+      banks,
+      oraclePrices: new Map(),
+    });
+    wrapperFetchMock.mockResolvedValue({
+      address: new PublicKey("11111111111111111111111111111111"),
+      activeBalances: [],
+      makeDepositIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("deposit")], keys: [] }),
+      makeWithdrawIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("withdraw")], keys: [] }),
+      makeBorrowIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("borrow")], keys: [] }),
+      makeRepayIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("repay")], keys: [] }),
+      computeHealthComponents: () => ({
+        assets: new BigNumber(0),
+        liabilities: new BigNumber(0),
+      }),
+      computeHealthComponentsLegacy: () => ({
+        assets: new BigNumber(1000),
+        liabilities: new BigNumber(0),
+      }),
+      computeFreeCollateral: () => new BigNumber(1000),
+    });
+    const { buildMarginfiBorrow } = await import(
+      "../src/modules/solana/marginfi.js"
+    );
+    const { getSolanaDraft } = await import(
+      "../src/signing/solana-tx-store.js"
+    );
+    const res = await buildMarginfiBorrow({
+      wallet: WALLET,
+      symbol: "USDC",
+      amount: "1",
+    });
+    const draft = getSolanaDraft(res.handle);
+    if (draft.kind !== "v0") throw new Error("expected v0");
+    // Bare: nonceAdvance + borrow, nothing else. No ComputeBudget bloat.
+    expect(draft.instructions).toHaveLength(2);
+    expect(draft.instructions[0]!.programId.toBase58()).toBe(SYSTEM_PROGRAM);
+    // Ensure createUpdateFeedIx was never called — not just that nothing
+    // came back. (Calls an HTTP gateway; must skip for Pyth-only flows.)
+    expect(createUpdateFeedIxMock).not.toHaveBeenCalled();
+    expect(draft.meta.marginfiOracleCranks!.oracles).toEqual([]);
+    expect(draft.meta.marginfiOracleCranks!.instructionCount).toBe(0);
+  });
+
+  it("falls through without crank when createUpdateFeedIx throws (gateway failure)", async () => {
+    await setupWithActiveSolBalance();
+    createUpdateFeedIxMock.mockRejectedValue(
+      new Error("crossbar gateway unreachable"),
+    );
+    const { buildMarginfiBorrow } = await import(
+      "../src/modules/solana/marginfi.js"
+    );
+    const { getSolanaDraft } = await import(
+      "../src/signing/solana-tx-store.js"
+    );
+    const res = await buildMarginfiBorrow({
+      wallet: WALLET,
+      symbol: "USDC",
+      amount: "1",
+    });
+    // Tx still built — just without crank. The sim gate + #116 diagnosis
+    // remain as backstops for the resulting stale-oracle revert.
+    const draft = getSolanaDraft(res.handle);
+    if (draft.kind !== "v0") throw new Error("expected v0");
+    expect(draft.instructions[0]!.programId.toBase58()).toBe(SYSTEM_PROGRAM);
+    expect(draft.meta.marginfiOracleCranks!.oracles).toEqual([]);
+    expect(draft.meta.marginfiOracleCranks!.instructionCount).toBe(0);
+    // No secp256k1 ix in the final tx.
+    for (const ix of draft.instructions) {
+      expect(ix.programId.toBase58()).not.toBe(SECP256K1_PROGRAM);
+    }
+  });
+
+  it("patchSecp256k1CrankIxPosition: rewrites the three instruction_index bytes in place", async () => {
+    const { patchSecp256k1CrankIxPosition } = await import(
+      "../src/modules/solana/swb-crank.js"
+    );
+    const ix = fakeSecp256k1Ix();
+    // SDK-built default: all indices = 0 (ix at tx position 0).
+    expect(ix.data.readUInt8(3)).toBe(0);
+    expect(ix.data.readUInt8(6)).toBe(0);
+    expect(ix.data.readUInt8(11)).toBe(0);
+    const patched = patchSecp256k1CrankIxPosition(ix, 7);
+    expect(patched.data.readUInt8(3)).toBe(7);
+    expect(patched.data.readUInt8(6)).toBe(7);
+    expect(patched.data.readUInt8(11)).toBe(7);
+    // All other bytes are untouched — num_sigs, offsets, etc.
+    expect(patched.data.readUInt8(0)).toBe(1); // num_sigs
+    expect(patched.data.readUInt16LE(1)).toBe(12); // signature_offset
+    // Original ix is NOT mutated.
+    expect(ix.data.readUInt8(3)).toBe(0);
+  });
+
+  it("patchSecp256k1CrankIxPosition: no-op for non-secp256k1 programs", async () => {
+    const { patchSecp256k1CrankIxPosition } = await import(
+      "../src/modules/solana/swb-crank.js"
+    );
+    const other = new TransactionInstruction({
+      programId: new PublicKey(SWB_PROGRAM),
+      keys: [],
+      data: Buffer.alloc(129, 0xaa),
+    });
+    const result = patchSecp256k1CrankIxPosition(other, 7);
+    // Same object back, data unchanged.
+    expect(result).toBe(other);
+    expect(result.data.readUInt8(3)).toBe(0xaa);
+  });
+
+  it("patchSecp256k1CrankIxPosition: throws if multi-signature payload shows up", async () => {
+    const { patchSecp256k1CrankIxPosition } = await import(
+      "../src/modules/solana/swb-crank.js"
+    );
+    const multi = fakeSecp256k1Ix();
+    multi.data.writeUInt8(2, 0); // num_sigs = 2
+    expect(() => patchSecp256k1CrankIxPosition(multi, 2)).toThrow(
+      /expected 1 signature.*got 2/,
     );
   });
 });

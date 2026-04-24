@@ -89,6 +89,18 @@ export interface SolanaDraftMeta {
    * as "diagnosis N/A").
    */
   marginfiTouchedBanks?: string[];
+  /**
+   * Switchboard oracle feeds that were cranked as part of this tx —
+   * populated when `prepare_marginfi_*` detects any touched
+   * SwitchboardPull bank and auto-prepends `createUpdateFeedIx`
+   * instructions (issue #116 ask C). Empty array means the check ran
+   * but nothing needed cranking; absent means the builder skipped
+   * the check (non-MarginFi action).
+   */
+  marginfiOracleCranks?: {
+    oracles: string[];
+    instructionCount: number;
+  };
 }
 
 /**
