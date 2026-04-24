@@ -37,6 +37,8 @@ const connectionStub = {
   getLatestBlockhash: vi.fn(),
   getRecentPrioritizationFees: vi.fn(),
   sendRawTransaction: vi.fn(),
+  simulateTransaction: vi.fn(),
+  getMinimumBalanceForRentExemption: vi.fn(),
 };
 
 vi.mock("../src/modules/solana/rpc.js", () => ({
@@ -65,6 +67,15 @@ beforeEach(async () => {
     lastValidBlockHeight: 123_456_789,
   });
   connectionStub.getRecentPrioritizationFees.mockResolvedValue([]);
+  // Default pre-sign simulation to success so existing tests stay focused on
+  // the sign/broadcast path. Tests that exercise the simulation gate (issue
+  // #115) override this with a failure envelope.
+  connectionStub.simulateTransaction.mockResolvedValue({
+    context: { slot: 1 },
+    value: { err: null, logs: ["Program 11111111111111111111111111111111 success"], unitsConsumed: 300 },
+  });
+  // Rent-exempt minimum used by buildSolanaNonceInit — live-on-mainnet value.
+  connectionStub.getMinimumBalanceForRentExemption.mockResolvedValue(1_447_680);
   getAppConfigurationMock.mockResolvedValue({ version: "1.10.0" });
 
   // Durable-nonce protection is required for every send. Mock a present
@@ -219,6 +230,122 @@ describe("sendTransaction dispatch — Solana", () => {
     });
     expect(result.chain).toBe("solana");
     expect(result.lastValidBlockHeight).toBeUndefined();
+  });
+
+  /**
+   * Issue #115 — pre-sign simulation must gate the preview so guaranteed-
+   * revert txs are caught BEFORE the user blind-signs on Ledger. Without
+   * this, a borrow-while-supplied (MarginFi OperationBorrowOnly) or stale-
+   * oracle revert reaches the device, the user approves, and only then
+   * does broadcast-side preflight surface the error — a wasted Ledger
+   * review cycle.
+   */
+  it("#115 preview throws with decoded Anchor error when simulation rejects the pinned tx", async () => {
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000);
+    const { buildSolanaNativeSend } = await import(
+      "../src/modules/solana/actions.js"
+    );
+    const draft = await buildSolanaNativeSend({
+      wallet: WALLET,
+      to: RECIPIENT,
+      amount: "0.1",
+    });
+    // Simulate the exact revert class that bit #115 in production: an
+    // AnchorError thrown by MarginFi's risk engine.
+    connectionStub.simulateTransaction.mockResolvedValue({
+      context: { slot: 1 },
+      value: {
+        err: { InstructionError: [2, { Custom: 6021 }] },
+        unitsConsumed: 42000,
+        logs: [
+          "Program MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA invoke [1]",
+          "Program log: Instruction: LendingAccountBorrow",
+          "Program log: AnchorError thrown in programs/marginfi/src/state/marginfi_account.rs:1902. Error Code: OperationBorrowOnly. Error Number: 6021. Error Message: Operation is borrow-only.",
+          "Program MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA failed: custom program error: 0x1785",
+        ],
+      },
+    });
+    const { previewSolanaSend } = await import(
+      "../src/modules/execution/index.js"
+    );
+    await expect(
+      previewSolanaSend({ handle: draft.handle }),
+    ).rejects.toThrow(
+      /Pre-sign simulation REJECTED.*OperationBorrowOnly.*6021.*Operation is borrow-only/s,
+    );
+    // And never surface a ledger prompt — USB must stay untouched.
+    expect(signTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it("#115 preview attaches simulation metadata on success", async () => {
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000);
+    const { buildSolanaNativeSend } = await import(
+      "../src/modules/solana/actions.js"
+    );
+    const draft = await buildSolanaNativeSend({
+      wallet: WALLET,
+      to: RECIPIENT,
+      amount: "0.1",
+    });
+    connectionStub.simulateTransaction.mockResolvedValue({
+      context: { slot: 1 },
+      value: {
+        err: null,
+        unitsConsumed: 1234,
+        logs: [
+          "Program 11111111111111111111111111111111 invoke [1]",
+          "Program 11111111111111111111111111111111 success",
+        ],
+      },
+    });
+    const { previewSolanaSend } = await import(
+      "../src/modules/execution/index.js"
+    );
+    const pinned = await previewSolanaSend({ handle: draft.handle });
+    expect(pinned.simulation).toBeDefined();
+    expect(pinned.simulation!.ok).toBe(true);
+    expect(pinned.simulation!.unitsConsumed).toBe(1234);
+    expect(pinned.simulation!.logs).toHaveLength(2);
+  });
+
+  it("#115 preview proceeds (no simulation field) when the simulate RPC itself throws", async () => {
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000);
+    const { buildSolanaNativeSend } = await import(
+      "../src/modules/solana/actions.js"
+    );
+    const draft = await buildSolanaNativeSend({
+      wallet: WALLET,
+      to: RECIPIENT,
+      amount: "0.1",
+    });
+    // Transient RPC failure — preview should not block the flow. The
+    // broadcast-side preflight is the backstop.
+    connectionStub.simulateTransaction.mockRejectedValue(
+      new Error("fetch failed: ECONNRESET"),
+    );
+    const { previewSolanaSend } = await import(
+      "../src/modules/execution/index.js"
+    );
+    const pinned = await previewSolanaSend({ handle: draft.handle });
+    expect(pinned.simulation).toBeUndefined();
+    // Preview still pinned the blockhash, so send_transaction can proceed.
+    expect(pinned.messageBase64).toBeDefined();
+  });
+
+  it("#115 preview skips simulation for nonce_init (one-time legacy setup)", async () => {
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000);
+    // nonce_init runs in legacy recent-blockhash mode — no durable nonce yet.
+    connectionStub.getAccountInfo.mockResolvedValue(null);
+    // simulateTransaction MUST NOT be called.
+    const { buildSolanaNonceInit } = await import(
+      "../src/modules/solana/actions.js"
+    );
+    const draft = await buildSolanaNonceInit({ wallet: WALLET });
+    const { previewSolanaSend } = await import(
+      "../src/modules/execution/index.js"
+    );
+    await previewSolanaSend({ handle: draft.handle });
+    expect(connectionStub.simulateTransaction).not.toHaveBeenCalled();
   });
 
   it("re-calling preview_solana_send on the same handle re-pins with a refreshed nonce value", async () => {

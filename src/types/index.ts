@@ -783,6 +783,28 @@ export interface UnsignedSolanaTx {
    */
   verification?: TxVerification;
   /**
+   * Pre-sign simulation result. Populated by `preview_solana_send` via
+   * `connection.simulateTransaction(sigVerify: false, replaceRecentBlockhash:
+   * false)` against the pinned message. Absent only when the caller
+   * explicitly skipped simulation (currently `nonce_init`, which is legacy
+   * and has no interesting revert surface) OR when the simulation RPC
+   * itself errored transiently — in both cases `preview_solana_send`
+   * proceeds so a momentary network hiccup can't block a user's flow.
+   *
+   * When present with `ok: false` the preview handler throws BEFORE
+   * returning, so this field effectively always carries `ok: true` on the
+   * wire — but the shape keeps `ok: boolean` so downstream callers that
+   * might loosen the throw policy (e.g. a future "force" flag) stay
+   * type-correct.
+   */
+  simulation?: {
+    ok: boolean;
+    unitsConsumed?: number;
+    logs?: string[];
+    err?: string;
+    anchorError?: { code: number; name: string; message: string };
+  };
+  /**
    * Durable-nonce metadata — present when ix[0] = SystemProgram.nonceAdvance.
    * For `native_send` / `spl_send` / `nonce_close` this is always set; for
    * `nonce_init` it's absent (that's the tx that CREATES the nonce account;
