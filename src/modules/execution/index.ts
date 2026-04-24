@@ -672,6 +672,7 @@ async function sendSolanaTransaction(args: SendTransactionArgs): Promise<{
   txHash: string;
   chain: "solana";
   lastValidBlockHeight?: number;
+  durableNonce?: { noncePubkey: string; nonceValue: string };
 }> {
   const tx: UnsignedSolanaTx = consumeSolanaHandle(args.handle);
   // Proof-of-identity guard: same logic as the TRON sender. Recompute the
@@ -718,8 +719,21 @@ async function sendSolanaTransaction(args: SendTransactionArgs): Promise<{
   return {
     txHash: txSignature,
     chain: "solana",
+    // `lastValidBlockHeight` is for legacy-blockhash txs (nonce_init only);
+    // `durableNonce` is for every other send. The status poller uses one
+    // or the other to distinguish dropped from pending — always surface
+    // the applicable field so the agent can hand it back to
+    // `get_transaction_status` verbatim.
     ...(tx.lastValidBlockHeight !== undefined
       ? { lastValidBlockHeight: tx.lastValidBlockHeight }
+      : {}),
+    ...(tx.nonce
+      ? {
+          durableNonce: {
+            noncePubkey: tx.nonce.account,
+            nonceValue: tx.nonce.value,
+          },
+        }
       : {}),
   };
 }
@@ -1302,12 +1316,21 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
   /** Decimal wei string, echoed alongside `preSignHash` for the post-broadcast block. */
   valueWei?: string;
   /**
-   * Solana only: the last block height at which the tx's baked blockhash
-   * remains valid. Surfaced so `get_transaction_status` can distinguish
-   * "dropped" (current slot past this) from "not-yet-propagated" when
-   * `getSignatureStatuses` returns null.
+   * Solana legacy-blockhash txs (currently just `nonce_init`). Surfaced so
+   * `get_transaction_status` can distinguish "dropped" (current slot past
+   * this) from "not-yet-propagated" when `getSignatureStatuses` returns
+   * null.
    */
   lastValidBlockHeight?: number;
+  /**
+   * Solana durable-nonce txs (native/SPL sends, nonce_close, jupiter_swap,
+   * all marginfi_* actions). Surfaced so `get_transaction_status` can
+   * authoritatively distinguish "dropped" (on-chain nonce rotated past
+   * `nonceValue`) from "not-yet-propagated". Authoritative because Agave
+   * itself gates durable-nonce tx validity on the nonce state, not block
+   * height.
+   */
+  durableNonce?: { noncePubkey: string; nonceValue: string };
 }> {
   if (hasTronHandle(args.handle)) {
     return sendTronTransaction(args);
@@ -1393,6 +1416,7 @@ export async function getTransactionStatus(args: GetTransactionStatusArgs) {
       ...(args.lastValidBlockHeight !== undefined
         ? { lastValidBlockHeight: args.lastValidBlockHeight }
         : {}),
+      ...(args.durableNonce ? { durableNonce: args.durableNonce } : {}),
     });
   }
   const client = getClient(args.chain as SupportedChain);

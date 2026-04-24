@@ -626,6 +626,7 @@ function sendTransactionHandler(
     to?: `0x${string}`;
     valueWei?: string;
     lastValidBlockHeight?: number;
+    durableNonce?: { noncePubkey: string; nonceValue: string };
   }>,
 ) {
   return async (args: SendTransactionArgs) => {
@@ -653,6 +654,7 @@ function sendTransactionHandler(
           ...(result.lastValidBlockHeight !== undefined
             ? { lastValidBlockHeight: result.lastValidBlockHeight }
             : {}),
+          ...(result.durableNonce ? { durableNonce: result.durableNonce } : {}),
         }),
       });
       return { content };
@@ -781,9 +783,12 @@ async function main() {
         "   send_transaction refuses with a clear error. TRON and Solana handles ignore those two.",
         "7. After `send_transaction` returns a txHash, relay the TRANSACTION BROADCAST block",
         "   VERBATIM to the user (it carries the hash + explorer link — do NOT drop it), THEN",
-        "   poll `get_transaction_status` YOURSELF every ~5s until status is `success` or",
-        "   `failed` (budget ~2min). Do NOT stop and wait for the user to type \"next\" — the",
-        "   per-call AGENT TASK block emitted alongside the txHash prescribes the exact cadence.",
+        "   poll `get_transaction_status` YOURSELF every ~5s until status is `success` /",
+        "   `failed` / `dropped` (budget ~2min). Do NOT stop and wait for the user to type",
+        "   \"next\". On Solana, pass the `durableNonce` or `lastValidBlockHeight` field from",
+        "   send_transaction's return verbatim into get_transaction_status so it can detect",
+        "   dropped txs (without it, dropped reads as forever-pending). The per-call AGENT",
+        "   TASK block emitted alongside the txHash prescribes the exact cadence.",
         "",
         "TWO-STEP ALLOWANCE FLOWS: when a `prepare_*` tool returns an approval tx alongside",
         "the main tx (supply, repay, swap, etc.), submit the approval FIRST via preview_send",
@@ -1594,7 +1599,7 @@ async function main() {
     "get_transaction_status",
     {
       description:
-        "Poll a transaction's status via the chain's RPC (EVM / Solana) or TronGrid (TRON). Returns pending / success / failed, plus 'dropped' on Solana when the baked blockhash has expired past the supplied lastValidBlockHeight and the tx was never seen. Pass chain='tron' with the bare hex txID for TRON; chain='solana' with the base58 signature for Solana. For Solana, ALSO pass the `lastValidBlockHeight` value returned by `send_transaction` — without it the status tool cannot distinguish 'dropped' from 'still propagating' and reports 'pending' forever for txs that silently fell out of the mempool.",
+        "Poll a transaction's status via the chain's RPC (EVM / Solana) or TronGrid (TRON). Returns pending / success / failed, plus 'dropped' on Solana when the tx is mathematically unable to land. Pass chain='tron' with the bare hex txID for TRON; chain='solana' with the base58 signature for Solana. For Solana, ALSO pass whichever drop-detection field send_transaction returned: (a) `durableNonce` for nearly every send (native/SPL sends, nonce_close, jupiter_swap, all marginfi_* actions) — the tool reads the on-chain nonce account and reports 'dropped' if it rotated past the baked value; or (b) `lastValidBlockHeight` for legacy-blockhash txs (currently just nonce_init) — reports 'dropped' if current block height is past. Without either field the tool reports 'pending' forever for dropped txs.",
       inputSchema: getTransactionStatusInput.shape,
     },
     handler(getTransactionStatus)

@@ -464,11 +464,29 @@ export const getTransactionStatusInput = z.object({
     .nonnegative()
     .optional()
     .describe(
-      "Solana only. Block-height ceiling for the tx's baked blockhash — returned by " +
-        "send_transaction for Solana txs. When supplied and `getSignatureStatuses` " +
-        "returns null (tx not visible), the poller compares against the current block " +
-        "height and reports `dropped` instead of forever `pending` if the window has " +
-        "passed. Omit for EVM / TRON; ignored on those chains."
+      "Solana only, legacy-blockhash txs (currently just `nonce_init`). Block-height " +
+        "ceiling for the tx's baked blockhash — returned by send_transaction for such " +
+        "txs. When supplied and `getSignatureStatuses` returns null, the poller " +
+        "compares against current block height and reports `dropped` if the window " +
+        "has passed. Omit for EVM / TRON; ignored on those chains. For durable-nonce " +
+        "Solana txs (every send this server builds except nonce_init), use " +
+        "`durableNonce` instead — it's authoritative."
+    ),
+  durableNonce: z
+    .object({
+      noncePubkey: z.string(),
+      nonceValue: z.string(),
+    })
+    .optional()
+    .describe(
+      "Solana only, durable-nonce txs (native_send, spl_send, nonce_close, " +
+        "jupiter_swap, all marginfi_* actions). Returned by send_transaction on these " +
+        "flows. When supplied and `getSignatureStatuses` returns null, the poller " +
+        "reads the on-chain nonce account: if the nonce rotated past `nonceValue` " +
+        "(or the account was closed), the tx can never land and is reported as " +
+        "`dropped` with diagnostic fields `nonceAccount` / `bakedNonce` / " +
+        "`currentNonce`. Without this field the poller reports `pending` forever " +
+        "for dropped durable-nonce txs — a known Phase 2 UX gap."
     ),
 });
 

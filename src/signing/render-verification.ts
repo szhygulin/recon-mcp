@@ -769,27 +769,46 @@ export function renderPostSendPollBlock(args: {
   txHash: string;
   nextHandle?: string;
   /**
-   * Solana only. When supplied, the poll block tells the agent to pass it
-   * into `get_transaction_status` so the status tool can distinguish
-   * `dropped` (current slot past this) from `pending` (tx still propagating).
-   * Without it, a dropped Solana tx reads as `pending` forever.
+   * Solana legacy-blockhash txs only (currently just `nonce_init`). Lets
+   * the status poller distinguish `dropped` (current block past this) from
+   * `pending` for that specific tx kind.
    */
   lastValidBlockHeight?: number;
+  /**
+   * Solana durable-nonce txs (every send except nonce_init). Lets the
+   * status poller authoritatively distinguish `dropped` (on-chain nonce
+   * rotated past the baked value) from `pending`. Without it a dropped
+   * durable-nonce tx reads as `pending` forever — a known Phase 2 UX gap.
+   */
+  durableNonce?: { noncePubkey: string; nonceValue: string };
 }): string {
-  const { chain, txHash, nextHandle, lastValidBlockHeight } = args;
+  const { chain, txHash, nextHandle, lastValidBlockHeight, durableNonce } = args;
   const cadence = POLL_CADENCE[chain] ?? POLL_CADENCE.ethereum;
-  const statusCall =
-    chain === "solana" && lastValidBlockHeight !== undefined
-      ? `get_transaction_status({ chain: "solana", txHash: "${txHash}", lastValidBlockHeight: ${lastValidBlockHeight} })`
-      : `get_transaction_status({ chain: "${chain}", txHash: "${txHash}" })`;
-  const solanaDroppedBranch = chain === "solana" && lastValidBlockHeight !== undefined
+  const solanaHasDropDetect =
+    chain === "solana" &&
+    (durableNonce !== undefined || lastValidBlockHeight !== undefined);
+  let statusCall: string;
+  if (chain === "solana" && durableNonce !== undefined) {
+    statusCall =
+      `get_transaction_status({ chain: "solana", txHash: "${txHash}", durableNonce: ` +
+      `{ noncePubkey: "${durableNonce.noncePubkey}", nonceValue: "${durableNonce.nonceValue}" } })`;
+  } else if (chain === "solana" && lastValidBlockHeight !== undefined) {
+    statusCall = `get_transaction_status({ chain: "solana", txHash: "${txHash}", lastValidBlockHeight: ${lastValidBlockHeight} })`;
+  } else {
+    statusCall = `get_transaction_status({ chain: "${chain}", txHash: "${txHash}" })`;
+  }
+  const solanaDroppedBranch = solanaHasDropDetect
     ? [
-        `  5. SOLANA SPECIFIC — if status returns "dropped", the tx's blockhash`,
-        `     expired (current block height is past lastValidBlockHeight=${lastValidBlockHeight})`,
-        `     and the tx is permanently gone. Tell the user the broadcast did`,
-        `     not land and offer to re-run the prepare → preview → send flow`,
-        `     with a fresh blockhash. Do NOT keep polling — "dropped" is`,
-        `     terminal.`,
+        `  5. SOLANA SPECIFIC — if status returns "dropped", the tx is`,
+        durableNonce !== undefined
+          ? `     permanently gone (on-chain nonce rotated past bakedNonce=${durableNonce.nonceValue};`
+          : `     permanently gone (current block height is past`,
+        durableNonce !== undefined
+          ? `     see returned currentNonce for the post-rotation value). Tell the`
+          : `     lastValidBlockHeight=${lastValidBlockHeight}). Tell the`,
+        `     user the broadcast did not land and offer to re-run the`,
+        `     prepare → preview → send flow. Do NOT keep polling — "dropped"`,
+        `     is terminal.`,
       ]
     : [];
   const lines = [
