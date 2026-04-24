@@ -5,137 +5,119 @@
 [![node](https://img.shields.io/node/v/vaultpilot-mcp.svg)](package.json)
 [![vaultpilot-mcp MCP server](https://glama.ai/mcp/servers/szhygulin/vaultpilot-mcp/badges/score.svg)](https://glama.ai/mcp/servers/szhygulin/vaultpilot-mcp)
 
-**Hardware-verified DeFi for AI agents. The agent proposes, you approve on your Ledger - designed for when the AI can be compromised.**
+**Hardware-verified DeFi for AI agents. The agent proposes, you approve on your Ledger — designed for when the AI can be compromised.**
 
 ![VaultPilot MCP demo](./demo.gif)
 
-VaultPilot MCP is a Model Context Protocol server that lets AI agents — **Claude Code, Claude Desktop, Cursor**, and any MCP-compatible client — read your on-chain positions across **Ethereum, Arbitrum, Polygon, Base**, and **TRON** and prepare EVM transactions that you sign on your **Ledger device via WalletConnect**. Your private keys never leave the hardware wallet, and every transaction is previewed in human-readable form before you approve it on the device.
+VaultPilot MCP is a Model Context Protocol server that lets AI agents — Claude Code, Claude Desktop, Cursor, and any MCP-compatible client — read your on-chain positions across **Ethereum, Arbitrum, Polygon, Base, TRON, and Solana** and prepare transactions you sign on your **Ledger device**. EVM flows go through Ledger Live over WalletConnect; TRON and Solana go through a directly-connected Ledger over USB HID (Ledger Live's WalletConnect bridge does not support either namespace today). Private keys never leave the hardware wallet; every transaction is previewed in human-readable form before you approve it on the device.
 
-Supported protocols: **Aave V3, Compound V3 (Comet), Morpho Blue, Uniswap V3 LP, Lido (stETH/wstETH), EigenLayer**, plus **LiFi** for swap/bridge aggregation and **1inch** for optional intra-chain quote comparison.
+Supported protocols: **Aave V3, Compound V3, Morpho Blue, Uniswap V3 LP, Lido, EigenLayer** on EVM, **MarginFi** lending on Solana, plus **LiFi** (EVM swap/bridge) and **Jupiter v6** (Solana swap) aggregation, with **1inch** as an optional EVM quote cross-check.
 
-Use it when you want to:
-
-- Ask an agent *"what are my DeFi positions across Ethereum, Arbitrum, Polygon, and Base?"* and get a unified portfolio view (wallet balances + Aave/Compound/Morpho lending + Uniswap V3 LP + Lido/EigenLayer staking) with USD totals.
-- Get liquidation-risk alerts (*"any position below health factor 1.5?"*) without manually checking dashboards.
-- Swap or bridge tokens — the agent prepares the route via LiFi, you sign on Ledger.
-- Supply, borrow, repay, withdraw on lending protocols; stake ETH on Lido; deposit into EigenLayer strategies; send ETH or ERC-20 tokens — all through Ledger-signed transactions.
-- Assess protocol security before interacting with it: contract verification, EIP-1967 proxy/admin keys, privileged roles (Ownable, AccessControl, Gnosis Safe multisig, Timelock), and a DefiLlama-backed 0–100 risk score.
-- Look up token prices, resolve ENS names, and poll transaction status.
-
-This is an **agent-driven portfolio management** tool, not a wallet replacement. The MCP never holds keys or broadcasts anything you haven't approved on your Ledger device.
+This is an agent-driven portfolio management tool, not a wallet replacement. The MCP never holds keys or broadcasts anything you haven't approved on your Ledger device.
 
 ## Features
 
-- **Positions** — lending/borrowing (Aave, Compound, Morpho), LP positions, and health-factor alerts
-- **Portfolio** — cross-chain balances, DeFi position aggregation, USD-denominated summaries
-- **Staking** — Lido, EigenLayer, reward aggregation, yield estimation
-- **Security** — contract verification, upgradeability checks, privileged-role enumeration, protocol risk scoring
-- **Swaps** — LiFi-routed intra-chain and cross-chain quotes; intra-chain routes are also cross-checked against 1inch (when an API key is configured) with a `bestSource` hint and output-delta savings
-- **Execution** — tx preparation for Aave, Compound, Morpho, Lido, EigenLayer, native/token sends, swaps; signing via Ledger Live (WalletConnect) for EVM chains
-- **Utilities** — ENS forward/reverse resolution, token balances, transaction status
+- **Portfolio** — cross-chain balances (EVM + TRON + Solana), DeFi position aggregation, USD totals
+- **Positions** — Aave, Compound, Morpho, Uniswap V3 LP, MarginFi; health-factor alerts
+- **Staking** — Lido + EigenLayer on EVM, TRON Stake 2.0 (freeze/unfreeze/vote/claim)
+- **Swaps** — LiFi on EVM (optionally cross-checked against 1inch), Jupiter v6 on Solana
+- **Execution** — prepare/sign tx for every supported protocol + native/token sends on EVM, TRON, and Solana. Solana sends are protected by a per-wallet durable-nonce account so Ledger review time doesn't race the blockhash window, and every Solana prepare runs a pre-sign `simulateTransaction` gate so program-level reverts fail loudly at prepare time rather than on broadcast.
+- **Security** — contract verification, upgradeability checks, privileged-role enumeration, DefiLlama-backed protocol risk score
+- **Utilities** — ENS resolution, token balances, transaction status
 
 ## Security model
 
-**VaultPilot assumes the AI agent can be compromised, the MCP server can be compromised, and your host computer can be compromised. Only your Ledger device is trusted.** Every transaction is cryptographically bound across every layer so that tampering anywhere — a swapped recipient, a rewritten swap route, a smuggled approval — produces a visible mismatch on the device screen, giving you the chance to reject before anything is signed.
-
-Private keys never leave the Ledger device. Every state-changing transaction is prepared read-only by the server, previewed in human-readable form, and approved on the device's own screen — the only display in the pipeline that isn't filtered through the agent.
+**VaultPilot assumes the AI agent, MCP server, and host computer can all be compromised. Only your Ledger device is trusted.** Every transaction is cryptographically bound across every layer so that tampering — a swapped recipient, a rewritten swap route, a smuggled approval — produces a visible mismatch on the device screen, giving you the chance to reject before anything is signed.
 
 ```
 user-intent ──► agent ──► MCP server ──► WalletConnect / USB-HID ──► Ledger Live / host ──► Ledger device
 ```
 
-VaultPilot layers defenses so most single-layer compromises are caught by at least one cross-check, and the cases that aren't are called out honestly. The layers include a server-side prepare↔send fingerprint, an independent 4byte.directory selector cross-check, an agent-side ABI decode and pair-consistency pre-sign hash recomputation that auto-run at `preview_send` and are reported in a `CHECKS PERFORMED` block (with a swiss-knife decoder URL as a suggested fallback when the agent's ABI decode is low-confidence), an on-device final check — in blind-sign mode the user matches a Ledger-displayed hash against the one the server returned; in clear-sign mode (Aave, Lido, 1inch, LiFi, approve plugins) the user checks decoded fields (function name, amount, recipient, spender) against the compact summary shown in chat — a verbatim `PREPARE RECEIPT` of the args the agent actually passed, a `previewToken` + `userDecision` gate against accidental preview-step collapse, a WalletConnect session-topic cross-check (the agent surfaces the last 8 chars of the WC session `topic` and asks the user to confirm a matching session exists in Ledger Live → Settings → Connected Apps, catching peer impersonation any self-reported name/URL can't), and — for skeptical users on high-value flows — a `get_verification_artifact` that routes bytes to a second, independent LLM for cross-verification.
-
-**See [SECURITY.md](./SECURITY.md)** for the full defenses table, threat → catches-it mapping, honest limits, the `payloadFingerprint` verification recipe, and the second-agent verification flow.
+Layered defenses catch most single-layer compromises: a server-side prepare↔send fingerprint, an independent 4byte.directory selector check, agent-side ABI decode + pre-sign hash recomputation, on-device clear-sign or blind-sign-hash match, a WalletConnect session-topic cross-check, a `previewToken`/`userDecision` gate, and — for skeptical users on high-value flows — a `get_verification_artifact` that routes bytes to an independent second LLM. **See [SECURITY.md](./SECURITY.md)** for the full defenses table, threat mapping, honest limits, and verification recipes.
 
 ### Agent-side hardening (strongly recommended)
 
-All of the `CHECKS PERFORMED` / `VERIFY-BEFORE-SIGNING` directives that VaultPilot emits are authored by the MCP server itself. A compromised or out-of-date server can silently omit them, and an honest agent with no static rule to fall back on will drop the checks. To close that self-referential gap, install the companion [`vaultpilot-skill`](https://github.com/szhygulin/vaultpilot-skill) repository as a Claude Code skill — it lives on your local disk under `~/.claude/skills/` and instructs the agent to run the bytes-decode + hash-recompute invariants on every signing flow regardless of what the MCP says.
+The `CHECKS PERFORMED` / `VERIFY-BEFORE-SIGNING` directives VaultPilot emits are authored by the MCP server itself — a compromised server could silently omit them. Install the companion [`vaultpilot-skill`](https://github.com/szhygulin/vaultpilot-skill) so the agent runs the bytes-decode + hash-recompute invariants regardless of what the MCP says:
 
 ```bash
 git clone https://github.com/szhygulin/vaultpilot-skill.git \
   ~/.claude/skills/vaultpilot-preflight
 ```
 
-Restart Claude Code after installing. When the MCP detects the skill is missing (no `SKILL.md` at that path), the first vaultpilot-mcp tool response of the session — read-only or signing — carries a `VAULTPILOT NOTICE — Preflight skill not installed` block asking you to install it. The notice is deduped per-session so it doesn't spam follow-up calls. It deliberately uses a non-imperative "notice" framing rather than an "AGENT TASK" directive — earlier iterations framed it as `[AGENT TASK — RELAY TO USER FIRST, BEFORE ANY OTHER BLOCK]` with a pasteable `git clone` command, which stricter-sandboxed agents correctly classified as prompt injection and dropped. The current framing is documented as a legitimate server pattern at the top of the MCP's server-level `instructions` field so sandboxed agents don't need to guess. That notice is still server-authored (a compromised MCP would suppress it), so the install step must not be deferred. Users who only use vaultpilot-mcp for reads and never sign can suppress the notice via `VAULTPILOT_SKILL_MARKER_PATH=<any existing file>` after acknowledging the tradeoff. See the roadmap for a planned `PreToolUse` hook that would enforce the hash recompute as host-side code, removing the agent-prose dependency entirely.
-
-### Skill integrity pin (anti-tamper + plugin-collision detection)
-
-The `vaultpilot-preflight` skill file carries an in-file sentinel and this MCP pins the expected SHA-256 of the skill file in its server source (see the `PREFLIGHT SKILL INTEGRITY PIN` block in `src/index.ts`'s server `instructions`). On every signing flow the agent is instructed to run `sha256sum ~/.claude/skills/vaultpilot-preflight/SKILL.md`, compare to the pinned value, confirm the sentinel is present in the content returned by the `Skill` tool, and halt the flow with a `vaultpilot-preflight skill integrity check FAILED` message on mismatch. This catches (a) targeted tamper of the skill file on disk — an attacker can't change content without changing the hash — and (b) plugin collisions where a different skill gets registered under the same name (the colliding content won't contain the sentinel). Residual: a compromise of this MCP's npm package itself ships the attacker's pin, which is the same trust floor as the rest of the server — not a new gap.
-
-**Maintainer workflow for updating the skill.** When [`vaultpilot-skill`](https://github.com/szhygulin/vaultpilot-skill)'s `SKILL.md` legitimately changes, the pin here must change in lockstep. Steps: (1) edit `SKILL.md` in the skill repo on a feature branch, (2) `sha256sum SKILL.md`, (3) update the `Expected SHA-256` value in the `PREFLIGHT SKILL INTEGRITY PIN` paragraph of `src/index.ts`'s `instructions` array — and if the protocol itself changed, also bump the sentinel version (`v1` → `v2`) in both `SKILL.md` and the three sentinel fragments in `src/index.ts`, (4) merge the skill PR and tag a new `vaultpilot-skill` release first, (5) merge + publish the matching `vaultpilot-mcp` release. Users who upgrade only one side see the integrity-check-failed message until both are aligned; that symptom is identical to a real tamper, so the fix is always "align versions, don't bypass."
+Restart Claude Code after installing. When the skill is missing, the MCP emits a one-shot `VAULTPILOT NOTICE` until you install it. The skill file's expected SHA-256 is pinned in the server source and verified on every signing flow, so on-disk tamper or plugin-collision attempts produce a visible `integrity check FAILED`.
 
 ## Supported chains
 
-EVM: Ethereum, Arbitrum, Polygon, Base.
+**EVM**: Ethereum, Arbitrum, Polygon, Base. Lido and EigenLayer are Ethereum-only. Morpho Blue is currently Ethereum-only (Base deployment tracked as a follow-up).
 
-Non-EVM: TRON — full reads (balance, staking state, SR listing) and full write coverage (native TRX sends, canonical TRC-20 transfers, voting-reward claims, Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze, and VoteWitness) signed on a directly-connected Ledger over USB HID. Ledger Live's WalletConnect relay does not currently honor the `tron:` namespace (verified 2026-04-14), so TRON signing goes through `@ledgerhq/hw-app-trx` — the user's Ledger must be plugged into the host running the MCP, unlocked, with the TRON app open. Pair via `pair_ledger_tron` once per session.
+**TRON**: full reads + writes via USB HID (`@ledgerhq/hw-app-trx`). Balance coverage: TRX + canonical TRC-20 stablecoins (USDT, USDC, USDD, TUSD). Staking: Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze + voting-reward claims. No lending/LP (Aave/Compound/Morpho/Uniswap aren't deployed on TRON). Pair once per session via `pair_ledger_tron`.
 
-Not every protocol is on every chain. Lido and EigenLayer are L1-only (Ethereum). Morpho Blue is currently enabled on Ethereum only — it is deployed on Base at the same address but the discovery scan needs a pinned deployment block, tracked as a follow-up. TRON has no lending/LP coverage in this server (none of Aave/Compound/Morpho/Uniswap are deployed there); balance reads return TRX + canonical TRC-20 stablecoins (USDT, USDC, USDD, TUSD) that together cover the vast majority of TRON token volume, and TRON-native staking (frozen TRX under Stake 2.0, pending unfreezes, claimable voting rewards) is surfaced via `get_tron_staking` and folded into the portfolio summary. Readers short-circuit cleanly on chains where a protocol isn't deployed.
+**Solana**: SOL + SPL balances, MarginFi lending positions, Jupiter v6 swap quotes, plus write coverage for SOL/SPL transfers, MarginFi supply/withdraw/borrow/repay, and Jupiter-routed swaps. Signing via `@ledgerhq/hw-app-solana`. Sends are protected by a per-wallet durable-nonce account (~0.00144 SOL rent, reclaimable) so the ~60s blockhash validity window doesn't expire during Ledger review. One-time setup via `prepare_solana_nonce_init`; teardown via `prepare_solana_nonce_close`. Pair once per session via `pair_ledger_solana`. SOL native transfers clear-sign on device; SPL, MarginFi, and Jupiter flows blind-sign against a Message Hash — enable **Allow blind signing** in the Solana app's on-device Settings.
+
+Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verified 2026-04-14) or expose Solana accounts (verified 2026-04-23), which is why both paths use USB HID. Readers short-circuit cleanly on chains where a protocol isn't deployed.
 
 ## Roadmap
 
-- **MetaMask support** (WalletConnect) — alongside the existing Ledger Live integration. Will let users sign through a MetaMask-paired session when a hardware wallet isn't available.
-- **Solana** — coming later. Non-EVM: introduces a separate SDK (`@solana/web3.js`), base58 addresses, and the WalletConnect `solana:` namespace for signing.
-- **Server-integrated second-agent verification** — have the MCP call an independent second-provider LLM directly on every high-value or blind-sign-expected `send_transaction`, relay its verdict to the user, and block the send on disagreement. Structurally closes the coordinated-agent gap that today's copy-paste `get_verification_artifact` flow only narrows (the copy-paste path depends on the first agent not silently suppressing the artifact). Additive, opt-in feature — the self-custody trust model (no private keys on the server, no broadcast without device approval) is unchanged.
-- **PreToolUse hook for mechanical hash enforcement** — the agent-side preflight skill currently instructs the agent to run the bytes-decode + hash-recompute checks, but it does not physically prevent a prompt-injected or coordinated-compromised agent from skipping them. A Claude Code `PreToolUse` hook registered on `mcp__vaultpilot-mcp__send_transaction` would do the hash recompute as host-side code, using its own pinned `viem` / `@solana/web3.js` install, and exit non-zero on divergence — the Claude Code harness blocks the tool call before it reaches the MCP. This makes the check mechanical rather than prose-based; the only way past it is to also compromise the user's local `settings.json` or the hook's own `node_modules`. Ships as a separate `vaultpilot-hook` repo (same independent-trust-root reasoning as [`vaultpilot-skill`](https://github.com/szhygulin/vaultpilot-skill)). Deferred because the transcript-path conventions and failure-mode UX warrant a full iteration of their own.
+- **MetaMask support** (WalletConnect) — alongside the existing Ledger Live integration.
+- **More Solana protocols** — Kamino, Drift, Solend lending; Marinade/Jito/native staking. Tracked in [`solana-roadmap.md`](./solana-roadmap.md).
+- **Nonce-aware dropped-tx polling** (Solana) — use the on-chain nonce as the authoritative signal for whether a durable-nonce tx can still land; replaces the `lastValidBlockHeight` path that's meaningless for nonce-protected sends. Next-up in `solana-roadmap.md`.
+- **Server-integrated second-agent verification** — MCP calls an independent LLM directly on high-value sends and blocks on disagreement. Structurally closes the coordinated-agent gap that today's copy-paste `get_verification_artifact` flow only narrows.
+- **PreToolUse hook for mechanical hash enforcement** — host-side code that recomputes the pre-sign hash and blocks the MCP tool call on divergence, making the check mechanical rather than prose-based. Ships as a separate `vaultpilot-hook` repo.
 
-## Tools exposed to the agent
+## Tools
 
-Read-only (no Ledger pairing required):
+**Read-only:**
 
-- `get_portfolio_summary` — cross-chain portfolio aggregation with USD totals; pass an optional `tronAddress` (base58, prefix T) alongside an EVM `wallet` to fold TRX + TRC-20 balances + TRON staking (frozen + pending-unfreeze + claimable rewards) into the same total (returned under `breakdown.tron`, `tronUsd`, and `tronStakingUsd`)
-- `get_lending_positions` — Aave V3 collateral/debt/health-factor per wallet
-- `get_compound_positions` — Compound V3 (Comet) base + collateral positions
-- `get_morpho_positions` — Morpho Blue positions; auto-discovers the wallet's markets via event-log scan when `marketIds` is omitted (pass explicit ids for a fast path)
-- `get_lp_positions` — Uniswap V3 LP positions, fee tier, in-range, IL estimate
+- `get_portfolio_summary` — cross-chain USD totals; optional `tronAddress` / `solanaAddress` fold those chains into the same totals (`breakdown.tron` / `breakdown.solana`)
+- `get_lending_positions`, `get_compound_positions`, `get_morpho_positions`, `get_marginfi_positions` — per-protocol lending positions + health factors
+- `get_marginfi_diagnostics` — surfaces banks the bundled SDK had to skip, with root cause
+- `get_lp_positions` — Uniswap V3 LP + IL estimate
 - `get_staking_positions`, `get_staking_rewards`, `estimate_staking_yield` — Lido + EigenLayer
-- `get_health_alerts` — Aave positions near liquidation
-- `simulate_position_change` — projected Aave health factor for a hypothetical action
-- `simulate_transaction` — run `eth_call` against a prepared or arbitrary tx to preview success/revert before signing; prepared txs are re-simulated automatically at send time
-- `get_token_balance`, `get_token_price` — balances and DefiLlama prices; `get_token_balance` accepts `chain: "tron"` with a base58 wallet and a base58 TRC-20 address (or `token: "native"` for TRX), returning a `TronBalance` shape
-- `get_tron_staking` — TRON-native staking state for a base58 address: claimable voting rewards (WithdrawBalance-ready), frozen TRX under Stake 2.0 (bandwidth + energy), and pending unfreezes with ISO unlock timestamps. Pair with `prepare_tron_claim_rewards` to actually withdraw accumulated rewards.
-- `list_tron_witnesses` — TRON Super Representatives + SR candidates, ranked by vote weight, with a rough voter-APR estimate per SR. Optionally augments with the caller's current vote allocation, total TRON Power, and available (unused) votes — pair with `prepare_tron_vote`.
+- `get_health_alerts`, `simulate_position_change` — liquidation-risk tooling
+- `simulate_transaction` — EVM `eth_call` preview; the Solana equivalent runs automatically inside `preview_solana_send`
+- `get_token_balance`, `get_token_price` — balances + DefiLlama prices (EVM, TRON, Solana)
+- `get_tron_staking`, `list_tron_witnesses` — TRON staking state + SR list
+- `get_solana_setup_status` — cheap probe of a wallet's Solana setup PDAs (nonce + MarginFi account existence)
 - `resolve_ens_name`, `reverse_resolve_ens` — ENS forward/reverse
-- `get_swap_quote` — LiFi quote (optionally cross-checked against 1inch)
+- `get_swap_quote` (LiFi, EVM), `get_solana_swap_quote` (Jupiter v6)
 - `check_contract_security`, `check_permission_risks`, `get_protocol_risk_score` — risk tooling
 - `get_transaction_status` — poll inclusion by hash
-- `get_verification_artifact` — returns a sparse, copy-paste-friendly JSON artifact (raw calldata + chain + payloadHash + preSignHash if pinned) for a prepared tx, plus a canned prompt telling a second LLM how to independently decode it. Intended for adversarial cross-verification on high-value flows — see [SECURITY.md](./SECURITY.md#second-agent-verification-optional-for-the-coordinated-agent-case)
+- `get_verification_artifact` — sparse JSON artifact (calldata / Solana message bytes + hashes) for second-LLM cross-verification; see [SECURITY.md](./SECURITY.md#second-agent-verification-optional-for-the-coordinated-agent-case)
 
-Meta:
+**Execution (Ledger-signed):**
 
-- `request_capability` — agent-facing escape hatch: files a GitHub issue on this repo when the user asks for something vaultpilot-mcp can't do (new protocol, new chain, missing tool). Default mode returns a pre-filled issue URL (zero spam risk — user must click to submit). Operators can set `VAULTPILOT_FEEDBACK_ENDPOINT` to a proxy that posts directly. Rate-limited: 30s between calls, 3/hour, 10/day, 7-day dedupe on identical summaries.
+- `pair_ledger_live` (EVM/WalletConnect), `pair_ledger_tron` (USB HID), `pair_ledger_solana` (USB HID), `get_ledger_status` — session + account discovery
+- `prepare_aave_*`, `prepare_compound_*`, `prepare_morpho_*` — EVM lending actions
+- `prepare_lido_stake` / `_unstake`, `prepare_eigenlayer_deposit` — staking
+- `prepare_swap` (LiFi), `prepare_native_send`, `prepare_token_send` — EVM sends + swap
+- `prepare_tron_*` — native TRX + TRC-20 transfers, WithdrawBalance claim, Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze, VoteWitness
+- `prepare_solana_nonce_init` / `_close` — one-time setup/teardown of the durable-nonce PDA
+- `prepare_solana_native_send`, `prepare_solana_spl_send`, `prepare_solana_swap` — SOL, SPL (auto-includes `createAssociatedTokenAccount` when needed), Jupiter swap
+- `prepare_marginfi_init` + `prepare_marginfi_supply` / `_withdraw` / `_borrow` / `_repay` — MarginFi lending
+- `preview_solana_send` — pins the current nonce/blockhash, serializes the message, computes the Message Hash the user matches on-device, runs the pre-sign simulation gate, emits the CHECKS PERFORMED block. Required between every `prepare_solana_*` and `send_transaction`.
+- `send_transaction` — forwards to Ledger: EVM via WalletConnect, TRON/Solana via USB HID
 
-Execution (Ledger-signed):
+**Meta:**
 
-- `pair_ledger_live` (WalletConnect, EVM), `pair_ledger_tron` (USB HID, TRON), `get_ledger_status` — session management and account discovery; `get_ledger_status` returns per-chain EVM exposure (`accountDetails[]` with `address`, `chainIds`, `chains`) so duplicate-looking addresses across chains are disambiguated, the WalletConnect session `topic` (the agent is instructed to surface its last 8 chars and ask the user to verify a matching session in Ledger Live → Settings → Connected Apps before the first `send_transaction` — any WC peer can self-report "Ledger Wallet" / `wc.apps.ledger.com`, but the session topic is unique per pairing), and a `tron: [{ address, path, appVersion, accountIndex }, …]` array (one entry per paired TRON account) when `pair_ledger_tron` has been called. Pass `accountIndex: 1` (2, 3, …) to pair additional TRON accounts.
-- `prepare_aave_supply` / `_withdraw` / `_borrow` / `_repay`
-- `prepare_compound_supply` / `_withdraw` / `_borrow` / `_repay`
-- `prepare_morpho_supply` / `_withdraw` / `_borrow` / `_repay` / `_supply_collateral` / `_withdraw_collateral`
-- `prepare_lido_stake`, `prepare_lido_unstake`
-- `prepare_eigenlayer_deposit`
-- `prepare_swap` — LiFi-routed intra- or cross-chain swap/bridge
-- `prepare_native_send`, `prepare_token_send`
-- `prepare_tron_native_send`, `prepare_tron_token_send`, `prepare_tron_claim_rewards`, `prepare_tron_freeze`, `prepare_tron_unfreeze`, `prepare_tron_withdraw_expire_unfreeze`, `prepare_tron_vote` — TRON tx builders (native TRX send, canonical TRC-20 transfer, WithdrawBalance claim, Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze, VoteWitness)
-- `send_transaction` — forwards a prepared tx for user approval. EVM handles go to Ledger Live via WalletConnect; TRON handles go to the USB-connected Ledger via `@ledgerhq/hw-app-trx` and are broadcast via TronGrid
+- `request_capability` — files a GitHub issue for missing protocols/chains/tools. Default returns a pre-filled URL (no auto-submit); rate-limited 3/hour.
 
 ## Requirements
 
 - Node.js >= 18.17
-- An RPC provider (Infura, Alchemy, or custom) for the EVM chains
-- Optional: Etherscan API key, 1inch Developer Portal API key (enables swap-quote comparison), WalletConnect Cloud project ID (required for EVM Ledger signing), TronGrid API key (enables TRX + TRC-20 balance reads)
-- For TRON signing: USB HID access to a Ledger device with the **Tron** app installed. On Linux, Ledger's [udev rules](https://github.com/LedgerHQ/udev-rules) must be installed or `hidraw` access fails with "permission denied". The `@ledgerhq/hw-transport-node-hid` dependency compiles `node-hid` natively at `npm install` time, which needs `libudev-dev` + a C/C++ toolchain on Debian/Ubuntu (`sudo apt install libudev-dev build-essential`).
+- RPC provider (Infura, Alchemy, or custom) for EVM chains; a Solana RPC (Helius / QuickNode / Triton — the default public endpoint is rate-limited)
+- Optional: Etherscan API key, 1inch API key (enables swap-quote comparison), WalletConnect project ID (required for EVM Ledger signing), TronGrid API key (required in practice for TRON reads — anonymous calls are capped at ~15 req/min)
+- For TRON/Solana signing: USB HID access to a Ledger with the **Tron** / **Solana** app installed. On Linux, install Ledger's [udev rules](https://github.com/LedgerHQ/udev-rules); `node-hid` compiles natively so Debian/Ubuntu needs `sudo apt install libudev-dev build-essential`. For SPL/MarginFi/Jupiter flows, enable **Allow blind signing** in the Solana app's on-device Settings. SOL native transfers clear-sign and do not need this.
 
 ## Install
 
-### From npm (recommended)
+From npm (recommended):
 
 ```bash
 npm install -g vaultpilot-mcp
 vaultpilot-mcp-setup
 ```
 
-### From source
+From source:
 
 ```bash
 git clone https://github.com/szhygulin/vaultpilot-mcp.git
@@ -146,17 +128,15 @@ npm run build
 
 ## Setup
 
-Run the interactive setup to pick an RPC provider, validate the key, optionally pair Ledger Live, and write `~/.vaultpilot-mcp/config.json`:
+Run the interactive setup to pick RPC providers, validate keys, optionally pair Ledger Live, and write `~/.vaultpilot-mcp/config.json`:
 
 ```bash
 npm run setup
 ```
 
-Environment variables always override the config file at runtime.
+Environment variables always override the config file.
 
 ## Use with Claude Desktop
-
-Add to `claude_desktop_config.json`:
 
 ```json
 {
@@ -168,23 +148,22 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-(If you installed from source rather than via `npm i -g`, swap `"command": "vaultpilot-mcp"` for `"command": "node"` and `"args": ["/absolute/path/to/vaultpilot-mcp/dist/index.js"]`.)
-
-The setup script prints a ready-to-paste snippet.
+From source: replace with `"command": "node"` and `"args": ["/absolute/path/to/vaultpilot-mcp/dist/index.js"]`.
 
 ## Environment variables
 
-All are optional if the matching field is in `~/.vaultpilot-mcp/config.json`; env vars take precedence when both are set.
+All optional if the matching field is in `~/.vaultpilot-mcp/config.json`; env vars take precedence.
 
-- `ETHEREUM_RPC_URL`, `ARBITRUM_RPC_URL`, `POLYGON_RPC_URL`, `BASE_RPC_URL` — custom RPC endpoints
+- `ETHEREUM_RPC_URL`, `ARBITRUM_RPC_URL`, `POLYGON_RPC_URL`, `BASE_RPC_URL`, `SOLANA_RPC_URL` — custom RPC endpoints
 - `RPC_PROVIDER` (`infura` | `alchemy`) + `RPC_API_KEY` — alternative to custom URLs
 - `ETHERSCAN_API_KEY` — contract verification lookups
-- `ONEINCH_API_KEY` — enables 1inch quote comparison in `get_swap_quote`
-- `TRON_API_KEY` — TronGrid API key (sent as `TRON-PRO-API-KEY`). Required in practice to read TRON balances — anonymous TronGrid calls are capped at ~15 req/min, which the portfolio fan-out exceeds. Free to create at [trongrid.io](https://www.trongrid.io).
+- `ONEINCH_API_KEY` — enables 1inch quote comparison
+- `TRON_API_KEY` — TronGrid (sent as `TRON-PRO-API-KEY`)
 - `WALLETCONNECT_PROJECT_ID` — required for Ledger Live signing
 - `RPC_BATCH=1` — opt into JSON-RPC batching (off by default; many public endpoints mishandle batched POSTs)
-- `VAULTPILOT_ALLOW_INSECURE_RPC=1` — opt out of the https/private-IP check on RPC URLs. Only set this when pointing at a local anvil/hardhat fork; never in production. (Old name `RECON_ALLOW_INSECURE_RPC` is still honored for one release.)
-- `VAULTPILOT_FEEDBACK_ENDPOINT` — optional https URL for `request_capability` to POST directly (e.g. a maintainer-operated proxy that creates GitHub issues with a bot token). When unset (the default), `request_capability` returns a pre-filled GitHub issue URL for the user to click through; nothing is transmitted automatically. **Operator responsibility:** the vaultpilot-mcp client does not sign or authenticate POST requests. If you set this endpoint, the proxy MUST enforce its own auth (IP allowlist, Cloudflare Access, HMAC header validation, etc.) — otherwise any caller who learns the URL can submit to it. The on-process rate limiter (3/hour, 10/day) is a courtesy, not a security control. (Old name `RECON_FEEDBACK_ENDPOINT` is still honored for one release.)
+- `VAULTPILOT_ALLOW_INSECURE_RPC=1` — opt out of https/private-IP RPC checks (local anvil/hardhat only)
+- `VAULTPILOT_FEEDBACK_ENDPOINT` — optional https proxy for `request_capability` direct POSTs. **The client does not sign or authenticate requests — the proxy MUST enforce its own auth.**
+- `VAULTPILOT_SKILL_MARKER_PATH` — suppresses the preflight-skill notice for read-only users who accept the tradeoff
 
 ## Development
 
