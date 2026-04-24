@@ -183,6 +183,64 @@ interface CachedClient {
 }
 const clientCache = new Map<string, CachedClient>();
 
+/**
+ * Diagnostic record for a bank the hardened fetch path had to skip. Surfaced
+ * so `findBankForMint` can tell "bank not listed on MarginFi" apart from
+ * "bank IS listed but we failed to load it" (issue #107).
+ *
+ * `mint` is best-effort: on a step-2 Borsh decode failure we recover it from
+ * the raw 32 bytes at offset 8 (the Bank account's first field), so even a
+ * fully-undecodable bank gets an attributable mint.
+ */
+export type MarginfiBankSkipStep =
+  | "decode"
+  | "hydrate"
+  | "tokenData"
+  | "priceInfo";
+export interface MarginfiBankSkipRecord {
+  address: string;
+  mint: string | null;
+  step: MarginfiBankSkipStep;
+  reason: string;
+}
+interface DiagnosticSnapshot {
+  fetchedAt: number;
+  addressesFetched: number;
+  banksHydrated: number;
+  skippedIntegrator: number;
+  records: MarginfiBankSkipRecord[];
+}
+const lastGroupDiagnostics = new Map<string, DiagnosticSnapshot>();
+
+function recordSkip(
+  records: MarginfiBankSkipRecord[],
+  address: PublicKey,
+  mint: string | null,
+  step: MarginfiBankSkipStep,
+  err: unknown,
+): void {
+  const reason = err instanceof Error ? err.message : String(err);
+  records.push({ address: address.toBase58(), mint, step, reason });
+}
+
+/**
+ * Recover a bank's mint from the raw account data at IDL 0.1.7's known
+ * offset (8-byte discriminator + 32-byte mint pubkey). Lets us attribute a
+ * `decode`-step skip to a mint even when the Borsh layout is blind.
+ *
+ * Returns `null` if the data is too short or the bytes don't form a valid
+ * base58 key — `findBankForMint`'s diagnostic then falls back to reporting
+ * the bank address without the mint.
+ */
+function tryReadMintFromRawBankData(data: Buffer): string | null {
+  if (data.length < 8 + 32) return null;
+  try {
+    return new PublicKey(data.subarray(8, 8 + 32)).toBase58();
+  } catch {
+    return null;
+  }
+}
+
 async function getMarginfiClient(
   conn: Connection,
   authority: PublicKey,
@@ -354,11 +412,12 @@ async function hardenedFetchGroupData(
     emissionsMint: PublicKey;
   }
   const bankDatasKeyed: BankDatum[] = [];
-  let skippedDecode = 0;
+  const skipRecords: MarginfiBankSkipRecord[] = [];
   let skippedIntegrator = 0;
   for (let i = 0; i < addresses.length; i++) {
     const ai = bankAis[i];
     if (!ai) continue;
+    const address = addresses[i]!;
     try {
       // IDL 0.1.7 names the account "Bank" (PascalCase — see accounts[].name
       // in marginfi_0.1.7.json). Anchor's BorshAccountsCoder keys its
@@ -373,19 +432,21 @@ async function hardenedFetchGroupData(
         skippedIntegrator++;
         continue;
       }
-      bankDatasKeyed.push({ address: addresses[i]!, data: decoded });
-    } catch {
-      skippedDecode++;
+      bankDatasKeyed.push({ address, data: decoded });
+    } catch (err) {
+      // Recover the mint from raw bytes so the diagnostic can still
+      // attribute this skip to (e.g.) USDC even when the full layout is
+      // opaque — enables the distinct "bank listed but skipped" error
+      // in findBankForMint instead of the misleading "not listed" one
+      // (issue #107).
+      recordSkip(
+        skipRecords,
+        address,
+        tryReadMintFromRawBankData(ai.data),
+        "decode",
+        err,
+      );
     }
-  }
-  if (skippedDecode > 0) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[vaultpilot/marginfi] fetchGroupData: skipped ${skippedDecode} bank account(s) that the bundled ` +
-        `SDK (v6.4.1, IDL 0.1.7) couldn't decode. This is expected when MarginFi has shipped an ` +
-        `on-chain layout change ahead of a matching SDK release — the client still comes up with the ` +
-        `banks it understands. Skipped (integrator, expected): ${skippedIntegrator}.`,
-    );
   }
 
   // Step 3: fetch group account + oracles + mints + emission mints (plain
@@ -428,8 +489,11 @@ async function hardenedFetchGroupData(
         : undefined;
       const bank = Bank.fromAccountParsed(address, data, undefined, bankMeta);
       banks.set(address.toBase58(), bank);
-    } catch {
-      // Drop silently — we already warned above if the count is non-zero.
+    } catch (err) {
+      // Decode succeeded so we know the mint — diagnostic attributes the
+      // hydration failure to the specific token (e.g. "USDC bank skipped
+      // at hydrate: Invalid risk tier") rather than dropping silently.
+      recordSkip(skipRecords, address, data.mint.toBase58(), "hydrate", err);
     }
   }
 
@@ -439,7 +503,16 @@ async function hardenedFetchGroupData(
   for (let i = 0; i < bankDatasKeyed.length; i++) {
     const entry = bankDatasKeyed[i]!;
     const mintAi = mintAis[i];
-    if (!mintAi) continue;
+    if (!mintAi) {
+      recordSkip(
+        skipRecords,
+        entry.address,
+        entry.data.mint.toBase58(),
+        "tokenData",
+        new Error("mint account fetch returned null"),
+      );
+      continue;
+    }
     tokenDatas.set(entry.address.toBase58(), {
       mint: mintKeys[i],
       tokenProgram: mintAi.owner,
@@ -455,15 +528,51 @@ async function hardenedFetchGroupData(
   for (let i = 0; i < bankDatasKeyed.length; i++) {
     const entry = bankDatasKeyed[i]!;
     const priceAi = oracleAis[i];
-    if (!priceAi) continue;
+    if (!priceAi) {
+      recordSkip(
+        skipRecords,
+        entry.address,
+        entry.data.mint.toBase58(),
+        "priceInfo",
+        new Error("oracle account fetch returned null"),
+      );
+      continue;
+    }
     try {
       const oracleSetup = parseOracleSetup(entry.data.config.oracleSetup);
       const fixedPrice = wrappedI80F48toBigNumber(entry.data.config.fixedPrice);
       const parsed = parsePriceInfo(oracleSetup, priceAi.data, fixedPrice);
       priceInfos.set(entry.address.toBase58(), parsed);
-    } catch {
-      // drop silently
+    } catch (err) {
+      recordSkip(
+        skipRecords,
+        entry.address,
+        entry.data.mint.toBase58(),
+        "priceInfo",
+        err,
+      );
     }
+  }
+
+  // Publish the diagnostic snapshot BEFORE returning so callers (most
+  // importantly `findBankForMint`) can consult it on the next step.
+  lastGroupDiagnostics.set(groupAddress.toBase58(), {
+    fetchedAt: Date.now(),
+    addressesFetched: addresses.length,
+    banksHydrated: banks.size,
+    skippedIntegrator,
+    records: skipRecords,
+  });
+
+  // One consolidated warning keeps log volume sane but gives ops a hook.
+  // Integrator (KAMINO/DRIFT/SOLEND) skips are expected, not noise.
+  if (skipRecords.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[vaultpilot/marginfi] fetchGroupData: skipped ${skipRecords.length} bank(s). ` +
+        `Breakdown: ${summarizeSkipsByStep(skipRecords)}. Expected integrator skips: ${skippedIntegrator}. ` +
+        `Call get_marginfi_diagnostics for per-bank detail.`,
+    );
   }
 
   return {
@@ -473,6 +582,46 @@ async function hardenedFetchGroupData(
     tokenDatas,
     feedIdMap: new Map(),
   };
+}
+
+function summarizeSkipsByStep(records: MarginfiBankSkipRecord[]): string {
+  const counts: Record<MarginfiBankSkipStep, number> = {
+    decode: 0,
+    hydrate: 0,
+    tokenData: 0,
+    priceInfo: 0,
+  };
+  for (const r of records) counts[r.step]++;
+  return (Object.keys(counts) as MarginfiBankSkipStep[])
+    .filter((k) => counts[k] > 0)
+    .map((k) => `${k}=${counts[k]}`)
+    .join(", ");
+}
+
+/**
+ * Public accessor for the last hardened-fetch diagnostic snapshot for the
+ * mainnet group. Returns `null` when no fetch has happened yet in this
+ * process. Consumed by the `get_marginfi_diagnostics` MCP tool AND by
+ * `findBankForMint` to distinguish "bank not listed" from "bank listed
+ * but skipped by hardened decode" (issue #107).
+ */
+export function getLastMarginfiGroupDiagnostics(
+  group: PublicKey = MAINNET_GROUP,
+): DiagnosticSnapshot | null {
+  return lastGroupDiagnostics.get(group.toBase58()) ?? null;
+}
+
+/** Test-only hook: reset the diagnostic store between tests. */
+export function __clearMarginfiGroupDiagnostics(): void {
+  lastGroupDiagnostics.clear();
+}
+
+/** Test-only hook: preload a diagnostic snapshot (used by unit tests). */
+export function __setMarginfiGroupDiagnosticsForTest(
+  snapshot: DiagnosticSnapshot,
+  group: PublicKey = MAINNET_GROUP,
+): void {
+  lastGroupDiagnostics.set(group.toBase58(), snapshot);
 }
 
 /**
@@ -579,6 +728,23 @@ function findBankForMint(client: unknown, mint: string): MinimalBank {
   const c = client as MinimalClient;
   const bank = c.getBankByMint(new PublicKey(mint));
   if (!bank) {
+    // Issue #107 — before reporting "not listed", check the hardened
+    // fetch's skip log: a bank CAN be live on-chain yet absent from
+    // `client.banks` because we hit a decode/hydrate/oracle failure
+    // while loading it. Collapsing that into the generic message misled
+    // users into thinking MarginFi had de-listed the token.
+    const diag = getLastMarginfiGroupDiagnostics();
+    const skipped = diag?.records.find((r) => r.mint === mint);
+    if (skipped) {
+      throw new Error(
+        `MarginFi bank for ${resolveMintSymbol(mint)} (mint ${mint}) IS listed on-chain but was ` +
+          `skipped by the hardened client load at step "${skipped.step}" (bank ${skipped.address}). ` +
+          `Reason: ${skipped.reason}. This usually means MarginFi shipped an on-chain ` +
+          `change (new risk tier, operational state, oracle setup, or asset tag) that the ` +
+          `bundled SDK v6.4.1 / IDL 0.1.7 doesn't yet understand. Workaround: bump @mrgnlabs/marginfi-client-v2 ` +
+          `to a release that recognizes the new layout. Full skip log: call get_marginfi_diagnostics.`,
+      );
+    }
     throw new Error(
       `No MarginFi bank found for mint ${mint} (${resolveMintSymbol(mint)}). ` +
         `MarginFi lists a subset of SPL tokens; not every mainnet SPL is supported. ` +

@@ -561,3 +561,191 @@ describe("getMarginfiPositions short-circuit (issues #102, #101)", () => {
     expect(results).toEqual([]);
   });
 });
+
+/**
+ * Issue #107 — when a bank IS listed on-chain but the hardened fetch path
+ * had to skip it (Borsh decode failure, oracle parse failure, etc.),
+ * `findBankForMint` must distinguish that case from "mint truly not listed",
+ * so the user isn't told MarginFi dropped a token that's actually live.
+ * Exercised via the test-only diagnostic-store setter + the real
+ * `findBankForMint` path on the `__internals` export.
+ */
+describe("findBankForMint diagnostic branch (issue #107)", () => {
+  const BANK_USDC_ADDR = BANK_USDC.toBase58();
+
+  beforeEach(async () => {
+    const mfn = await import("../src/modules/solana/marginfi.js");
+    mfn.__clearMarginfiGroupDiagnostics();
+  });
+
+  it("points at the skipped bank + reason when decode-phase drop is recorded", async () => {
+    const mfn = await import("../src/modules/solana/marginfi.js");
+    mfn.__setMarginfiGroupDiagnosticsForTest({
+      fetchedAt: Date.now(),
+      addressesFetched: 1,
+      banksHydrated: 0,
+      skippedIntegrator: 0,
+      records: [
+        {
+          address: BANK_USDC_ADDR,
+          mint: USDC_MINT,
+          step: "hydrate",
+          reason: "Invalid risk tier \"{ uncharted: {} }\"",
+        },
+      ],
+    });
+    // Empty client — no bank in the map for USDC. findBankForMint should
+    // consult the diagnostic store and fall into the distinct branch.
+    const client = {
+      getBankByMint: () => null,
+      banks: new Map(),
+      oraclePrices: new Map(),
+    };
+    expect(() =>
+      mfn.__internals.findBankForMint(client, USDC_MINT),
+    ).toThrow(/IS listed on-chain but was skipped.*hydrate.*Invalid risk tier/s);
+  });
+
+  it("falls through to the generic 'not listed' message when diagnostic has no record for the mint", async () => {
+    const mfn = await import("../src/modules/solana/marginfi.js");
+    mfn.__setMarginfiGroupDiagnosticsForTest({
+      fetchedAt: Date.now(),
+      addressesFetched: 5,
+      banksHydrated: 5,
+      skippedIntegrator: 0,
+      records: [], // nothing skipped
+    });
+    const client = {
+      getBankByMint: () => null,
+      banks: new Map(),
+      oraclePrices: new Map(),
+    };
+    expect(() =>
+      mfn.__internals.findBankForMint(client, USDC_MINT),
+    ).toThrow(/No MarginFi bank found.*not every mainnet SPL is supported/s);
+  });
+
+  it("prepare_marginfi_supply surfaces the skip reason when USDC was dropped at decode", async () => {
+    await setNoncePresent();
+    connectionStub.getAccountInfo.mockResolvedValue({
+      data: Buffer.alloc(0),
+      owner: new PublicKey("11111111111111111111111111111111"),
+      lamports: 1,
+      executable: false,
+    });
+    // Client comes up with no USDC bank (simulating the post-#106 live
+    // failure mode) but the diagnostic flags that USDC was the mint of
+    // the skipped bank.
+    await installFakeClient(() => null);
+    installFakeWrapperFor("healthy");
+    const mfn = await import("../src/modules/solana/marginfi.js");
+    mfn.__setMarginfiGroupDiagnosticsForTest({
+      fetchedAt: Date.now(),
+      addressesFetched: 1,
+      banksHydrated: 0,
+      skippedIntegrator: 0,
+      records: [
+        {
+          address: BANK_USDC_ADDR,
+          mint: USDC_MINT,
+          step: "decode",
+          reason: "Unexpected discriminant value",
+        },
+      ],
+    });
+    await expect(
+      mfn.buildMarginfiSupply({ wallet: WALLET, symbol: "USDC", amount: "1" }),
+    ).rejects.toThrow(/USDC.*skipped by the hardened client load.*decode/s);
+  });
+});
+
+/**
+ * Issue #107 — the hardened fetch populates the diagnostic store with the
+ * address, mint (even when decode fails — recovered from raw bytes), step,
+ * and reason for each skipped bank. Tested against the direct hardened
+ * path with crafted AccountInfo buffers so we don't pay for a live fetch.
+ */
+describe("hardenedFetchGroupData diagnostic recording (issue #107)", () => {
+  it("records a decode-phase skip with mint recovered from raw bytes", async () => {
+    // Build a buffer with the right shape for mint recovery: 8 bytes
+    // discriminator (junk) + 32 bytes = the USDC mint pubkey, then
+    // arbitrary extra bytes so the decoder has something to chew on.
+    const mintBytes = new PublicKey(USDC_MINT).toBuffer();
+    const fakeBankData = Buffer.concat([
+      Buffer.alloc(8, 0xff),
+      mintBytes,
+      Buffer.alloc(64, 0),
+    ]);
+
+    const getMultipleAccountsInfo = vi
+      .fn()
+      // First call: bank account data.
+      .mockResolvedValueOnce([
+        {
+          data: fakeBankData,
+          owner: new PublicKey(SYSTEM_PROGRAM),
+          lamports: 1,
+          executable: false,
+        },
+      ])
+      // Second call: group + oracles + mints. With zero hydrated banks
+      // the oracle/mint lists are empty so we only need one element —
+      // the group account — which we return as a dummy buffer; the
+      // parse will fail downstream but our try/catch on MarginfiGroup
+      // is the only place the error propagates out of the function.
+      .mockResolvedValueOnce([
+        {
+          data: Buffer.alloc(128, 0),
+          owner: new PublicKey(SYSTEM_PROGRAM),
+          lamports: 1,
+          executable: false,
+        },
+      ]);
+
+    const conn = { getMultipleAccountsInfo };
+    const program = {
+      provider: { connection: conn },
+      // Force a decode failure to exercise the skip path.
+      coder: {
+        decode: () => {
+          throw new Error("probe-induced decode failure");
+        },
+      },
+      programId: new PublicKey(SYSTEM_PROGRAM),
+      idl: {},
+    };
+
+    const marginfi = await import("../src/modules/solana/marginfi.js");
+    marginfi.__clearMarginfiGroupDiagnostics();
+
+    // MarginfiGroup.fromBuffer gets called; return anything — we don't
+    // assert on the return value, only on the diagnostic side-effect.
+    const mfnMod = await import("@mrgnlabs/marginfi-client-v2");
+    (mfnMod.MarginfiGroup.fromBuffer as ReturnType<typeof vi.fn>).mockReturnValue(
+      {},
+    );
+
+    const bankAddresses = [BANK_USDC];
+    const groupAddress = new PublicKey(
+      "4qp6Fx6tnZkY5Wropq9wUYgtFxXKwE6viZxFHg3rdAG8",
+    );
+    await marginfi.__hardenedFetchGroupDataForTest(
+      program as never,
+      groupAddress,
+      undefined,
+      bankAddresses,
+      undefined,
+    );
+
+    const snap = marginfi.getLastMarginfiGroupDiagnostics();
+    expect(snap).not.toBeNull();
+    expect(snap!.addressesFetched).toBe(1);
+    expect(snap!.banksHydrated).toBe(0);
+    expect(snap!.records).toHaveLength(1);
+    const rec = snap!.records[0]!;
+    expect(rec.address).toBe(BANK_USDC.toBase58());
+    expect(rec.mint).toBe(USDC_MINT);
+    expect(rec.step).toBe("decode");
+    expect(rec.reason).toMatch(/probe-induced decode failure/);
+  });
+});

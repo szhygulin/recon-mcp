@@ -346,6 +346,73 @@ export async function getMarginfiPositions(args: GetMarginfiPositionsArgs) {
 }
 
 /**
+ * Read-only diagnostic surface for the hardened MarginFi client load.
+ * Returns per-bank skip records (address, best-effort mint, step, reason)
+ * from the last `fetchGroupData` pass in this process — the data that
+ * powers `findBankForMint`'s "bank listed but skipped" branch (issue #107).
+ *
+ * Triggers a fresh load if the cache is cold so the snapshot is always
+ * recent on demand.
+ */
+export async function getMarginfiDiagnostics(
+  _args?: Record<string, never>,
+): Promise<{
+  group: string;
+  fetchedAt: number | null;
+  addressesFetched: number;
+  banksHydrated: number;
+  skippedIntegrator: number;
+  skipped: Array<{
+    address: string;
+    mint: string | null;
+    symbol: string;
+    step: "decode" | "hydrate" | "tokenData" | "priceInfo";
+    reason: string;
+  }>;
+}> {
+  const marginfi = await import("../solana/marginfi.js");
+  const conn = getSolanaConnection();
+  let snap = marginfi.getLastMarginfiGroupDiagnostics();
+  if (!snap) {
+    // Warm the cache — picks a valid pubkey as the stub authority since
+    // the hardened fetch doesn't actually use it, only the SDK's wallet
+    // type-check does.
+    const { PublicKey } = await import("@solana/web3.js");
+    await marginfi.getHardenedMarginfiClient(
+      conn,
+      new PublicKey("11111111111111111111111111111111"),
+    );
+    snap = marginfi.getLastMarginfiGroupDiagnostics();
+  }
+  if (!snap) {
+    return {
+      group: marginfi.__internals.MAINNET_GROUP.toBase58(),
+      fetchedAt: null,
+      addressesFetched: 0,
+      banksHydrated: 0,
+      skippedIntegrator: 0,
+      skipped: [],
+    };
+  }
+  return {
+    group: marginfi.__internals.MAINNET_GROUP.toBase58(),
+    fetchedAt: snap.fetchedAt,
+    addressesFetched: snap.addressesFetched,
+    banksHydrated: snap.banksHydrated,
+    skippedIntegrator: snap.skippedIntegrator,
+    skipped: snap.records.map((r) => ({
+      address: r.address,
+      mint: r.mint,
+      symbol: r.mint
+        ? marginfi.__internals.resolveMintSymbol(r.mint)
+        : "UNKNOWN",
+      step: r.step,
+      reason: r.reason,
+    })),
+  };
+}
+
+/**
  * Read-only setup probe for a Solana wallet. Returns which one-time-setup
  * prerequisites are already in place (durable-nonce account + MarginFi
  * PDAs) so agents planning a supply/borrow/etc. don't re-propose a

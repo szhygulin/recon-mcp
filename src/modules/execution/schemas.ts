@@ -273,6 +273,8 @@ export const getMarginfiPositionsInput = z.object({
   ),
 });
 
+export const getMarginfiDiagnosticsInput = z.object({});
+
 export const getLedgerStatusInput = z.object({});
 
 const baseAaveAction = z.object({

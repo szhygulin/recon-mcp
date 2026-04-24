@@ -69,6 +69,7 @@ import {
   prepareMarginfiBorrow,
   prepareMarginfiRepay,
   getMarginfiPositions,
+  getMarginfiDiagnostics,
   getSolanaSetupStatus,
   prepareAaveSupply,
   prepareAaveWithdraw,
@@ -104,6 +105,7 @@ import {
   prepareMarginfiBorrowInput,
   prepareMarginfiRepayInput,
   getMarginfiPositionsInput,
+  getMarginfiDiagnosticsInput,
   getSolanaSetupStatusInput,
   getLedgerStatusInput,
   prepareAaveSupplyInput,
@@ -1370,6 +1372,24 @@ async function main() {
       inputSchema: getMarginfiPositionsInput.shape,
     },
     handler(getMarginfiPositions)
+  );
+
+  server.registerTool(
+    "get_marginfi_diagnostics",
+    {
+      description:
+        "READ-ONLY — diagnostic surface for the hardened MarginFi client load. Returns the list " +
+        "of banks the bundled SDK (v6.4.1, IDL 0.1.7) had to skip while fetching the production " +
+        "group, with each record carrying the bank address, best-effort mint + symbol (recovered " +
+        "from raw bytes even when Borsh decode fails), the step where the skip happened " +
+        "(`decode` / `hydrate` / `tokenData` / `priceInfo`), and the raw error reason. Call this " +
+        "when `prepare_marginfi_*` reports that a mint you know is listed on mainnet (e.g. USDC) " +
+        "was missed — it will either name the bank explicitly as skipped with the root cause, or " +
+        "confirm the mint truly isn't in the current group. The snapshot reflects the most recent " +
+        "`fetchGroupData` pass in this process; an empty cache is warmed on demand. No input args.",
+      inputSchema: getMarginfiDiagnosticsInput.shape,
+    },
+    handler(getMarginfiDiagnostics)
   );
 
   server.registerTool(
