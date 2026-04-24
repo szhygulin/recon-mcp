@@ -5,7 +5,9 @@ import { makeTokenAmount, priceTokenAmounts, round } from "../../data/format.js"
 import { getTokenPrice } from "../../data/prices.js";
 import { getLendingPositions, getLpPositions } from "../positions/index.js";
 import { getStakingPositions } from "../staking/index.js";
-import { getCompoundPositions } from "../compound/index.js";
+import { getCompoundPositions, prefetchCompoundProbes } from "../compound/index.js";
+import { prefetchAaveAccountData } from "../positions/aave.js";
+import { prefetchLidoMainnet } from "../staking/lido.js";
 import { getMorphoPositions } from "../morpho/index.js";
 import { getTronBalances } from "../tron/balances.js";
 import { getTronStaking } from "../tron/staking.js";
@@ -117,6 +119,27 @@ export async function getPortfolioSummary(
     );
   }
 
+  // Cross-wallet prefetches run FIRST and populate per-wallet caches.
+  // The per-wallet buildWalletSummary fan-out then hits the cache for
+  // the most rate-limit-sensitive subsystems, keeping the wallet fan-
+  // out's peak RPC pressure flat regardless of wallet count.
+  //
+  // Without these prefetches, a 4-wallet call fires ~20 parallel
+  // Compound probes + 20 Aave aggregate reads + 4 Lido mainnet
+  // multicalls + ... = dozens of simultaneous multicalls saturating
+  // free-tier Infura even at cap=2 per chain. With them, each
+  // subsystem collapses to ONE multicall per chain regardless of
+  // wallet count — the downstream per-wallet calls hit cache.
+  //
+  // Run in parallel across subsystems (each batches by chain
+  // internally); one slow subsystem doesn't serialize the others.
+  await Promise.all([
+    prefetchCompoundProbes(wallets, chains),
+    prefetchAaveAccountData(wallets, chains),
+    // Lido mainnet is the most rate-limit-sensitive staking read;
+    // arbitrum wstETH is low volume and stays per-wallet.
+    chains.includes("ethereum") ? prefetchLidoMainnet(wallets) : Promise.resolve(),
+  ]);
   const perWallet = await Promise.all(wallets.map((w) => buildWalletSummary(w, chains)));
   const totalUsd = round(perWallet.reduce((s, p) => s + p.totalUsd, 0), 2);
   const walletBalancesUsd = round(perWallet.reduce((s, p) => s + p.walletBalancesUsd, 0), 2);
@@ -294,6 +317,11 @@ async function buildWalletSummary(
   // errored flag; we additionally capture the chain + raw error so the note
   // can name WHICH chain's RPC / event-log scan was failing (issue #92).
   const morphoErroredChains: { chain: SupportedChain; error: string }[] = [];
+  // Separate signal from errored: when the VAULTPILOT_MORPHO_DISCOVERY env
+  // var is unset, `getMorphoPositions` short-circuits without RPC calls
+  // and returns `discoverySkipped: true`. Surface as coverage.morpho with
+  // `covered: false, errored: false` — "not attempted, opt-in available".
+  let morphoDiscoverySkipped = false;
   // Per-source Lido/EigenLayer staking failures. Previously `getStakingPositions`
   // used `Promise.all` — if EITHER Lido OR EigenLayer threw, the whole staking
   // response rejected and the aggregator coverage flag couldn't tell them
@@ -361,14 +389,24 @@ async function buildWalletSummary(
       // issue #92).
       Promise.all(
         chains.map((c) =>
-          getMorphoPositions({ wallet, chain: c }).catch((e) => {
-            errors.morpho = true;
-            morphoErroredChains.push({
-              chain: c,
-              error: e instanceof Error ? e.message : String(e),
-            });
-            return { wallet, positions: [] };
-          })
+          getMorphoPositions({ wallet, chain: c })
+            .then((r) => {
+              // `discoverySkipped: true` means the opt-in env var was unset
+              // and getMorphoPositions returned cleanly without any RPC
+              // calls. Distinct from an errored fetch — we track it
+              // separately so the coverage note is opt-in guidance rather
+              // than an error diagnosis.
+              if (r.discoverySkipped) morphoDiscoverySkipped = true;
+              return r;
+            })
+            .catch((e) => {
+              errors.morpho = true;
+              morphoErroredChains.push({
+                chain: c,
+                error: e instanceof Error ? e.message : String(e),
+              });
+              return { wallet, positions: [] };
+            })
         )
       ),
       getLpPositions({ wallet, chains }).catch(() => {
@@ -532,12 +570,23 @@ async function buildWalletSummary(
           }
         : {}),
     },
-    morpho: {
-      covered: !errors.morpho,
-      ...(errors.morpho
-        ? { errored: true, note: formatMorphoErrorNote(morphoErroredChains) }
-        : {}),
-    },
+    morpho: errors.morpho
+      ? {
+          covered: false,
+          errored: true,
+          note: formatMorphoErrorNote(morphoErroredChains),
+        }
+      : morphoDiscoverySkipped
+      ? {
+          covered: false,
+          note:
+            "Morpho Blue auto-discovery is opt-in to spare free-tier RPCs " +
+            "(event-log scan dominated rate-limit pressure — see issue #88). " +
+            "Set VAULTPILOT_MORPHO_DISCOVERY=1 to enable automatic scan, or " +
+            "call get_morpho_positions with explicit marketIds for a fast-path " +
+            "read.",
+        }
+      : { covered: true },
     uniswapV3: { covered: !errors.lp, ...(errors.lp ? { errored: true, note: "Uniswap V3 LP fetch failed — positions not included." } : {}) },
     staking: {
       covered: !errors.staking,

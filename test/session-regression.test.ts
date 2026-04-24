@@ -188,8 +188,17 @@ describe("Bug 4: EigenLayer revert does not crash getStakingPositions", () => {
 });
 
 describe("Bug 3: Compound positions isolate per-market read failures", () => {
-  beforeEach(() => vi.resetModules());
-  afterEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.resetModules();
+    // These tests mock the readMarketPosition multicall shape directly;
+    // bypass the #88 exposure probe so the mock's 4-call response layout
+    // stays valid without having to re-mock a 2N-call probe first.
+    process.env.VAULTPILOT_COMPOUND_FULL_READ = "1";
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.VAULTPILOT_COMPOUND_FULL_READ;
+  });
 
   it("reads healthy markets successfully while flagging the failing one via the errored list (one bad market doesn't nuke the whole call)", async () => {
     // Market 1's baseToken read fails — previously we silently skipped this
@@ -411,8 +420,14 @@ describe("Bug 8: Compound V3 reader surfaces base balance even when a getAssetIn
     vi.resetModules();
     // Bug 7 above mocks the compound module; clear that so we exercise the real reader.
     vi.doUnmock("../src/modules/compound/index.js");
+    // Bypass the #88 exposure probe; mocks below target readMarketPosition's
+    // 4-call multicall shape directly.
+    process.env.VAULTPILOT_COMPOUND_FULL_READ = "1";
   });
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.VAULTPILOT_COMPOUND_FULL_READ;
+  });
 
   it("returns the supplied base balance when one collateral's getAssetInfo reverts", async () => {
     let callIdx = 0;
@@ -1336,8 +1351,16 @@ describe("Bug 14: Compound per-market RPC failures surface as coverage.errored (
   // returns { errored: true, erroredMarkets: [...] }. The portfolio aggregator
   // flips errors.compound → coverage.compound.errored = true so the user sees
   // a warning note instead of silent $0.
-  beforeEach(() => vi.resetModules());
-  afterEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.resetModules();
+    // Bypass the #88 exposure probe so these tests reach
+    // readMarketPosition's mocked 4-call multicall shape directly.
+    process.env.VAULTPILOT_COMPOUND_FULL_READ = "1";
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.VAULTPILOT_COMPOUND_FULL_READ;
+  });
 
   it("getCompoundPositions returns errored:true when baseToken succeeds but balanceOf fails on a deployed market", async () => {
     let callCount = 0;
