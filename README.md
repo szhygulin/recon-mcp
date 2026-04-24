@@ -109,9 +109,10 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 ## Requirements
 
 - Node.js >= 18.17
-- RPC provider (Infura, Alchemy, or custom) for EVM chains; a Solana RPC (Helius / QuickNode / Triton — the default public endpoint is rate-limited)
-- Optional: Etherscan API key, 1inch API key (enables swap-quote comparison), WalletConnect project ID (required for EVM Ledger signing), TronGrid API key (required in practice for TRON reads — anonymous calls are capped at ~15 req/min)
-- For TRON/Solana signing: USB HID access to a Ledger with the **Tron** / **Solana** app installed. On Linux, install Ledger's [udev rules](https://github.com/LedgerHQ/udev-rules); `node-hid` compiles natively so Debian/Ubuntu needs `sudo apt install libudev-dev build-essential`. For SPL/MarginFi/Jupiter flows, enable **Allow blind signing** in the Solana app's on-device Settings. SOL native transfers clear-sign and do not need this.
+- **Zero-config path (portfolio reads):** no API keys needed. The server falls back to PublicNode (EVM) and Solana public mainnet when nothing is configured — rate-limited, but enough for first-contact and light use.
+- **For real use:** set your own RPC provider (Infura / Alchemy / custom) for EVM chains and a Solana RPC (Helius / QuickNode / Triton) when the public endpoints rate-limit you. One env var per chain (`ETHEREUM_RPC_URL`, `SOLANA_RPC_URL`, …) or `vaultpilot-mcp-setup`.
+- **Optional (prompted on demand):** Etherscan API key, 1inch API key (enables swap-quote comparison), WalletConnect project ID (required for EVM Ledger signing), TronGrid API key (raises the ~15 req/min anonymous cap).
+- **For TRON/Solana signing:** USB HID access to a Ledger with the **Tron** / **Solana** app installed. On Linux, install Ledger's [udev rules](https://github.com/LedgerHQ/udev-rules) — `vaultpilot-mcp-setup` prints the exact one-liner if they're missing. `node-hid` compiles natively so Debian/Ubuntu needs `sudo apt install libudev-dev build-essential`. For SPL/MarginFi/Jupiter flows, enable **Allow blind signing** in the Solana app's on-device Settings. SOL native transfers clear-sign and do not need this.
 
 ## Install
 

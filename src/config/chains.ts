@@ -36,6 +36,41 @@ const ENV_URL_VAR: Record<SupportedChain, string> = {
   optimism: "OPTIMISM_RPC_URL",
 };
 
+/**
+ * PublicNode free-tier fallbacks, used when the user has neither configured
+ * a provider nor set per-chain env vars. Lets the zero-config install work
+ * end-to-end for portfolio reads without the user signing up for any
+ * provider. Shared public endpoints are rate-limited — a user who plans to
+ * use the server heavily will want their own Infura / Alchemy key — but for
+ * first-contact + light use these are enough.
+ *
+ * PublicNode is maintained by Pokt Network (https://www.publicnode.com/),
+ * publicly documented, and exposes HTTPS (so our `validateRpcUrl` still
+ * accepts them). Optimism doesn't appear in the plan doc but is covered by
+ * the same template; include it so the zero-config path is uniform across
+ * all SUPPORTED_CHAINS.
+ */
+const PUBLIC_NODE_FALLBACK: Record<SupportedChain, string> = {
+  ethereum: "https://ethereum-rpc.publicnode.com",
+  arbitrum: "https://arbitrum-one-rpc.publicnode.com",
+  polygon: "https://polygon-bor-rpc.publicnode.com",
+  base: "https://base-rpc.publicnode.com",
+  optimism: "https://optimism-rpc.publicnode.com",
+};
+
+/**
+ * Public Solana mainnet endpoint. Aggressively rate-limited (429s under
+ * mild fan-out) but ships as the zero-config fallback so `get_portfolio_summary`
+ * with a `solanaAddress` works on first install. Upgrading to a Helius /
+ * QuickNode / Triton endpoint is one env var away (SOLANA_RPC_URL) when the
+ * user hits throttling.
+ */
+const SOLANA_PUBLIC_MAINNET = "https://api.mainnet-beta.solana.com";
+
+/** Whether `resolveRpcUrlRaw` has already warned about using the public fallback this process. */
+const warnedPublicFallback: Partial<Record<SupportedChain, boolean>> = {};
+let warnedSolanaPublicFallback = false;
+
 export class RpcConfigError extends Error {
   constructor(message: string) {
     super(message);
@@ -171,33 +206,41 @@ function resolveRpcUrlRaw(chain: SupportedChain, userConfig: UserConfig | null):
     if (provider === "custom") {
       const url = customUrls?.[chain];
       if (url) return url;
-      throw new RpcConfigError(
-        `No custom RPC URL configured for chain "${chain}". Re-run \`vaultpilot-mcp-setup\`.`
-      );
-    }
-    if (provider === "infura" || provider === "alchemy") {
-      if (!apiKey) {
-        throw new RpcConfigError(
-          `Missing API key for RPC provider "${provider}". Re-run \`vaultpilot-mcp-setup\`.`
-        );
-      }
-      return PROVIDER_URL_TEMPLATES[provider][chain](apiKey);
+      // Fall through to the public fallback rather than throwing — makes
+      // zero-config installs work and doesn't punish a user who configured
+      // one chain's custom URL but not another.
+    } else if (provider === "infura" || provider === "alchemy") {
+      if (apiKey) return PROVIDER_URL_TEMPLATES[provider][chain](apiKey);
+      // Missing apiKey — also fall through to public fallback.
     }
   }
 
-  throw new RpcConfigError(
-    `No RPC provider configured for chain "${chain}". ` +
-      `Run \`vaultpilot-mcp-setup\` to configure Infura, Alchemy, or a custom endpoint.`
-  );
+  // Zero-config / incomplete-config fallback: shared public endpoint.
+  // Emits a one-time per-chain warning to stderr so the user knows their
+  // reads are going through a rate-limited public RPC (explains any
+  // intermittent 429s) but doesn't fail the operation outright.
+  if (!warnedPublicFallback[chain]) {
+    warnedPublicFallback[chain] = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[vaultpilot] No RPC provider configured for ${chain} — using shared public ` +
+        `endpoint (${PUBLIC_NODE_FALLBACK[chain]}). Rate-limited; set ${ENV_URL_VAR[chain]} ` +
+        `or run \`vaultpilot-mcp-setup\` to upgrade.`,
+    );
+  }
+  return PUBLIC_NODE_FALLBACK[chain];
 }
 
 /**
  * Resolve the Solana mainnet RPC URL. Priority:
  *   1. SOLANA_RPC_URL env var (pastes cleanly from any provider's dashboard).
  *   2. `solanaRpcUrl` in user config (set by `vaultpilot-mcp-setup`).
- *   3. Throws. No silent fallback to public mainnet — Solana's public RPC
- *      is rate-limited hard enough that defaulting there would set the user
- *      up for intermittent failures they couldn't diagnose.
+ *   3. Public mainnet fallback (`api.mainnet-beta.solana.com`) with a
+ *      one-time stderr warning. Previously this layer threw; that hard-
+ *      gated the zero-config install for portfolio reads. Falling back
+ *      lets a first-time user see their Solana balance without signing up
+ *      for Helius first, at the cost of likely 429s under load — the
+ *      warning tells them exactly which env var to set when that bites.
  *
  * The returned URL passes through `validateRpcUrl` (https-only, no loopback)
  * before being handed to `Connection` — same safety bar as EVM RPCs.
@@ -213,10 +256,14 @@ export function resolveSolanaRpcUrl(userConfig: UserConfig | null): string {
     validateRpcUrl("solana", configUrl);
     return configUrl;
   }
-  throw new RpcConfigError(
-    `No Solana RPC configured. Set the SOLANA_RPC_URL env var to a provider URL ` +
-      `(Helius recommended — https://mainnet.helius-rpc.com/?api-key=YOUR_KEY) or run ` +
-      `\`vaultpilot-mcp-setup\` to stash it in ~/.vaultpilot-mcp/config.json. Solana's ` +
-      `public mainnet RPC is rate-limited and unreliable for production.`
-  );
+  if (!warnedSolanaPublicFallback) {
+    warnedSolanaPublicFallback = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[vaultpilot] No Solana RPC configured — using public mainnet ` +
+        `(${SOLANA_PUBLIC_MAINNET}). Rate-limited; set SOLANA_RPC_URL to a ` +
+        `Helius / QuickNode / Triton URL for real use.`,
+    );
+  }
+  return SOLANA_PUBLIC_MAINNET;
 }

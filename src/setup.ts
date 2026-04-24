@@ -22,6 +22,7 @@ import {
   readUserConfig,
   getConfigPath,
 } from "./config/user-config.js";
+import { reportLedgerUdevStatus } from "./setup/linux-udev.js";
 import type { RpcProvider, SupportedChain, UserConfig } from "./types/index.js";
 
 /** Thin readline wrapper so each prompt is a single awaited call. */
@@ -86,6 +87,15 @@ async function validateRpcUrl(url: string): Promise<number> {
 
 async function configureRpc(p: Prompt): Promise<UserConfig["rpc"]> {
   console.log("\n--- RPC Provider ---");
+  console.log(
+    "Optional for first-time portfolio reads — the zero-config path uses",
+  );
+  console.log(
+    "shared public endpoints (PublicNode). Heavy use / fan-out will rate-",
+  );
+  console.log(
+    "limit on the public path; set a provider below for real headroom.",
+  );
   // Default to the currently-configured provider if any, so re-running the
   // wizard doesn't force the user to re-pick every time. Index order matches
   // the `providerOrder` array below.
@@ -167,7 +177,9 @@ async function configureEtherscan(p: Prompt): Promise<string | undefined> {
 
 async function configureOneInch(p: Prompt): Promise<string | undefined> {
   console.log("\n--- 1inch (optional — enables swap-quote comparison vs LiFi) ---");
-  console.log("Create a free key at https://portal.1inch.dev. Skip with empty input.");
+  // Deep link to the new-key form; landing on the dashboard root makes users
+  // hunt through nav. Marketing pages are also click-wastage for this audience.
+  console.log("Create a free key at https://portal.1inch.dev/dashboard/api/keys. Skip with empty input.");
   const existing = readUserConfig()?.oneInchApiKey;
   const answer = await p.ask(
     existing
@@ -191,7 +203,7 @@ async function configureTron(p: Prompt): Promise<string | undefined> {
   console.log("\n--- TRON (optional — enables TRX + TRC-20 balance reads) ---");
   console.log("TRON is non-EVM: no Aave/Compound/Uniswap there, but TRC-20 USDT");
   console.log("dominates the chain and is worth folding into your portfolio total.");
-  console.log("Create a free key at https://www.trongrid.io (Dashboard → API Keys).");
+  console.log("Create a free key at https://www.trongrid.io/dashboard/apikeys (deep link to the API-Keys page).");
   console.log("Skip with empty input — TRON reads will be disabled.");
   const existing = readUserConfig()?.tronApiKey;
   const answer = await p.ask(
@@ -286,7 +298,7 @@ async function configureSolana(p: Prompt): Promise<string | undefined> {
 
   if (providerIdx === 0) {
     // Helius flow — mirrors the Infura/Alchemy key-based path for EVM RPC.
-    console.log("Create a free Helius API key at https://dashboard.helius.dev (Project → API Keys).");
+    console.log("Create a free Helius API key at https://dashboard.helius.dev/api-keys (deep link to the API-Keys page).");
     for (let attempt = 0; attempt < 3; attempt++) {
       const prompt = existingHeliusKey
         ? "Helius API key [press enter to keep existing]: "
@@ -330,7 +342,10 @@ async function configureSolana(p: Prompt): Promise<string | undefined> {
 
 async function configureWalletConnect(p: Prompt): Promise<string | undefined> {
   console.log("\n--- WalletConnect (optional — required for Ledger Live signing) ---");
-  console.log("Create a free project at https://cloud.walletconnect.com.");
+  // Reown is WalletConnect's rebranded dashboard. Deep link goes straight to
+  // the new-project form; the /app route below it would require navigating
+  // the main dashboard manually.
+  console.log("Create a free project at https://cloud.reown.com/app/new-project.");
   const existing = readUserConfig()?.walletConnect?.projectId;
   const answer = await p.ask(
     existing
@@ -549,6 +564,11 @@ async function runFullWizard(p: Prompt): Promise<void> {
   } else {
     console.log("\nSkipping Ledger Live pairing (no WalletConnect project ID set).");
   }
+
+  // Linux-only: surface Ledger udev-rules status at the end. No-op on
+  // macOS / Windows. If rules are missing on Linux, prints the install
+  // one-liner for the user to run separately (no sudo during the wizard).
+  reportLedgerUdevStatus();
 }
 
 async function main() {

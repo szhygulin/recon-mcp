@@ -94,19 +94,50 @@ describe("resolveRpcUrl", () => {
     expect(resolveRpcUrl("arbitrum", cfg)).toBe("https://my-node/arb");
   });
 
-  it("missing API key for Infura throws", () => {
+  // Incomplete / missing config falls back to the shared PublicNode endpoint
+  // rather than throwing — lets the zero-config install work for portfolio
+  // reads. The fallback emits a one-time stderr warning; a heavy user sees
+  // it, sets their own env var, moves on.
+
+  it("missing API key for Infura falls back to the public endpoint instead of throwing", () => {
     const cfg: UserConfig = { rpc: { provider: "infura" } };
-    expect(() => resolveRpcUrl("ethereum", cfg)).toThrow(RpcConfigError);
+    expect(resolveRpcUrl("ethereum", cfg)).toBe("https://ethereum-rpc.publicnode.com");
   });
 
-  it("custom provider without URL for a chain throws", () => {
+  it("custom provider without URL for a chain falls back to the public endpoint", () => {
     const cfg: UserConfig = {
       rpc: { provider: "custom", customUrls: { ethereum: "https://x" } },
     };
-    expect(() => resolveRpcUrl("arbitrum", cfg)).toThrow(RpcConfigError);
+    expect(resolveRpcUrl("arbitrum", cfg)).toBe("https://arbitrum-one-rpc.publicnode.com");
+    // The configured chain still wins over the fallback.
+    expect(resolveRpcUrl("ethereum", cfg)).toBe("https://x");
   });
 
-  it("no configuration at all throws", () => {
-    expect(() => resolveRpcUrl("ethereum", null)).toThrow(RpcConfigError);
+  it("no configuration at all falls back to the public endpoint per chain", () => {
+    expect(resolveRpcUrl("ethereum", null)).toBe("https://ethereum-rpc.publicnode.com");
+    expect(resolveRpcUrl("arbitrum", null)).toBe("https://arbitrum-one-rpc.publicnode.com");
+    expect(resolveRpcUrl("polygon", null)).toBe("https://polygon-bor-rpc.publicnode.com");
+    expect(resolveRpcUrl("base", null)).toBe("https://base-rpc.publicnode.com");
+    expect(resolveRpcUrl("optimism", null)).toBe("https://optimism-rpc.publicnode.com");
+  });
+
+  it("RpcConfigError still thrown for structurally bad config (unknown provider)", () => {
+    const cfg: UserConfig = {
+      // @ts-expect-error — intentional invalid provider to exercise the throw
+      rpc: { provider: "not-a-real-provider" },
+    };
+    // The unknown-provider path remains a hard error — it's a
+    // programming-error signal, not a missing-config signal.
+    // Via RPC_PROVIDER env var:
+    const prev = process.env.RPC_PROVIDER;
+    process.env.RPC_PROVIDER = "bogus";
+    process.env.RPC_API_KEY = "k";
+    try {
+      expect(() => resolveRpcUrl("ethereum", cfg)).toThrow(RpcConfigError);
+    } finally {
+      if (prev === undefined) delete process.env.RPC_PROVIDER;
+      else process.env.RPC_PROVIDER = prev;
+      delete process.env.RPC_API_KEY;
+    }
   });
 });
