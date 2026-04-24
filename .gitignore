@@ -12,11 +12,9 @@ dist/
 coverage/
 .vitest-cache/
 
-# Internal planning doc — not published to git.
-recon-mcp-requirements.md
-
-# Local scratch for Claude Code working files (plans, audits, one-off notes
-# that outlive a single plan-mode session). Not published to git.
+# Local scratch for Claude Code working files (plans, audits, requirements
+# docs, one-off notes that outlive a single plan-mode session). Not
+# published to git.
 claude-work/
 
 # crypto-audit skill output — local-only audit scratch.
