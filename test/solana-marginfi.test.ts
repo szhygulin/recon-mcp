@@ -403,6 +403,50 @@ describe("buildMarginfiSupply / Withdraw / Borrow / Repay", () => {
 });
 
 /**
+ * Issue #105 — `getMarginfiClient` must pass `fetchGroupDataOverride` to
+ * `MarginfiClient.fetch` so the SDK's default per-bank decode (which
+ * throws on the first layout mismatch between on-chain state and the
+ * bundled IDL 0.1.7) is replaced with our resilient variant. We assert
+ * behaviourally: construct a real call to `MarginfiClient.fetch` (mocked
+ * at the module boundary) and verify the override is present.
+ */
+describe("hardened MarginfiClient.fetch (issue #105)", () => {
+  it("passes fetchGroupDataOverride to MarginfiClient.fetch", async () => {
+    // Re-mock MarginfiClient.fetch for this test to capture the options.
+    const captured: { clientOptions?: Record<string, unknown> } = {};
+    const mfn = await import("@mrgnlabs/marginfi-client-v2");
+    (mfn.MarginfiClient.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_cfg: unknown, _wallet: unknown, _conn: unknown, opts: unknown) => {
+        captured.clientOptions = opts as Record<string, unknown>;
+        // Return a minimal object that passes through to the reader.
+        return {
+          getBankByMint: () => null,
+          banks: new Map(),
+          oraclePrices: new Map(),
+        };
+      },
+    );
+
+    // Clear our module cache so getHardenedMarginfiClient actually calls fetch.
+    const marginfi = await import("../src/modules/solana/marginfi.js");
+    marginfi.__clearMarginfiClientCache();
+
+    await marginfi.getHardenedMarginfiClient(
+      connectionStub as never,
+      WALLET_KEYPAIR.publicKey,
+    );
+    expect(captured.clientOptions).toBeDefined();
+    expect(typeof captured.clientOptions?.fetchGroupDataOverride).toBe(
+      "function",
+    );
+    // Also sanity-check readOnly carries through (we never sign via the
+    // position reader, and sending read-only mode to the SDK disables a
+    // handful of sign-related checks upstream).
+    expect(captured.clientOptions?.readOnly).toBe(true);
+  });
+});
+
+/**
  * Issue #102 — getMarginfiPositions must short-circuit BEFORE loading the
  * SDK client when no MarginfiAccount exists. Prior behaviour threw an
  * opaque `Cannot read properties of null (reading 'property')` because

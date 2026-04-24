@@ -1,7 +1,11 @@
 import type { Connection, PublicKey } from "@solana/web3.js";
 import BigNumber from "bignumber.js";
 import { assertSolanaAddress } from "../solana/address.js";
-import { __internals, deriveMarginfiAccountPda } from "../solana/marginfi.js";
+import {
+  __internals,
+  deriveMarginfiAccountPda,
+  getHardenedMarginfiClient,
+} from "../solana/marginfi.js";
 
 /**
  * Read-only MarginFi position reader. Parallels `getAaveLendingPosition` —
@@ -113,30 +117,13 @@ export async function getMarginfiPositions(
     return [];
   }
 
-  // At least one PDA exists — now load the SDK client. Wrap in a defensive
-  // try/catch so an SDK-internal failure (oracle decode, IDL mismatch,
-  // staked-bank layout drift, etc.) surfaces as an actionable error
-  // naming the failing step rather than a raw `null.property` trace.
+  // At least one PDA exists — now load the SDK client through the shared
+  // hardened entry point so per-bank/per-oracle decode failures don't blow
+  // up the whole load (issue #105). Wrap in a defensive try/catch for the
+  // residual error surface (e.g. upstream RPC down, group account gone).
   let client: unknown;
   try {
-    const { MarginfiClient, getConfig } = await import(
-      "@mrgnlabs/marginfi-client-v2"
-    );
-    const stubWallet = {
-      publicKey: authority,
-      signTransaction: async <T,>(_tx: T): Promise<T> => {
-        throw new Error("read-only path must not sign");
-      },
-      signAllTransactions: async <T,>(_txs: T[]): Promise<T[]> => {
-        throw new Error("read-only path must not sign");
-      },
-    };
-    client = await MarginfiClient.fetch(
-      getConfig("production"),
-      stubWallet,
-      conn,
-      { readOnly: true },
-    );
+    client = await getHardenedMarginfiClient(conn, authority);
   } catch (e) {
     const raw = e instanceof Error ? e.message : String(e);
     throw new Error(

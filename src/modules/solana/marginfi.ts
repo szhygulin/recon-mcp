@@ -195,14 +195,272 @@ async function getMarginfiClient(
   );
   const config = getConfig("production");
   const wallet = makeStubWallet(authority);
+  // Pass our hardened fetchGroupData so a single bank with a layout the
+  // bundled IDL 0.1.7 can't decode doesn't blow up the whole client load
+  // (issue #105 — `program.account.bank.all()` inside the SDK's default
+  // path throws `Cannot read properties of null (reading 'property')`
+  // when any on-chain Bank has a new field the IDL is blind to).
   const client = await MarginfiClient.fetch(config, wallet, conn, {
     readOnly: true,
-  });
+    fetchGroupDataOverride: hardenedFetchGroupData,
+  } as never);
   clientCache.set(key, {
     client,
     expiresAt: Date.now() + CLIENT_CACHE_TTL_MS,
   });
   return client;
+}
+
+/**
+ * Hardened replacement for `MarginfiClient.fetchGroupData` that survives
+ * per-bank / per-oracle decode failures. The default path calls
+ * `program.account.bank.all([filter])`, which internally runs
+ * `coder.accounts.decode` on every Bank account in one go — if even one
+ * has a layout the bundled IDL (0.1.7) doesn't understand (MarginFi has
+ * shipped on-chain changes faster than the SDK versions), the entire
+ * client load fails with the opaque `null.property` runtime error.
+ *
+ * This version:
+ *   1. Lists bank addresses via `getProgramAccounts` (same memcmp filter).
+ *   2. Batch-fetches raw account data via
+ *      `chunkedGetRawMultipleAccountInfoOrdered`.
+ *   3. Decodes each bank in its own try/catch. Failures are skipped (with
+ *      a console.warn tallying the count) — the client comes up with the
+ *      set of banks it CAN understand.
+ *   4. Skips integrator banks (KAMINO/DRIFT/SOLEND — AssetTag ≥ 3) same
+ *      as the SDK does.
+ *   5. Batch-fetches oracles + mints + emission mints in one call
+ *      (identical to the SDK's batching).
+ *   6. Per-bank wraps the price-info parse so a single unsupported oracle
+ *      setup doesn't kill the whole client load either.
+ *
+ * Trade-off: banks we skip won't have positions surfaced via
+ * `get_marginfi_positions` and can't be used as the target bank in
+ * `prepare_marginfi_*`. The user sees a clear warning count, not a
+ * broken client. Bump the SDK whenever a new release ships.
+ */
+async function hardenedFetchGroupData(
+  program: unknown,
+  groupAddress: PublicKey,
+  commitment: string | undefined,
+  bankAddresses: PublicKey[] | undefined,
+  bankMetadataMap: Record<string, unknown> | undefined,
+): Promise<unknown> {
+  const mfn = await import("@mrgnlabs/marginfi-client-v2");
+  const common = await import("@mrgnlabs/mrgn-common");
+  const {
+    MarginfiGroup,
+    Bank,
+    BankConfig,
+    AssetTag,
+    parseOracleSetup,
+    parsePriceInfo,
+    findOracleKey,
+  } = mfn as unknown as {
+    MarginfiGroup: {
+      fromBuffer(addr: PublicKey, data: Buffer, idl: unknown): unknown;
+    };
+    Bank: {
+      fromAccountParsed(
+        addr: PublicKey,
+        data: unknown,
+        feedIdMap: unknown,
+        bankMetadata: unknown,
+      ): unknown;
+    };
+    BankConfig: { fromAccountParsed(data: unknown): unknown };
+    AssetTag: { KAMINO: number };
+    parseOracleSetup: (raw: unknown) => unknown;
+    parsePriceInfo: (
+      setup: unknown,
+      data: Buffer,
+      fixedPrice: unknown,
+    ) => unknown;
+    findOracleKey: (cfg: unknown) => { oracleKey: PublicKey };
+  };
+  const {
+    chunkedGetRawMultipleAccountInfoOrdered,
+    wrappedI80F48toBigNumber,
+  } = common as unknown as {
+    chunkedGetRawMultipleAccountInfoOrdered: (
+      conn: Connection,
+      addrs: string[],
+    ) => Promise<Array<{ data: Buffer; owner: PublicKey } | null>>;
+    wrappedI80F48toBigNumber: (w: unknown) => unknown;
+  };
+
+  const p = program as {
+    provider: { connection: Connection };
+    coder: { accounts: { decode(name: string, data: Buffer): unknown } };
+    programId: PublicKey;
+    idl: unknown;
+  };
+  const conn = p.provider.connection;
+
+  // Step 1: enumerate bank addresses. If the caller preloaded a set, honor
+  // it; otherwise run the same memcmp filter the SDK uses to find all
+  // banks tied to this group.
+  let addresses: PublicKey[];
+  if (bankAddresses && bankAddresses.length > 0) {
+    addresses = bankAddresses;
+  } else {
+    const raw = await conn.getProgramAccounts(p.programId, {
+      filters: [
+        { memcmp: { offset: 8 + 32 + 1, bytes: groupAddress.toBase58() } },
+      ],
+    });
+    addresses = raw.map((r) => r.pubkey);
+  }
+
+  // Step 2: batch-fetch bank raw data + decode with per-bank try/catch.
+  const bankAis = await chunkedGetRawMultipleAccountInfoOrdered(
+    conn,
+    addresses.map((a) => a.toBase58()),
+  );
+  type BankDatum = { address: PublicKey; data: BankDecodedLike };
+  interface BankDecodedLike {
+    config: {
+      assetTag?: number | null;
+      oracleSetup: unknown;
+      fixedPrice: unknown;
+    };
+    mint: PublicKey;
+    emissionsMint: PublicKey;
+  }
+  const bankDatasKeyed: BankDatum[] = [];
+  let skippedDecode = 0;
+  let skippedIntegrator = 0;
+  for (let i = 0; i < addresses.length; i++) {
+    const ai = bankAis[i];
+    if (!ai) continue;
+    try {
+      // IDL 0.1.7 names the account "Bank" (PascalCase — see accounts[].name
+      // in marginfi_0.1.7.json). Anchor's BorshAccountsCoder keys its
+      // `accountLayouts` map on that exact name, so the decode call must
+      // use "Bank", not the camelCase `program.account.bank` accessor
+      // form.
+      const decoded = p.coder.accounts.decode(
+        "Bank",
+        ai.data,
+      ) as BankDecodedLike;
+      // Skip integrator banks (KAMINO = 3, DRIFT = 4, SOLEND = 5). These
+      // ride a different layout and aren't relevant to core lending.
+      const tag = decoded.config?.assetTag;
+      if (tag != null && tag >= AssetTag.KAMINO) {
+        skippedIntegrator++;
+        continue;
+      }
+      bankDatasKeyed.push({ address: addresses[i]!, data: decoded });
+    } catch {
+      skippedDecode++;
+    }
+  }
+  if (skippedDecode > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[vaultpilot/marginfi] fetchGroupData: skipped ${skippedDecode} bank account(s) that the bundled ` +
+        `SDK (v6.4.1, IDL 0.1.7) couldn't decode. This is expected when MarginFi has shipped an ` +
+        `on-chain layout change ahead of a matching SDK release — the client still comes up with the ` +
+        `banks it understands. Skipped (integrator, expected): ${skippedIntegrator}.`,
+    );
+  }
+
+  // Step 3: batch-fetch group account + oracles + mints + emission mints.
+  const oracleKeys = bankDatasKeyed.map(
+    (b) => findOracleKey(BankConfig.fromAccountParsed(b.data.config)).oracleKey,
+  );
+  const mintKeys = bankDatasKeyed.map((b) => b.data.mint);
+  const emissionMintKeys = bankDatasKeyed
+    .map((b) => b.data.emissionsMint)
+    .filter((pk) => !pk.equals(PublicKey.default));
+  const allAis = await chunkedGetRawMultipleAccountInfoOrdered(conn, [
+    groupAddress.toBase58(),
+    ...oracleKeys.map((pk) => pk.toBase58()),
+    ...mintKeys.map((pk) => pk.toBase58()),
+    ...emissionMintKeys.map((pk) => pk.toBase58()),
+  ]);
+  const groupAi = allAis.shift();
+  const oracleAis = allAis.splice(0, oracleKeys.length);
+  const mintAis = allAis.splice(0, mintKeys.length);
+
+  if (!groupAi) {
+    throw new Error(
+      `Failed to fetch the on-chain MarginfiGroup at ${groupAddress.toBase58()} — RPC returned null.`,
+    );
+  }
+  const marginfiGroup = MarginfiGroup.fromBuffer(
+    groupAddress,
+    groupAi.data,
+    p.idl,
+  );
+
+  // Step 4: build the `banks` map with per-bank try/catch (hydration of
+  // the Bank model could still trip if one mint metadata is surprising).
+  const banks = new Map<string, unknown>();
+  for (const { address, data } of bankDatasKeyed) {
+    try {
+      const bankMeta = bankMetadataMap
+        ? bankMetadataMap[address.toBase58()]
+        : undefined;
+      const bank = Bank.fromAccountParsed(address, data, undefined, bankMeta);
+      banks.set(address.toBase58(), bank);
+    } catch {
+      // Drop silently — we already warned above if the count is non-zero.
+    }
+  }
+
+  // Step 5: tokenDatas (mint + tokenProgram per bank). Per-bank try/catch
+  // so a missing mint account doesn't kill the whole load.
+  const tokenDatas = new Map<string, unknown>();
+  for (let i = 0; i < bankDatasKeyed.length; i++) {
+    const entry = bankDatasKeyed[i]!;
+    const mintAi = mintAis[i];
+    if (!mintAi) continue;
+    tokenDatas.set(entry.address.toBase58(), {
+      mint: mintKeys[i],
+      tokenProgram: mintAi.owner,
+      feeBps: 0,
+      emissionTokenProgram: null,
+    });
+  }
+
+  // Step 6: priceInfos (oracle parse per bank). Per-bank try/catch — new
+  // oracle setups that the SDK doesn't know how to parse become "no price"
+  // rather than "client load fails".
+  const priceInfos = new Map<string, unknown>();
+  for (let i = 0; i < bankDatasKeyed.length; i++) {
+    const entry = bankDatasKeyed[i]!;
+    const priceAi = oracleAis[i];
+    if (!priceAi) continue;
+    try {
+      const oracleSetup = parseOracleSetup(entry.data.config.oracleSetup);
+      const fixedPrice = wrappedI80F48toBigNumber(entry.data.config.fixedPrice);
+      const parsed = parsePriceInfo(oracleSetup, priceAi.data, fixedPrice);
+      priceInfos.set(entry.address.toBase58(), parsed);
+    } catch {
+      // drop silently
+    }
+  }
+
+  return {
+    marginfiGroup,
+    banks,
+    priceInfos,
+    tokenDatas,
+    feedIdMap: new Map(),
+  };
+}
+
+/**
+ * Public entry point for reader-side callers (`positions/marginfi.ts`) to
+ * ride the same cache + hardened decode override the builder path uses.
+ * Keeps the two paths from duplicating the stub-wallet + override wiring.
+ */
+export async function getHardenedMarginfiClient(
+  conn: Connection,
+  authority: PublicKey,
+): Promise<unknown> {
+  return getMarginfiClient(conn, authority);
 }
 
 /** Test-only hook so unit tests don't pay the cost of a live fetch. */
