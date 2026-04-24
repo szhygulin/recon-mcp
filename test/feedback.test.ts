@@ -178,28 +178,42 @@ describe("requestCapability (prefilled URL mode)", () => {
     expect(body).toContain("`\u200B``");
   });
 
-  it("truncates the body and flags it when the URL would exceed the GitHub limit (B1)", async () => {
+  // Issue #98 — full-body prefilled URLs blow past OSC-8 hyperlink limits
+  // (~1–2 KB) in terminal chat clients and stop rendering as clickable. When
+  // the body is too long, swap to a title-only URL with a placeholder body
+  // pointing the agent at the full `body` / `ghCommand` fields.
+  it("omits the body from the URL when the full-body URL would exceed the clickable budget (#98)", async () => {
     // Each `我` is 3 UTF-8 bytes and URL-encodes to `%E6%88%91` (9 bytes), so
-    // a max-length (4000-char) description of these blows past the 7168-byte
-    // cap and forces the truncation path.
+    // a max-length (4000-char) description of these blows well past the 2 KB
+    // clickable budget and forces the short-URL path.
     const huge = "我".repeat(4000);
     const res = (await requestCapability({
       summary: "Very long feedback payload with multi-byte characters",
       description: huge,
-    })) as { issueUrl: string; bodyTruncated: boolean; message: string };
-    expect(res.bodyTruncated).toBe(true);
-    expect(Buffer.byteLength(res.issueUrl, "utf8")).toBeLessThanOrEqual(7168);
+    })) as {
+      issueUrl: string;
+      bodyOmittedFromUrl: boolean;
+      message: string;
+      body: string;
+    };
+    expect(res.bodyOmittedFromUrl).toBe(true);
+    // Short URL stays well inside the clickable budget.
+    expect(Buffer.byteLength(res.issueUrl, "utf8")).toBeLessThanOrEqual(2048);
     const body = new URL(res.issueUrl).searchParams.get("body") ?? "";
-    expect(body).toMatch(/body truncated to fit/i);
-    expect(res.message).toMatch(/truncated/i);
+    expect(body).toMatch(/Body provided separately/i);
+    // Full body is still available to the agent via the `body` field.
+    expect(res.body).toContain("我");
+    expect(res.message).toMatch(/not prefilled|body provided separately/i);
   });
 
-  it("does not truncate when the body fits well within the limit", async () => {
+  it("keeps the full body in the URL when it fits inside the clickable budget (#98)", async () => {
     const res = (await requestCapability({
       summary: "Small request",
       description: "Please support X. This is short.",
-    })) as { bodyTruncated: boolean };
-    expect(res.bodyTruncated).toBe(false);
+    })) as { bodyOmittedFromUrl: boolean; issueUrl: string };
+    expect(res.bodyOmittedFromUrl).toBe(false);
+    const body = new URL(res.issueUrl).searchParams.get("body") ?? "";
+    expect(body).toContain("Please support X");
   });
 
   // Issue #89 — the prefilled URL blew past terminal URL-length limits on

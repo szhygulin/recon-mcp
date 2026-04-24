@@ -7,9 +7,19 @@ const ISSUE_LABEL = "agent-request";
 const USER_AGENT = "vaultpilot-mcp/0.1.0 capability-request";
 const POST_TIMEOUT_MS = 8_000;
 const MAX_POST_BODY_BYTES = 16_384;
-const MAX_PREFILLED_URL_BYTES = 7168;
-const TRUNCATION_MARKER =
-  "\n\n_...(body truncated to fit in GitHub's prefilled-URL length limit — paste the full context into the issue after opening)_";
+/**
+ * OSC-8 hyperlink payloads are typically capped around 1–2 KB in terminal
+ * chat clients (iTerm2, Alacritty, tmux passthrough). Oversized URLs render
+ * as plain text — unreadable wrapped walls that force copy/paste (issue #98).
+ * If the full-body URL would exceed this budget, we emit a short URL that
+ * prefills only the title + labels and point the agent at the full `body`
+ * field / `ghCommand` snippet for the actual issue body.
+ */
+const CLICKABLE_URL_BUDGET_BYTES = 2048;
+const SHORT_URL_PLACEHOLDER_BODY =
+  "_Body provided separately by the MCP tool. Paste the full text from the " +
+  "`body` field of the `request_capability` tool result, or run the returned " +
+  "`ghCommand` shell snippet to submit via `gh` without copy-paste._";
 /**
  * HEREDOC terminator for the `ghCommand` shell snippet. Must be an unusual
  * string that agent-supplied body content is vanishingly unlikely to contain.
@@ -72,7 +82,7 @@ export async function requestCapability(args: RequestCapabilityArgs) {
     return await postToEndpoint(endpoint, payload);
   }
 
-  const { url: issueUrl, truncated } = buildPrefilledIssueUrl(payload);
+  const { url: issueUrl, bodyOmittedFromUrl } = buildPrefilledIssueUrl(payload);
   const ghCommand = buildGhCommand(payload);
   return {
     status: "prefilled_url" as const,
@@ -86,10 +96,10 @@ export async function requestCapability(args: RequestCapabilityArgs) {
       "escaping. Returns the created issue URL on success. " +
       "(b) `issueUrl` — a prefilled GitHub issue URL to render as a Markdown link; " +
       "the user opens it in a browser and clicks 'Submit new issue'. No gh CLI " +
-      "required. Note: URLs over a few KB may not render as clickable in terminal " +
-      "chat clients, forcing copy/paste." +
-      (truncated
-        ? " Only the URL body was truncated to fit GitHub's prefilled-URL length limit; ghCommand carries the full body and is preferred when available. Tell the user to paste the full context into the issue manually if they go with the URL path."
+      "required. The URL is kept short enough to stay clickable in terminal chat " +
+      "clients (OSC-8 hyperlink payloads are capped around 1–2 KB)." +
+      (bodyOmittedFromUrl
+        ? " Body is NOT prefilled — the full body wouldn't fit in the clickable URL budget. Render the full `body` field in a code block so the user can paste it into the GitHub form after opening the URL, or prefer `ghCommand` which ships the body via HEREDOC."
         : ""),
     issueUrl,
     ghCommand,
@@ -97,7 +107,7 @@ export async function requestCapability(args: RequestCapabilityArgs) {
     title,
     body,
     labels,
-    bodyTruncated: truncated,
+    bodyOmittedFromUrl,
     rateLimit: RATE_LIMITS,
   };
 }
@@ -190,7 +200,9 @@ function buildGhCommand(payload: IssuePayload): string {
   return `${cmdHead}\n${payload.body}\n${cmdTail}`;
 }
 
-function buildPrefilledIssueUrl(payload: IssuePayload): { url: string; truncated: boolean } {
+function buildPrefilledIssueUrl(
+  payload: IssuePayload,
+): { url: string; bodyOmittedFromUrl: boolean } {
   const base = `https://github.com/${REPO_OWNER}/${REPO_NAME}/issues/new`;
   const build = (body: string): string => {
     const params = new URLSearchParams({
@@ -202,26 +214,15 @@ function buildPrefilledIssueUrl(payload: IssuePayload): { url: string; truncated
   };
 
   const fullUrl = build(payload.body);
-  if (Buffer.byteLength(fullUrl, "utf8") <= MAX_PREFILLED_URL_BYTES) {
-    return { url: fullUrl, truncated: false };
+  if (Buffer.byteLength(fullUrl, "utf8") <= CLICKABLE_URL_BUDGET_BYTES) {
+    return { url: fullUrl, bodyOmittedFromUrl: false };
   }
 
-  // Binary-search the largest body length whose resulting URL still fits. The
-  // relationship body-length → encoded-URL-length isn't strictly linear
-  // (high-byte chars encode as %XX%XX), so we don't guess a ratio.
-  let lo = 0;
-  let hi = payload.body.length;
-  while (lo < hi) {
-    const mid = Math.floor((lo + hi + 1) / 2);
-    const candidate = payload.body.slice(0, mid) + TRUNCATION_MARKER;
-    if (Buffer.byteLength(build(candidate), "utf8") <= MAX_PREFILLED_URL_BYTES) {
-      lo = mid;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  const trimmedBody = payload.body.slice(0, lo) + TRUNCATION_MARKER;
-  return { url: build(trimmedBody), truncated: true };
+  // Full body would push the URL past the clickable budget for terminal chat
+  // clients. Swap the body for a short placeholder pointing at the agent's
+  // `body` field / `ghCommand`. The title (≤120 chars after the prefix) plus
+  // labels keeps this URL well under 1 KB even with worst-case URL encoding.
+  return { url: build(SHORT_URL_PLACEHOLDER_BODY), bodyOmittedFromUrl: true };
 }
 
 async function postToEndpoint(url: string, payload: IssuePayload) {
