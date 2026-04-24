@@ -152,6 +152,109 @@ describe("security: narrow agent-compromise (prompt injection, malicious skill)"
     expect(receiptBlocks).toHaveLength(1);
     expect(receiptBlocks[0]).toContain(`to: ${ATTACKER_TO}`);
   });
+
+  it("TRON: PREPARE RECEIPT is emitted automatically for prepare_tron_* tools too", async () => {
+    // Mirror of the EVM test above, for TRON's buildTronNativeSend path.
+    // Pins the invariant that the `handler({ toolName })` wrapper emits
+    // PREPARE RECEIPT for every TRON prepare_* registration. If someone
+    // ever drops `toolName` from a TRON tool registration in src/index.ts,
+    // this test fails — the receipt vanishes and the narrow-injection
+    // defense degrades silently. Verified by code trace that every
+    // `prepare_tron_*` passes `{ toolName }` today (src/index.ts:1741 etc);
+    // this test keeps it that way.
+    const TRON_FROM = "TYWHXJ7g9x4H4WF3gCxRf9A7fRL5yWKLhe";
+    const ATTACKER_TRON_TO = "TW5JrQG5GpsKrH9zACMYj4Fb3nQHzMoovD";
+
+    // Stub the raw-data-byte verifier: it parses protobuf off `raw_data_hex`
+    // and would reject our mock hex. That check is exercised elsewhere and
+    // isn't what this test is about — we're testing the handler-wrapper
+    // receipt-emission wiring, not TRON tx construction.
+    vi.doMock("../src/modules/tron/verify-raw-data.js", () => ({
+      assertTronRawDataMatches: () => {},
+    }));
+
+    // Mock TronGrid HTTP surface. buildTronNativeSend hits three endpoints:
+    //   (1) /wallet/createtransaction — tx builder
+    //   (2) /wallet/getaccountresource — bandwidth pools (preflight)
+    //   (3) /wallet/getaccount — liquid TRX balance (fallback burn)
+    // The bandwidth stub returns a pool large enough to cover any tx so the
+    // preflight doesn't throw.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: URL | RequestInfo) => {
+        const u = typeof url === "string" ? url : (url as URL).toString();
+        if (u.includes("/wallet/createtransaction")) {
+          return {
+            ok: true,
+            json: async () => ({
+              txID: "f".repeat(64),
+              raw_data: {},
+              raw_data_hex: "00".repeat(50),
+            }),
+          } as Response;
+        }
+        if (u.includes("/wallet/getaccountresource")) {
+          return {
+            ok: true,
+            json: async () => ({
+              freeNetLimit: 5000,
+              freeNetUsed: 0,
+              NetLimit: 10000,
+              NetUsed: 0,
+            }),
+          } as Response;
+        }
+        if (u.includes("/wallet/getaccount")) {
+          return {
+            ok: true,
+            json: async () => ({ balance: 10_000_000 }),
+          } as Response;
+        }
+        throw new Error(`Unexpected TronGrid fetch: ${u}`);
+      }),
+    );
+
+    const { buildTronNativeSend } = await import(
+      "../src/modules/tron/actions.js"
+    );
+    const { renderPrepareReceiptBlock, collectVerificationBlocks } =
+      await import("../src/index.js").then(async () => ({
+        renderPrepareReceiptBlock: (
+          await import("../src/signing/render-verification.js")
+        ).renderPrepareReceiptBlock,
+        collectVerificationBlocks: (await import("../src/index.js"))
+          .collectVerificationBlocks,
+      }));
+
+    const injectedArgs = {
+      from: TRON_FROM,
+      to: ATTACKER_TRON_TO,
+      amount: "5",
+    };
+    const result = await buildTronNativeSend(injectedArgs);
+    // Sanity: the returned tx carries the attacker's address in its decoded
+    // args — MCP built what it was told. The defense is the receipt block,
+    // not bytes-level refusal.
+    expect(result.decoded.args.to).toBe(ATTACKER_TRON_TO);
+
+    // Reconstruct the content array the handler wrapper would produce for
+    // this tool call — the prepare-receipt block first, then the rendered
+    // verification blocks from the tx itself.
+    const blocks: string[] = [];
+    blocks.push(
+      renderPrepareReceiptBlock({
+        tool: "prepare_tron_native_send",
+        args: injectedArgs as unknown as Record<string, unknown>,
+      }),
+    );
+    for (const b of await collectVerificationBlocks(result)) blocks.push(b);
+
+    const receiptBlocks = blocks.filter((b) =>
+      b.includes("PREPARE RECEIPT — RELAY VERBATIM TO USER"),
+    );
+    expect(receiptBlocks).toHaveLength(1);
+    expect(receiptBlocks[0]).toContain(`to: ${ATTACKER_TRON_TO}`);
+  });
 });
 
 describe("security: compromised MCP (lies about hash / swaps bytes before WalletConnect)", () => {

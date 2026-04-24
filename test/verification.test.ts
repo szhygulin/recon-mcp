@@ -498,6 +498,12 @@ describe("renderVerificationBlock includes URL, hash, and the encouragement nudg
     expect(rendered).toContain("TRON");
     expect(rendered).toContain("no browser decoder URL");
     expect(rendered).toContain("tronscan");
+    // Tronscan reference is reframed as an AFTER-BROADCAST heads-up, not a
+    // pre-sign defense. Lock the sub-header so future edits don't silently
+    // revert to the old "pre-sign check" framing where the line sat inline
+    // with the VERIFY body.
+    expect(rendered).toMatch(/AFTER BROADCAST/);
+    expect(rendered).not.toMatch(/After signing, paste/);
     // No payload-hash line: TRON app clear-signs every supported action,
     // so there's no on-device hash for the user to match. txID (below)
     // is the cross-check anchor.

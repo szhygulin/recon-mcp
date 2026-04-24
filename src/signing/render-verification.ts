@@ -836,6 +836,12 @@ export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification:
   // broadcast. Adding a server-side "payload hash" here would train the
   // user to compare against something the device never shows, reinforcing
   // rubber-stamp habits rather than preventing them.
+  //
+  // The Tronscan line below is an AFTER-BROADCAST heads-up, not a pre-sign
+  // defense — explicitly labeled so the user doesn't conflate it with the
+  // preventive checks above. Redundant-by-design with the TRANSACTION
+  // BROADCAST block emitted from sendTransactionHandler, which carries the
+  // same explorer URL via EXPLORER_TX_URL.tron.
   return [
     "VERIFY BEFORE SIGNING (TRON) — no browser decoder URL; confirm the",
     "action + args below match what you intended, else REJECT on Ledger.",
@@ -843,7 +849,9 @@ export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification:
     `  Call:    ${v.humanDecode.functionName}`,
     ...formatArgs(v),
     `  from=${tx.from}  txID=${tx.txID}  rawData=${truncateHex(tx.rawDataHex, true)}`,
-    "  After signing, paste txID into https://tronscan.org to cross-check.",
+    "",
+    "AFTER BROADCAST (not a pre-sign check):",
+    `  Paste txID into [tronscan.org](https://tronscan.org/#/transaction/${tx.txID}) to cross-check on-network.`,
   ].join("\n");
 }
 
