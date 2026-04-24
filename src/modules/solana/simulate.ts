@@ -100,20 +100,24 @@ function extractAnchorError(
   logs: string[] | undefined,
 ): { code: number; name: string; message: string } | undefined {
   if (!logs || logs.length === 0) return undefined;
-  // Match "Error Code: X. Error Number: Y. Error Message: Z" anywhere in the
-  // line. An earlier version anchored at `AnchorError` and used `[^.]*` up to
-  // the first dot — but the source-file path in the real log (".../marginfi_account.rs:1142.")
-  // contains dots that broke the match. Scanning for the triple labels alone
-  // is robust and matches how Anchor's runtime formats every thrown error.
+  // Match "Error Code: X. Error Number: Y." with an OPTIONAL
+  // "Error Message: Z." trailing segment. MarginFi's Anchor errors always
+  // include the message; Switchboard's `NotEnoughSamples` and some others
+  // omit it entirely (issue #125 — the log ends right after "Error Number: 6030.").
+  // An earlier version required the message and used `[^.]*` up to the
+  // first dot — that broke on MarginFi because the source-file path
+  // ("marginfi_account.rs:1142.") contains dots, AND on Switchboard because
+  // the whole "Error Message:" suffix is absent. Both call sites care more
+  // about the code than the message text, so message is optional.
   const re =
-    /Error Code:\s*(\w+)\.\s*Error Number:\s*(\d+)\.\s*Error Message:\s*(.+?)\.?\s*$/;
+    /Error Code:\s*(\w+)\.\s*Error Number:\s*(\d+)\.(?:\s*Error Message:\s*(.+?)\.?)?\s*$/;
   for (let i = logs.length - 1; i >= 0; i--) {
     const m = logs[i]!.match(re);
     if (m) {
       return {
         name: m[1]!,
         code: Number(m[2]),
-        message: m[3]!.trim(),
+        message: m[3] ? m[3].trim() : "(no message provided by program)",
       };
     }
   }
@@ -122,3 +126,27 @@ function extractAnchorError(
 
 /** Test-only export so unit tests can cover the log-scraping independently. */
 export const __extractAnchorErrorForTest = extractAnchorError;
+
+/**
+ * Detect whether a Switchboard `NotEnoughSamples` (Anchor 6030 / 0x178e)
+ * failure is due to an active oracle-set rotation on the feed. The
+ * on-chain Switchboard program logs `Rotating mega slot` immediately
+ * before throwing `NotEnoughSamples` when the feed is between oracle
+ * sets — a transient state lasting seconds to ~2 minutes during which
+ * consensus can't be reached regardless of how many samples we
+ * requested from the gateway (issue #125).
+ *
+ * Distinguishing this from the plain-stale-samples case matters for
+ * user guidance: stale-samples → "re-prepare to retry" (re-fetching
+ * gateway samples gets fresh ones); rotating → "wait ~60–120s, don't
+ * loop-retry" (no amount of re-fetching produces a valid consensus
+ * payload until rotation completes).
+ *
+ * Pure log-string scan: no side effects, no RPC calls. The caller is
+ * responsible for confirming the AnchorError is actually 6030 before
+ * acting on this signal.
+ */
+export function isSwitchboardRotation(logs: string[] | undefined): boolean {
+  if (!logs || logs.length === 0) return false;
+  return logs.some((l) => /Rotating mega slot/.test(l));
+}

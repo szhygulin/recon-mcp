@@ -107,4 +107,98 @@ describe("broadcastSolanaTx", () => {
       /Switchboard oracle samples aged out/,
     );
   });
+
+  /**
+   * Issue #125 — a NotEnoughSamples caused by an active feed rotation
+   * (logs contain "Rotating mega slot") must produce the "wait, don't
+   * retry" message, not the aged-out "re-prepare" message. The two
+   * failure modes carry the same Anchor error code (6030) but require
+   * opposite user actions.
+   */
+  it("reframes NotEnoughSamples WITH 'Rotating mega slot' as a wait-don't-retry message", async () => {
+    sendRawTransactionMock.mockRejectedValue({
+      message: "Transaction simulation failed",
+      logs: [
+        "Program SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv invoke [1]",
+        "Program log: Instruction: PullFeedSubmitResponseConsensus",
+        "Program log: Rotating mega slot",
+        "Program log: AnchorError thrown in programs/sb_on_demand/src/impls/pull_feed_impl.rs:328. Error Code: NotEnoughSamples. Error Number: 6030.",
+        "Program SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv failed: custom program error: 0x178e",
+      ],
+    });
+    const { broadcastSolanaTx } = await import(
+      "../src/modules/solana/broadcast.js"
+    );
+    await expect(broadcastSolanaTx(Buffer.alloc(0))).rejects.toThrow(
+      /ROTATING oracles/,
+    );
+    await expect(broadcastSolanaTx(Buffer.alloc(0))).rejects.toThrow(
+      /Wait at least 60s/,
+    );
+    // Must NOT suggest re-prepare — that's the wrong action for rotation.
+    await expect(broadcastSolanaTx(Buffer.alloc(0))).rejects.not.toThrow(
+      /aged out during Ledger review/,
+    );
+  });
+
+  it("keeps the aged-out framing for NotEnoughSamples WITHOUT rotation marker", async () => {
+    sendRawTransactionMock.mockRejectedValue({
+      message: "Transaction simulation failed",
+      logs: [
+        "Program SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv invoke [1]",
+        "Program log: AnchorError thrown in ...:328. Error Code: NotEnoughSamples. Error Number: 6030.",
+        "Program SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv failed: custom program error: 0x178e",
+      ],
+    });
+    const { broadcastSolanaTx } = await import(
+      "../src/modules/solana/broadcast.js"
+    );
+    await expect(broadcastSolanaTx(Buffer.alloc(0))).rejects.toThrow(
+      /aged out during Ledger review/,
+    );
+    await expect(broadcastSolanaTx(Buffer.alloc(0))).rejects.not.toThrow(
+      /ROTATING oracles/,
+    );
+  });
+});
+
+/**
+ * Issue #125 — the rotation-vs-aged-out detector is also used by the
+ * pre-sign simulation gate. Keep the pure-function behavior covered
+ * independently so both call sites (broadcast.ts and execution/index.ts)
+ * can trust the signal.
+ */
+describe("isSwitchboardRotation", () => {
+  it("returns true when 'Rotating mega slot' appears anywhere in the logs", async () => {
+    const { isSwitchboardRotation } = await import(
+      "../src/modules/solana/simulate.js"
+    );
+    expect(
+      isSwitchboardRotation([
+        "Program A invoke [1]",
+        "Program log: Rotating mega slot",
+        "Program log: AnchorError ...",
+      ]),
+    ).toBe(true);
+  });
+
+  it("returns false for plain NotEnoughSamples logs without the rotation marker", async () => {
+    const { isSwitchboardRotation } = await import(
+      "../src/modules/solana/simulate.js"
+    );
+    expect(
+      isSwitchboardRotation([
+        "Program A invoke [1]",
+        "Program log: AnchorError ... Error Code: NotEnoughSamples. Error Number: 6030.",
+      ]),
+    ).toBe(false);
+  });
+
+  it("handles empty / undefined input defensively", async () => {
+    const { isSwitchboardRotation } = await import(
+      "../src/modules/solana/simulate.js"
+    );
+    expect(isSwitchboardRotation(undefined)).toBe(false);
+    expect(isSwitchboardRotation([])).toBe(false);
+  });
 });

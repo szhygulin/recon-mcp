@@ -48,18 +48,38 @@ export async function broadcastSolanaTx(signedTxBytes: Buffer): Promise<string> 
     const logs = logsArr.length ? `\nProgram logs:\n  ${logsArr.join("\n  ")}` : "";
 
     // Switchboard `NotEnoughSamples` (Anchor 6030 / 0x178e) on the crank ix
-    // means the oracle samples we fetched at preview time aged past their
-    // `max_staleness` window during Ledger review (issue #120). With
-    // numSignatures=3 the headroom is ~3× but not unbounded; a slow
-    // review (>20s) or a feed with a tight max_staleness can still trip
-    // this. Reframe so the user gets an actionable message instead of
-    // a raw program error — the remediation is always "re-prepare" and
-    // the pre-sign simulation will re-fetch fresh samples.
+    // has two distinct causes, and the right user action differs:
+    //
+    //   1. Samples AGED OUT during Ledger review (issue #120). The tx's
+    //      embedded oracle attestations were fresh at preview time but
+    //      slipped past their max_staleness window by the time broadcast
+    //      tried to land. Re-preparing refetches samples at a newer slot
+    //      and usually succeeds.
+    //
+    //   2. Feed is ROTATING (issue #125). The Switchboard on-demand program
+    //      emits "Rotating mega slot" when the feed is mid oracle-set
+    //      transition; consensus is unreachable for ~60–120s regardless
+    //      of sample count. Tight retry loops fail identically — the
+    //      user needs to WAIT, not retry.
+    //
+    // Signal: "Rotating mega slot" in the logs. Without that line, treat
+    // it as aged-out.
     const notEnoughSamples =
       /custom program error: 0x178e/i.test(base) ||
       /custom program error: 0x178e/i.test(logs) ||
       /NotEnoughSamples/.test(logs);
     if (notEnoughSamples) {
+      const rotating = /Rotating mega slot/i.test(logs);
+      if (rotating) {
+        throw new Error(
+          `Switchboard feed is ROTATING oracles ("Rotating mega slot" in the logs) ` +
+            `— this is a transient ~60–120s state during which consensus cannot ` +
+            `be reached regardless of how many samples we fetch (issue #125). ` +
+            `Wait at least 60s before retrying — tight retry loops will fail ` +
+            `identically until rotation completes. No on-chain effect — the ` +
+            `durable nonce was not advanced. Raw: ${base}${logs}`,
+        );
+      }
       throw new Error(
         `Switchboard oracle samples aged out during Ledger review — the tx's ` +
           `embedded oracle attestations were fresh at preview time but too old ` +

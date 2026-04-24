@@ -277,6 +277,91 @@ describe("sendTransaction dispatch — Solana", () => {
     expect(signTransactionMock).not.toHaveBeenCalled();
   });
 
+  /**
+   * Issue #125 — when pre-sign simulation fails with Switchboard
+   * NotEnoughSamples (6030) AND the logs carry "Rotating mega slot",
+   * the preview must tell the user to WAIT (~60-120s), not re-prepare.
+   * Tight retry loops during rotation fail identically; re-prepare is
+   * the wrong action.
+   */
+  it("#125 preview: rotation-caused NotEnoughSamples → 'wait, don't retry' message", async () => {
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000);
+    const { buildSolanaNativeSend } = await import(
+      "../src/modules/solana/actions.js"
+    );
+    const draft = await buildSolanaNativeSend({
+      wallet: WALLET,
+      to: RECIPIENT,
+      amount: "0.1",
+    });
+    connectionStub.simulateTransaction.mockResolvedValue({
+      context: { slot: 1 },
+      value: {
+        err: { InstructionError: [2, { Custom: 6030 }] },
+        unitsConsumed: 45600,
+        logs: [
+          "Program SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv invoke [1]",
+          "Program log: Instruction: PullFeedSubmitResponseConsensus",
+          "Program log: Rotating mega slot",
+          "Program log: AnchorError thrown in programs/sb_on_demand/src/impls/pull_feed_impl.rs:328. Error Code: NotEnoughSamples. Error Number: 6030.",
+          "Program SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv failed: custom program error: 0x178e",
+        ],
+      },
+    });
+    const { previewSolanaSend } = await import(
+      "../src/modules/execution/index.js"
+    );
+    await expect(
+      previewSolanaSend({ handle: draft.handle }),
+    ).rejects.toThrow(/SWITCHBOARD ORACLE ROTATION/);
+    await expect(
+      previewSolanaSend({ handle: draft.handle }),
+    ).rejects.toThrow(/Wait 60–120s/);
+    // Must NOT tell the user to re-prepare — that's the wrong guidance for
+    // rotation and would cause a tight retry loop.
+    await expect(
+      previewSolanaSend({ handle: draft.handle }),
+    ).rejects.not.toThrow(/Call prepare_\* again to fetch fresh samples/);
+    // Sanity: still the standard sim-reject envelope.
+    await expect(
+      previewSolanaSend({ handle: draft.handle }),
+    ).rejects.toThrow(/Pre-sign simulation REJECTED/);
+    expect(signTransactionMock).not.toHaveBeenCalled();
+  });
+
+  it("#125 preview: plain NotEnoughSamples (no rotation marker) → 'refetch fresh samples' message", async () => {
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000);
+    const { buildSolanaNativeSend } = await import(
+      "../src/modules/solana/actions.js"
+    );
+    const draft = await buildSolanaNativeSend({
+      wallet: WALLET,
+      to: RECIPIENT,
+      amount: "0.1",
+    });
+    connectionStub.simulateTransaction.mockResolvedValue({
+      context: { slot: 1 },
+      value: {
+        err: { InstructionError: [2, { Custom: 6030 }] },
+        unitsConsumed: 30000,
+        logs: [
+          "Program SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv invoke [1]",
+          "Program log: AnchorError thrown in ...:328. Error Code: NotEnoughSamples. Error Number: 6030.",
+          "Program SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv failed: custom program error: 0x178e",
+        ],
+      },
+    });
+    const { previewSolanaSend } = await import(
+      "../src/modules/execution/index.js"
+    );
+    await expect(
+      previewSolanaSend({ handle: draft.handle }),
+    ).rejects.toThrow(/Call prepare_\* again to fetch fresh samples/);
+    await expect(
+      previewSolanaSend({ handle: draft.handle }),
+    ).rejects.not.toThrow(/ROTATION/);
+  });
+
   it("#115 preview attaches simulation metadata on success", async () => {
     connectionStub.getBalance.mockResolvedValue(5_000_000_000);
     const { buildSolanaNativeSend } = await import(
