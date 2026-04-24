@@ -172,8 +172,11 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     expect(block).toMatch(/hash matching does NOT apply/i);
     expect(block).toMatch(/decoded fields/);
     // User-friendly wording for the hash-match step — the old "match it
-    // against <hash>" phrasing read like a developer instruction.
-    expect(block).toMatch(/hash shown on-device is exactly/i);
+    // against <hash>" phrasing read like a developer instruction. The
+    // post-#116-UX phrasing puts the hash on its own indented line, so
+    // the directive reads "The hash on-device MUST equal:" followed by
+    // the hash on the next line.
+    expect(block).toMatch(/hash on-device MUST equal/i);
     expect(block).not.toMatch(/match it against/);
     // The blind-sign hash must be wrapped in BOTH bold AND single-backtick
     // inline code so Markdown clients render it with maximum visual
