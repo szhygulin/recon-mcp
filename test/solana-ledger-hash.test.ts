@@ -209,24 +209,36 @@ describe("renderSolanaAgentTaskBlock", () => {
     expect(block).not.toContain("--input-type=module -e");
     expect(block).not.toMatch(/MSG_B64=/);
     expect(block).not.toMatch(/process\.env\.MSG_B64/);
-    // Combined script: imports BOTH Message (for decode) and PublicKey
-    // (for hash base58).
-    expect(block).toMatch(/node -e "const \{Message, PublicKey\} = require\('@solana\/web3\.js'\);/);
+    // Combined script: imports Message + VersionedMessage + PublicKey +
+    // Connection. Version branching added in Milestone A (Phase 3) so the
+    // same script handles legacy (SPL sends, native sends, nonce_close) AND
+    // v0 messages with ALT-indexed accounts (Jupiter swaps, Kamino/MarginFi
+    // flows that need ALTs).
+    expect(block).toMatch(
+      /node -e "const \{Message, VersionedMessage, PublicKey, Connection\} = require\('@solana\/web3\.js'\);/,
+    );
     expect(block).toContain(
       "const m = '<messageBase64 from the preview_solana_send result>';",
     );
+    // Version detection: 0x80 prefix = v0, otherwise legacy.
+    expect(block).toContain("if (buf[0] & 0x80) {");
+    // Legacy branch uses Message.from; v0 branch uses VersionedMessage.deserialize.
     expect(block).toContain("const msg = Message.from(buf);");
-    // Inline base58→hex helper (one line, recognizable arithmetic — same
-    // pattern flavor as EVM's inline fee-cost math).
+    expect(block).toContain("const msg = VersionedMessage.deserialize(buf);");
+    // v0 branch resolves ALTs via a Connection.
+    expect(block).toContain("conn.getAddressLookupTable(lookup.accountKey)");
+    // Inline base58→hex helper (for legacy data field, which is base58).
     expect(block).toContain(
       "const A = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';",
     );
     expect(block).toContain("const b58 = s =>");
+    // v0 data is already a byte array; no base58 decode needed.
+    expect(block).toContain("Buffer.from(ix.data).toString('hex')");
     // Output: BOTH ledgerHash AND instructions[] — single JSON.
     expect(block).toContain(
-      "ledgerHash: new PublicKey(createHash('sha256').update(buf).digest()).toBase58()",
+      "const ledgerHash = new PublicKey(createHash('sha256').update(buf).digest()).toBase58();",
     );
-    expect(block).toContain("instructions: msg.instructions.map(ix => ({");
+    expect(block).toContain("console.log(JSON.stringify({ledgerHash, instructions}, null, 2));");
     expect(block).toContain("programId: msg.accountKeys[ix.programIdIndex].toBase58()");
     expect(block).toContain("dataHex: b58(ix.data)");
     // CHECK 1 verdict is now {✓|✗|⚠} (agent-determined), NOT permanent ⚠.

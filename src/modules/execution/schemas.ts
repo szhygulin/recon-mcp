@@ -89,6 +89,61 @@ export const prepareSolanaNonceCloseInput = z.object({
   ),
 });
 
+export const getSolanaSwapQuoteInput = z.object({
+  inputMint: solanaAddressSchema.describe(
+    "Base58 mint address of the token being sold. For native SOL use the wrapped-SOL " +
+      "mint So11111111111111111111111111111111111111112 — Jupiter auto-wraps/unwraps."
+  ),
+  outputMint: solanaAddressSchema.describe(
+    "Base58 mint address of the token being bought. Same wrapped-SOL convention as inputMint."
+  ),
+  amount: z
+    .string()
+    .regex(/^\d+$/)
+    .describe(
+      "Raw integer amount in base units (NOT decimal-adjusted). For ExactIn swaps " +
+        "this is how much inputMint to sell; for ExactOut it's how much outputMint to buy. " +
+        "Example: to sell 1 USDC (6 decimals), pass '1000000'."
+    ),
+  slippageBps: z
+    .number()
+    .int()
+    .min(0)
+    .max(10000)
+    .default(50)
+    .describe("Slippage tolerance in basis points. 50 bps = 0.5%. Default 50."),
+  swapMode: z
+    .enum(["ExactIn", "ExactOut"])
+    .default("ExactIn")
+    .describe(
+      "ExactIn: sell exactly `amount` inputMint, receive at least minOutput. " +
+        "ExactOut: buy exactly `amount` outputMint, sell at most maxInput."
+    ),
+});
+
+export const prepareSolanaSwapInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana wallet executing the swap. Must have an initialized durable-nonce account — " +
+      "run prepare_solana_nonce_init first if not set up yet."
+  ),
+  quote: z
+    .record(z.unknown())
+    .describe(
+      "The full `quote` object returned by get_solana_swap_quote. Pass it back verbatim " +
+        "— Jupiter computes a signature over the quote and rejects /swap-instructions if " +
+        "any field is mutated."
+    ),
+  prioritizationFeeLamports: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe(
+      "Optional priority fee in lamports. Omit to let Jupiter pick based on the local " +
+        "fee market (recommended)."
+    ),
+});
+
 export const getLedgerStatusInput = z.object({});
 
 const baseAaveAction = z.object({
@@ -318,6 +373,8 @@ export type PairLedgerSolanaArgs = z.infer<typeof pairLedgerSolanaInput>;
 export type PrepareSolanaNativeSendArgs = z.infer<typeof prepareSolanaNativeSendInput>;
 export type PrepareSolanaSplSendArgs = z.infer<typeof prepareSolanaSplSendInput>;
 export type PrepareSolanaNonceInitArgs = z.infer<typeof prepareSolanaNonceInitInput>;
+export type GetSolanaSwapQuoteArgs = z.infer<typeof getSolanaSwapQuoteInput>;
+export type PrepareSolanaSwapArgs = z.infer<typeof prepareSolanaSwapInput>;
 export type PrepareSolanaNonceCloseArgs = z.infer<typeof prepareSolanaNonceCloseInput>;
 export type PrepareAaveSupplyArgs = z.infer<typeof prepareAaveSupplyInput>;
 export type PrepareAaveWithdrawArgs = z.infer<typeof prepareAaveWithdrawInput>;

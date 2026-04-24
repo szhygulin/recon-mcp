@@ -61,6 +61,8 @@ import {
   prepareSolanaSplSend,
   prepareSolanaNonceInit,
   prepareSolanaNonceClose,
+  getSolanaSwapQuote,
+  prepareSolanaSwap,
   prepareAaveSupply,
   prepareAaveWithdraw,
   prepareAaveBorrow,
@@ -87,6 +89,8 @@ import {
   prepareSolanaSplSendInput,
   prepareSolanaNonceInitInput,
   prepareSolanaNonceCloseInput,
+  getSolanaSwapQuoteInput,
+  prepareSolanaSwapInput,
   getLedgerStatusInput,
   prepareAaveSupplyInput,
   prepareAaveWithdrawInput,
@@ -1198,6 +1202,42 @@ async function main() {
       inputSchema: prepareSolanaNonceCloseInput.shape,
     },
     handler(prepareSolanaNonceClose)
+  );
+
+  server.registerTool(
+    "get_solana_swap_quote",
+    {
+      description:
+        "READ-ONLY — fetch a Jupiter v6 swap quote for previewing the route, expected output, slippage, " +
+        "and price impact before committing to a transaction. Parallel to EVM's `get_swap_quote` (which uses LiFi). " +
+        "Calls the Jupiter aggregator at lite-api.jup.ag/swap/v1/quote, returns the opaque quoteResponse " +
+        "(which must be passed back verbatim to `prepare_solana_swap`) plus human-facing fields (symbols, " +
+        "amounts with decimals applied, route labels like 'Meteora DLMM' / 'Raydium CLMM', price impact %). " +
+        "Pass raw integer amounts in base units (e.g., '1000000' for 1 USDC). For native SOL, use the wrapped-SOL " +
+        "mint So11111111111111111111111111111111111111112 — Jupiter auto-wraps/unwraps at swap time.",
+      inputSchema: getSolanaSwapQuoteInput.shape,
+    },
+    handler(getSolanaSwapQuote)
+  );
+
+  server.registerTool(
+    "prepare_solana_swap",
+    {
+      description:
+        "Build an unsigned Jupiter-routed swap DRAFT. Takes the `quote` object returned by " +
+        "`get_solana_swap_quote` and calls Jupiter's /swap-instructions endpoint to get the deconstructed " +
+        "instruction list, then composes the final v0 tx: [nonceAdvance, ...computeBudget, ...setup, " +
+        "swap, cleanup?, ...other]. DURABLE NONCE REQUIRED — if the wallet hasn't run " +
+        "`prepare_solana_nonce_init`, this errors pointing to it. Uses v0 VersionedTransaction with " +
+        "Address Lookup Tables (Jupiter routes commonly exceed legacy-tx account limits). Returns a " +
+        "compact preview + opaque handle; NOT yet signable — when the user says 'send', call " +
+        "`preview_solana_send(handle)` to pin the current nonce value, then `send_transaction`. " +
+        "BLIND-SIGN REQUIRED on Ledger (Jupiter's program ID isn't in the Solana app's clear-sign " +
+        "registry), so the user must match the Message Hash on-device — surfaced in the CHECKS block " +
+        "emitted by `preview_solana_send`.",
+      inputSchema: prepareSolanaSwapInput.shape,
+    },
+    handler(prepareSolanaSwap)
   );
 
   server.registerTool(

@@ -109,7 +109,7 @@ export interface SolanaNativeSendParams {
  */
 export interface PreparedSolanaTx {
   handle: string;
-  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close";
+  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close" | "jupiter_swap";
   chain: "solana";
   from: string;
   description: string;
@@ -128,7 +128,7 @@ export interface PreparedSolanaTx {
  * relays the message verbatim to the user, who then runs
  * `prepare_solana_nonce_init` before retrying the send.
  */
-function throwNonceRequired(wallet: string): never {
+export function throwNonceRequired(wallet: string): never {
   throw new Error(
     `Solana nonce account not initialized for ${wallet}. Durable-nonce protection is required ` +
       `for all Solana sends in this server — the ~90s recentBlockhash window was eating into the ` +
@@ -221,6 +221,7 @@ export async function buildSolanaNativeSend(
 
   const nonceAccountStr = noncePubkey.toBase58();
   const draft: SolanaTxDraft = {
+    kind: "legacy",
     draftTx,
     meta: {
       action: "native_send",
@@ -401,6 +402,7 @@ export async function buildSolanaSplSend(
     totalFee + (recipient.needsCreation ? SPL_TOKEN_ACCOUNT_RENT_LAMPORTS : 0);
   const nonceAccountStr = noncePubkey.toBase58();
   const draft: SolanaTxDraft = {
+    kind: "legacy",
     draftTx,
     meta: {
       action: "spl_send",
@@ -518,6 +520,7 @@ export async function buildSolanaNonceInit(
 
   const nonceAccountStr = noncePubkey.toBase58();
   const draft: SolanaTxDraft = {
+    kind: "legacy",
     draftTx,
     meta: {
       action: "nonce_init",
@@ -606,6 +609,7 @@ export async function buildSolanaNonceClose(
 
   const nonceAccountStr = noncePubkey.toBase58();
   const draft: SolanaTxDraft = {
+    kind: "legacy",
     draftTx,
     meta: {
       action: "nonce_close",

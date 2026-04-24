@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { Transaction } from "@solana/web3.js";
+import {
+  MessageV0,
+  type AddressLookupTableAccount,
+  type PublicKey,
+  type Transaction,
+  type TransactionInstruction,
+} from "@solana/web3.js";
 import type { UnsignedSolanaTx } from "../types/index.js";
 import { buildSolanaVerification } from "./verification.js";
 
@@ -33,7 +39,7 @@ const TX_TTL_MS = 15 * 60_000;
  * cost, etc. Mirrors the non-message fields of `UnsignedSolanaTx`.
  */
 export interface SolanaDraftMeta {
-  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close";
+  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close" | "jupiter_swap";
   from: string;
   description: string;
   decoded: {
@@ -64,14 +70,41 @@ export interface SolanaDraftMeta {
 }
 
 /**
- * A Solana tx draft awaiting a blockhash pin. `draftTx` carries the
- * instruction list + fee payer but no `recentBlockhash` — that gets set
- * by `preview_solana_send` right before serialization.
+ * A Solana tx draft awaiting a blockhash pin.
+ *
+ * Message-format discriminated union: `kind: "legacy"` for `new Transaction()`
+ * (the Phase 1/2 shape), `kind: "v0"` for `VersionedMessage` / `MessageV0`
+ * (Phase 3 onward). The store doesn't care which; `pinSolanaHandle` branches
+ * on the discriminant to pick the right serialize path. Neither variant
+ * carries a blockhash at draft time — that gets set by `preview_solana_send`
+ * right before signing.
+ *
+ * Jupiter returns a ready-made v0 tx; Kamino/MarginFi sometimes need ALTs
+ * too. Legacy Transaction has no ALT support, so those flows MUST use the
+ * v0 variant. Existing native_send / spl_send / nonce_init / nonce_close
+ * can stay legacy — they all fit comfortably under the 35-account legacy
+ * limit.
  */
-export interface SolanaTxDraft {
+export interface SolanaLegacyDraft {
+  kind: "legacy";
   draftTx: Transaction;
   meta: SolanaDraftMeta;
 }
+
+export interface SolanaV0Draft {
+  kind: "v0";
+  payerKey: PublicKey;
+  instructions: TransactionInstruction[];
+  /**
+   * ALT accounts the v0 message references (if any). Empty array is fine —
+   * a v0 message without lookups is still valid and distinguishable from
+   * legacy by the `0x80` version prefix.
+   */
+  addressLookupTableAccounts: AddressLookupTableAccount[];
+  meta: SolanaDraftMeta;
+}
+
+export type SolanaTxDraft = SolanaLegacyDraft | SolanaV0Draft;
 
 interface StoredSolanaTx {
   draft: SolanaTxDraft;
@@ -156,9 +189,26 @@ export function pinSolanaHandle(
         `update meta.nonce.value to the same string before calling pin.`,
     );
   }
-  const { draftTx } = entry.draft;
-  draftTx.recentBlockhash = freshBlockhash;
-  const messageBytes = draftTx.serializeMessage();
+
+  // Serialize the message bytes. Legacy and v0 take different paths —
+  // legacy mutates `draftTx.recentBlockhash` then calls `serializeMessage()`;
+  // v0 compiles a fresh MessageV0 with the blockhash/nonce baked in and
+  // then calls `serialize()`. Either way the downstream consumer (Ledger
+  // signer, broadcast path) sees an opaque `messageBase64` and doesn't
+  // need to care which version produced it.
+  let messageBytes: Buffer;
+  if (entry.draft.kind === "legacy") {
+    entry.draft.draftTx.recentBlockhash = freshBlockhash;
+    messageBytes = entry.draft.draftTx.serializeMessage();
+  } else {
+    const msg = MessageV0.compile({
+      payerKey: entry.draft.payerKey,
+      instructions: entry.draft.instructions,
+      recentBlockhash: freshBlockhash,
+      addressLookupTableAccounts: entry.draft.addressLookupTableAccounts,
+    });
+    messageBytes = Buffer.from(msg.serialize());
+  }
   const messageBase64 = messageBytes.toString("base64");
 
   const pinnedBase: UnsignedSolanaTx = {

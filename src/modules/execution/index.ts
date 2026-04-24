@@ -90,6 +90,8 @@ import type {
   PrepareSolanaSplSendArgs,
   PrepareSolanaNonceInitArgs,
   PrepareSolanaNonceCloseArgs,
+  GetSolanaSwapQuoteArgs,
+  PrepareSolanaSwapArgs,
   PreviewSendArgs,
   SendTransactionArgs,
   GetTransactionStatusArgs,
@@ -247,6 +249,37 @@ export async function prepareSolanaNonceClose(
   args: PrepareSolanaNonceCloseArgs,
 ): Promise<PreparedSolanaTx> {
   return buildSolanaNonceClose({ wallet: args.wallet });
+}
+
+export async function getSolanaSwapQuote(args: GetSolanaSwapQuoteArgs) {
+  const { getJupiterQuote } = await import("../solana/jupiter.js");
+  return getJupiterQuote({
+    inputMint: args.inputMint,
+    outputMint: args.outputMint,
+    amount: args.amount,
+    slippageBps: args.slippageBps,
+    swapMode: args.swapMode,
+  });
+}
+
+export async function prepareSolanaSwap(
+  args: PrepareSolanaSwapArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildJupiterSwap } = await import("../solana/jupiter.js");
+  // The `quote` arg is the full Jupiter QuoteResponse — typed loosely as
+  // Record<string, unknown> at the schema boundary, narrowed here by the
+  // Jupiter module (which expects a JupiterQuote shape).
+  const prepared = await buildJupiterSwap({
+    wallet: args.wallet,
+    quote: args.quote as never, // JupiterQuote is a superset of Record<string, unknown>
+    ...(args.prioritizationFeeLamports !== undefined
+      ? { prioritizationFeeLamports: args.prioritizationFeeLamports }
+      : {}),
+  });
+  // buildJupiterSwap returns a narrower type (PreparedJupiterSwap). The
+  // handlers all converge on PreparedSolanaTx, and jupiter_swap is already
+  // in that action union, so the assignment is shape-compatible.
+  return prepared as PreparedSolanaTx;
 }
 
 /**
@@ -1256,7 +1289,7 @@ export interface SolanaVerificationArtifact {
   artifactVersion: "v1";
   handle: string;
   chain: "solana";
-  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close";
+  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close" | "jupiter_swap";
   from: string;
   messageBase64: string;
   recentBlockhash: string;

@@ -849,7 +849,7 @@ export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification:
  */
 export interface RenderableSolanaPrepareResult {
   handle: string;
-  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close";
+  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close" | "jupiter_swap";
   from: string;
   description: string;
   decoded: { functionName: string; args: Record<string, string> };
@@ -875,6 +875,8 @@ function solanaActionLabel(action: RenderableSolanaPrepareResult["action"]): str
       return "durable-nonce init (one-time setup)";
     case "nonce_close":
       return "durable-nonce close (reclaim rent-exempt seed)";
+    case "jupiter_swap":
+      return "Jupiter swap";
   }
 }
 
@@ -1120,6 +1122,7 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
   const isNativeSend = tx.action === "native_send";
   const isNonceInit = tx.action === "nonce_init";
   const isNonceClose = tx.action === "nonce_close";
+  const isJupiterSwap = tx.action === "jupiter_swap";
 
   // SPECIAL CASE — nonce_init is the one Solana action where ALL the
   // standard checks are pure ceremony. Why:
@@ -1183,8 +1186,19 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
 
   // Send-type txs (native_send / spl_send / nonce_close) all carry
   // ix[0] = SystemProgram.nonceAdvance for durable-nonce protection.
-  const hasAdvanceNonceIx = isNativeSend || isSpl || isNonceClose;
-  const ledgerHash = isSpl ? solanaLedgerMessageHash(tx.messageBase64) : null;
+  // Every send-type tx (any action except nonce_init) carries nonceAdvance
+  // as ix[0] — this flag drives the "DURABLE-NONCE MODE" explainer text +
+  // the Nonce bullet in the summary + the expected-shape text for CHECK 1.
+  const hasAdvanceNonceIx =
+    isNativeSend || isSpl || isNonceClose || isJupiterSwap;
+  // The Ledger Solana app only clear-signs a small allowlist of programs
+  // (System Program's transfer/advance/initialize/withdraw, and a few
+  // others). Everything else falls to blind-sign, which shows only the
+  // Message Hash on-device and requires the user to match it against the
+  // hash the server displayed. SPL TransferChecked AND Jupiter swaps both
+  // fall in that bucket.
+  const isBlindSign = isSpl || isJupiterSwap;
+  const ledgerHash = isBlindSign ? solanaLedgerMessageHash(tx.messageBase64) : null;
 
   const checksPayload = {
     instructionDecode: {
@@ -1240,16 +1254,28 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
             "  - Rent-exempt seed: <rent in SOL (~0.00144 SOL)>",
             "  - Fee: <fee in SOL>",
           ]
-        : [
-            // nonce_close
-            "  - Headline: \"Prepared durable-nonce close — returning <balance> SOL to <wallet short>\"",
-            "  - Wallet: <from address>",
-            "  - Nonce account: <nonce-account PDA, will be destroyed>",
-            "  - Destination: <from address (returns to main wallet)>",
-            "  - Withdraw amount: <balance in SOL>",
-            ...(nonceBullet ? [nonceBullet] : []),
-            "  - Fee: <fee in SOL>",
-          ];
+        : isNonceClose
+          ? [
+              "  - Headline: \"Prepared durable-nonce close — returning <balance> SOL to <wallet short>\"",
+              "  - Wallet: <from address>",
+              "  - Nonce account: <nonce-account PDA, will be destroyed>",
+              "  - Destination: <from address (returns to main wallet)>",
+              "  - Withdraw amount: <balance in SOL>",
+              ...(nonceBullet ? [nonceBullet] : []),
+              "  - Fee: <fee in SOL>",
+            ]
+          : [
+              // jupiter_swap
+              "  - Headline: \"Prepared Solana swap — <inputAmount> <inputSymbol> → <outputAmount> <outputSymbol> via Jupiter\"",
+              "  - From: <from address>",
+              "  - Input mint: <inputMint> (<inputSymbol if known>)",
+              "  - Output mint: <outputMint> (<outputSymbol if known>)",
+              "  - Expected output: <outputAmount> <outputSymbol> (min <minOutput> @ <slippageBps> bps)",
+              "  - Route: <route labels joined with →, from decoded.args.route>",
+              "  - Price impact: <priceImpactPct>%",
+              ...(nonceBullet ? [nonceBullet] : []),
+              "  - Fee: <fee in SOL (priority + base)>",
+            ];
 
   const inspectorUrl = solanaInspectorUrl(tx.messageBase64);
 
@@ -1259,7 +1285,12 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
   // integrity gate and a server-side hash recompute adds nothing — same
   // policy EVM uses for clear-sign txs (native sends, ERC20
   // transfers/approvals).
-  const needsPairConsistency = isSpl;
+  // CHECK 2 (pair-consistency hash recompute) fires when the device would
+  // blind-sign — without the hash, the on-device screen has nothing but a
+  // hash to match against, so we need to bind the displayed bytes to the
+  // displayed hash. Clear-sign actions (native_send, nonce_close) skip CHECK
+  // 2 because the on-device decoded fields ARE the integrity gate.
+  const needsPairConsistency = isBlindSign;
   // Combined CHECK 1 + CHECK 2 script — single Bash invocation, single
   // approval prompt, two verdicts. Mirrors EVM CHECK 2's template shape
   // (multi-line `node -e "..."` with `<messageBase64 from the prepare_*
@@ -1268,35 +1299,59 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
   // What the script computes:
   //   - ledgerHash = base58(sha256(msg)) — same value the Ledger Solana
   //     app derives and shows on blind-sign. PublicKey(<32-byte buffer>)
-  //     .toBase58() does base58 encoding.
-  //   - instructions[] = per-ix { programId, accounts, dataHex }
-  //     extracted via @solana/web3.js's `Message.from(buf)`. Account keys
-  //     are base58 pubkeys (PublicKey.toBase58 — recognizable). dataHex
-  //     is decoded from the base58 `ix.data` field via a small inline
-  //     bs58→hex helper (bs58 v6 is ESM-only so `require('bs58')` fails;
-  //     we keep the decoder to one short line — same shape as EVM's inline
-  //     fee-cost math, recognizable arithmetic, no "messy script" surface).
+  //     .toBase58() does base58 encoding (works for raw sha256 digests).
+  //   - instructions[] = per-ix { programId, accounts, dataHex } extracted
+  //     via @solana/web3.js. The script auto-detects message version:
+  //       - legacy (no 0x80 prefix): `Message.from(buf)` — instruction data
+  //         is base58, decoded via the inline bs58→hex helper below (bs58 v6
+  //         is ESM-only so `require('bs58')` fails; the decoder is one line).
+  //       - v0 (0x80 prefix): `VersionedMessage.deserialize(buf)` — fetches
+  //         Address Lookup Table accounts via an RPC Connection, flattens
+  //         static + ALT-resolved account keys, then reads `compiledInstructions`
+  //         (data is already a Uint8Array, no base58 decode needed).
+  //     The v0 branch requires network access (to fetch ALTs); the script
+  //     reads the RPC URL from `SOLANA_RPC_URL` env var with a fallback to
+  //     the public mainnet-beta endpoint.
   //
   // The agent inspects the JSON output and reports BOTH verdicts:
   //   - CHECK 1 ✓/✗ on instruction structure (programId + accounts +
   //     dataHex tag) matching the bullet summary
   //   - CHECK 2 ✓/✗ on ledgerHash matching the displayed value
   const combinedCheckScript = [
-    `    node -e "const {Message, PublicKey} = require('@solana/web3.js');`,
+    `    node -e "const {Message, VersionedMessage, PublicKey, Connection} = require('@solana/web3.js');`,
     `    const {createHash} = require('crypto');`,
     `    const m = '<messageBase64 from the preview_solana_send result>';`,
     `    const buf = Buffer.from(m, 'base64');`,
-    `    const msg = Message.from(buf);`,
     `    const A = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';`,
     `    const b58 = s => { if (!s.length) return ''; let n=0n; for (const c of s) n=n*58n+BigInt(A.indexOf(c)); let z=0; while (z<s.length&&s[z]==='1') z++; const h=n.toString(16); return '00'.repeat(z)+(h.length%2?'0'+h:h); };`,
-    `    console.log(JSON.stringify({`,
-    `      ledgerHash: new PublicKey(createHash('sha256').update(buf).digest()).toBase58(),`,
-    `      instructions: msg.instructions.map(ix => ({`,
-    `        programId: msg.accountKeys[ix.programIdIndex].toBase58(),`,
-    `        accounts: ix.accounts.map(i => msg.accountKeys[i].toBase58()),`,
-    `        dataHex: b58(ix.data),`,
-    `      })),`,
-    `    }, null, 2));"`,
+    `    const ledgerHash = new PublicKey(createHash('sha256').update(buf).digest()).toBase58();`,
+    `    (async () => {`,
+    `      let instructions;`,
+    `      if (buf[0] & 0x80) {`,
+    `        const msg = VersionedMessage.deserialize(buf);`,
+    `        const conn = new Connection(process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com');`,
+    `        const alts = [];`,
+    `        for (const lookup of msg.addressTableLookups) {`,
+    `          const res = await conn.getAddressLookupTable(lookup.accountKey);`,
+    `          if (!res.value) throw new Error('ALT not found on chain: ' + lookup.accountKey.toBase58());`,
+    `          alts.push(res.value);`,
+    `        }`,
+    `        const keys = msg.getAccountKeys({addressLookupTableAccounts: alts}).keySegments().flat();`,
+    `        instructions = msg.compiledInstructions.map(ix => ({`,
+    `          programId: keys[ix.programIdIndex].toBase58(),`,
+    `          accounts: ix.accountKeyIndexes.map(i => keys[i].toBase58()),`,
+    `          dataHex: Buffer.from(ix.data).toString('hex'),`,
+    `        }));`,
+    `      } else {`,
+    `        const msg = Message.from(buf);`,
+    `        instructions = msg.instructions.map(ix => ({`,
+    `          programId: msg.accountKeys[ix.programIdIndex].toBase58(),`,
+    `          accounts: ix.accounts.map(i => msg.accountKeys[i].toBase58()),`,
+    `          dataHex: b58(ix.data),`,
+    `        }));`,
+    `      }`,
+    `      console.log(JSON.stringify({ledgerHash, instructions}, null, 2));`,
+    `    })();"`,
   ];
 
   const lines = [
@@ -1444,9 +1499,9 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
     "        (protects against a coordinated agent compromise)",
     "    ────────────────────────────────",
     "    NEXT ON-DEVICE — final check happens on your Ledger screen:",
-    ...(isSpl
+    ...(isSpl || isJupiterSwap
       ? [
-          "      • BLIND-SIGN (this tx — Solana app shows 'Message Hash'):",
+          `      • BLIND-SIGN (this tx — ${isJupiterSwap ? "Jupiter routing" : "SPL TransferChecked"} is not in the Solana app's clear-sign registry, so the device shows only 'Message Hash'):`,
           `          check the value on-device is exactly **\`${ledgerHash}\`**.`,
           "          Any difference → REJECT.",
           "          Prerequisite: Allow blind signing must be ON in Solana app Settings.",
@@ -1475,7 +1530,7 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
             ]),
     "    ════════════════════════════════",
     "",
-    ...(isSpl
+    ...(isBlindSign
       ? [
           "Render the Message Hash with BOTH bold AND single-backtick inline",
           "code — i.e. `**\\`<hash>\\`**` — exactly as shown in the template",
@@ -1520,10 +1575,10 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
     "  decodes the bytes from scratch. Do NOT pre-decode the bytes yourself",
     "  in the same reply. Before/after the pasteableBlock, remind the user to",
     "  compare the second agent's plain-English description against what they",
-    isSpl
+    isBlindSign
       ? "  asked for and match the Message Hash inside the paste block against"
       : "  asked for and confirm the on-device decoded fields match what the",
-    isSpl
+    isBlindSign
       ? "  the Ledger screen before approving."
       : "  Solana app clear-signs before approving.",
     "",

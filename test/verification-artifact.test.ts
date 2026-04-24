@@ -187,6 +187,7 @@ describe("get_verification_artifact — second-agent copy-paste artifact", () =>
       },
     };
     const { handle: splHandle } = issueSolanaDraftHandle({
+      kind: "legacy",
       draftTx: splDraftTx,
       meta: splMeta,
     });
@@ -226,6 +227,7 @@ describe("get_verification_artifact — second-agent copy-paste artifact", () =>
       },
     };
     const { handle: nativeHandle } = issueSolanaDraftHandle({
+      kind: "legacy",
       draftTx: nativeDraftTx,
       meta: nativeMeta,
     });

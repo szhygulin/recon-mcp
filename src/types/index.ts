@@ -667,7 +667,7 @@ export interface UnsignedSolanaTx {
    * - `nonce_close` — teardown: nonceAdvance + nonceWithdraw. Drains the
    *   rent-exempt balance back to the user's main wallet.
    */
-  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close";
+  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close" | "jupiter_swap";
   /** Base58 owner address (44-char ed25519 pubkey). */
   from: string;
   /**
