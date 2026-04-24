@@ -6,6 +6,8 @@ import { getTokenPrice } from "../../data/prices.js";
 import { getLendingPositions, getLpPositions } from "../positions/index.js";
 import { getStakingPositions } from "../staking/index.js";
 import { getCompoundPositions, prefetchCompoundProbes } from "../compound/index.js";
+import { prefetchAaveAccountData } from "../positions/aave.js";
+import { prefetchLidoMainnet } from "../staking/lido.js";
 import { getMorphoPositions } from "../morpho/index.js";
 import { getTronBalances } from "../tron/balances.js";
 import { getTronStaking } from "../tron/staking.js";
@@ -119,13 +121,25 @@ export async function getPortfolioSummary(
 
   // Cross-wallet prefetches run FIRST and populate per-wallet caches.
   // The per-wallet buildWalletSummary fan-out then hits the cache for
-  // the most rate-limit-sensitive subsystems (Compound probe here),
-  // keeping the wallet fan-out's peak RPC pressure flat regardless of
-  // wallet count. Without this, 4 wallets each firing their own 5
-  // Compound probes = 20 parallel multicalls (saturates free-tier
-  // Infura even at cap=2 per chain). With this, Compound probes drop
-  // to 5 total (one per chain, all-wallets-batched).
-  await prefetchCompoundProbes(wallets, chains);
+  // the most rate-limit-sensitive subsystems, keeping the wallet fan-
+  // out's peak RPC pressure flat regardless of wallet count.
+  //
+  // Without these prefetches, a 4-wallet call fires ~20 parallel
+  // Compound probes + 20 Aave aggregate reads + 4 Lido mainnet
+  // multicalls + ... = dozens of simultaneous multicalls saturating
+  // free-tier Infura even at cap=2 per chain. With them, each
+  // subsystem collapses to ONE multicall per chain regardless of
+  // wallet count — the downstream per-wallet calls hit cache.
+  //
+  // Run in parallel across subsystems (each batches by chain
+  // internally); one slow subsystem doesn't serialize the others.
+  await Promise.all([
+    prefetchCompoundProbes(wallets, chains),
+    prefetchAaveAccountData(wallets, chains),
+    // Lido mainnet is the most rate-limit-sensitive staking read;
+    // arbitrum wstETH is low volume and stays per-wallet.
+    chains.includes("ethereum") ? prefetchLidoMainnet(wallets) : Promise.resolve(),
+  ]);
   const perWallet = await Promise.all(wallets.map((w) => buildWalletSummary(w, chains)));
   const totalUsd = round(perWallet.reduce((s, p) => s + p.totalUsd, 0), 2);
   const walletBalancesUsd = round(perWallet.reduce((s, p) => s + p.walletBalancesUsd, 0), 2);

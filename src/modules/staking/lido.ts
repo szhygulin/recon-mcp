@@ -26,6 +26,59 @@ export async function getLidoPositions(wallet: `0x${string}`, chains: SupportedC
   );
 }
 
+/**
+ * Cross-wallet batch prefetch for Lido mainnet reads. Issues ONE
+ * multicall on ethereum containing `stEthPerToken()` + all wallets'
+ * `stETH.balanceOf` + `wstETH.balanceOf`. Results are stored per-
+ * wallet in a raw-data cache so per-wallet `fetchLidoPositions` on
+ * ethereum checks that cache first and skips its own multicall.
+ *
+ * Mirrors the Compound + Aave prefetch pattern. For a 4-wallet
+ * portfolio call, ethereum Lido reads drop from 4 multicalls
+ * (3 calls each = 12 RPC) to 1 multicall (1 + 2*4 = 9 reads batched).
+ * Arbitrum Lido reads aren't batched here — the per-wallet flow is
+ * already 1 balanceOf per wallet, and arbitrum wstETH exposure is
+ * typically small. If arbitrum becomes the next hotspot, the same
+ * pattern extends trivially.
+ */
+export async function prefetchLidoMainnet(wallets: `0x${string}`[]): Promise<void> {
+  if (wallets.length === 0) return;
+  const client = getClient("ethereum");
+  const stEthAddr = CONTRACTS.ethereum.lido.stETH as `0x${string}`;
+  const wstEthAddr = CONTRACTS.ethereum.lido.wstETH as `0x${string}`;
+  try {
+    const contracts = [
+      { address: wstEthAddr, abi: wstETHAbi, functionName: "stEthPerToken" as const },
+      ...wallets.flatMap((w) => [
+        { address: stEthAddr, abi: stETHAbi, functionName: "balanceOf" as const, args: [w] as const },
+        { address: wstEthAddr, abi: wstETHAbi, functionName: "balanceOf" as const, args: [w] as const },
+      ]),
+    ];
+    const results = await client.multicall({ contracts, allowFailure: true });
+    const stPerResult = results[0];
+    if (stPerResult.status !== "success") return;
+    const stPer = stPerResult.result as bigint;
+    wallets.forEach((wallet, i) => {
+      const stResult = results[1 + i * 2];
+      const wstResult = results[1 + i * 2 + 1];
+      if (stResult.status !== "success" || wstResult.status !== "success") return;
+      cache.set(
+        `lido-raw-eth:${wallet.toLowerCase()}`,
+        {
+          stEthWei: stResult.result as bigint,
+          wstEthWei: wstResult.result as bigint,
+          stEthPerToken: stPer,
+        },
+        CACHE_TTL.POSITION,
+      );
+    });
+  } catch {
+    // Whole-multicall failure — skip cache population; per-wallet reads
+    // fall through to their own multicall (which may succeed post-rate-
+    // limit window).
+  }
+}
+
 async function fetchLidoPositions(wallet: `0x${string}`, chains: SupportedChain[]): Promise<StakingPosition[]> {
   const positions: StakingPosition[] = [];
   const ethPrice = await getTokenPrice("ethereum", "native");
@@ -37,18 +90,35 @@ async function fetchLidoPositions(wallet: `0x${string}`, chains: SupportedChain[
       const stEthAddr = CONTRACTS.ethereum.lido.stETH as `0x${string}`;
       const wstEthAddr = CONTRACTS.ethereum.lido.wstETH as `0x${string}`;
 
-      const [stBalance, wstBalance, stPerWst] = await client.multicall({
-        contracts: [
-          { address: stEthAddr, abi: stETHAbi, functionName: "balanceOf", args: [wallet] },
-          { address: wstEthAddr, abi: wstETHAbi, functionName: "balanceOf", args: [wallet] },
-          { address: wstEthAddr, abi: wstETHAbi, functionName: "stEthPerToken" },
-        ],
-        allowFailure: false,
-      });
-
-      const stEthWei = stBalance as bigint;
-      const wstEthWei = wstBalance as bigint;
-      const stPer = stPerWst as bigint;
+      // Prefetch populates this cache before the portfolio fan-out so
+      // the per-wallet path skips its own multicall when batched data
+      // is already available. Single-wallet callers (get_staking_*) or
+      // cold starts fall through to the per-wallet multicall below.
+      let stEthWei: bigint;
+      let wstEthWei: bigint;
+      let stPer: bigint;
+      const raw = cache.get<{
+        stEthWei: bigint;
+        wstEthWei: bigint;
+        stEthPerToken: bigint;
+      }>(`lido-raw-eth:${wallet.toLowerCase()}`);
+      if (raw) {
+        stEthWei = raw.stEthWei;
+        wstEthWei = raw.wstEthWei;
+        stPer = raw.stEthPerToken;
+      } else {
+        const [stBalance, wstBalance, stPerWst] = await client.multicall({
+          contracts: [
+            { address: stEthAddr, abi: stETHAbi, functionName: "balanceOf", args: [wallet] },
+            { address: wstEthAddr, abi: wstETHAbi, functionName: "balanceOf", args: [wallet] },
+            { address: wstEthAddr, abi: wstETHAbi, functionName: "stEthPerToken" },
+          ],
+          allowFailure: false,
+        });
+        stEthWei = stBalance as bigint;
+        wstEthWei = wstBalance as bigint;
+        stPer = stPerWst as bigint;
+      }
       // Convert wstETH to stETH equivalent (both 18 decimals).
       const wstInStEth = (wstEthWei * stPer) / 10n ** 18n;
       const totalStEthWei = stEthWei + wstInStEth;
