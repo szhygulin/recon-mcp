@@ -817,6 +817,36 @@ export interface UnsignedSolanaTx {
     authority: string;
     value: string;
   };
+  /**
+   * Fast-retry descriptor — present only on `marginfi_borrow` / `marginfi_repay`
+   * when a same-op Ledger approval within TTL was followed by a Switchboard
+   * transient-oracle failure (NotEnoughSamples / InvalidSlotNumber /
+   * RotatingMegaSlot). When set, the agent-task renderer emits the
+   * abridged CHECKS template (pair-consistency hash + program-id whitelist
+   * + semantic-args diff) instead of the full instruction-decode flow.
+   *
+   * `priorDecodedArgs` is the snapshot of the prior-approval's decoded
+   * args; the abridged template shows it side-by-side with the retry's
+   * current args so the agent can verify the semantic op is unchanged.
+   */
+  fastRetry?: {
+    priorLedgerHash: string;
+    approvedAt: number;
+    transientReason:
+      | "NotEnoughSamples"
+      | "InvalidSlotNumber"
+      | "RotatingMegaSlot";
+    priorDecodedArgs: Record<string, string>;
+  };
+  /**
+   * Program IDs present in the pinned message bytes. Pre-computed server-
+   * side (from `compiledInstructions` after ALT resolution) so the
+   * abridged CHECKS template can show a whitelist assertion without
+   * requiring the agent to decode the message bytes itself. Populated
+   * only when `fastRetry` is set — the full template relies on the
+   * agent's own decode.
+   */
+  programIdsInMessage?: string[];
 }
 
 /**

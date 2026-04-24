@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
+  Message,
   MessageV0,
+  VersionedMessage,
   type AddressLookupTableAccount,
   type PublicKey,
   type Transaction,
@@ -100,6 +102,29 @@ export interface SolanaDraftMeta {
   marginfiOracleCranks?: {
     oracles: string[];
     instructionCount: number;
+  };
+  /**
+   * Fast-retry descriptor — present only when `buildMarginfiBorrow` /
+   * `buildMarginfiRepay` detected a recent approved-and-oracle-transient-
+   * failed prior attempt for the exact same (wallet, action, accountIndex,
+   * bank, mint, amount) tuple. When set, `previewSolanaSend` renders the
+   * abridged CHECKS template instead of the full decode-narrative block.
+   *
+   * The abridge is a user-consented UX trade-off for the Switchboard crank
+   * flake case only: Switchboard oracle rotations (error 6030/6039) can
+   * flake a borrow/repay 2–3 times in a row on a tx whose semantic meaning
+   * the user already approved on-device. Forcing the full decode every
+   * retry is pure attention tax — the pair-consistency Ledger-hash check
+   * stays mandatory to anchor the bytes the Ledger will sign.
+   */
+  fastRetry?: {
+    priorLedgerHash: string;
+    approvedAt: number;
+    transientReason:
+      | "NotEnoughSamples"
+      | "InvalidSlotNumber"
+      | "RotatingMegaSlot";
+    priorDecodedArgs: Record<string, string>;
   };
 }
 
@@ -245,6 +270,36 @@ export function pinSolanaHandle(
   }
   const messageBase64 = messageBytes.toString("base64");
 
+  // Pre-compute program IDs in the pinned message when fast-retry is set —
+  // the abridged CHECKS template renders a whitelist assertion and the
+  // agent visually compares against the allowed set. For the v0 path,
+  // programIdIndex references the STATIC account keys (pre-ALT-resolve),
+  // which is exactly what we want: all non-user programs (MarginFi,
+  // Switchboard, System, ComputeBudget, Secp256k1, AToken, Token) are in
+  // the static section — ALTs carry token accounts, not program IDs.
+  let programIdsInMessage: string[] | undefined;
+  if (meta.fastRetry) {
+    if (messageBytes[0]! & 0x80) {
+      const msg = VersionedMessage.deserialize(messageBytes);
+      const staticKeys = msg.staticAccountKeys.map((k) => k.toBase58());
+      const ids = new Set<string>();
+      for (const ix of msg.compiledInstructions) {
+        const id = staticKeys[ix.programIdIndex];
+        if (id) ids.add(id);
+      }
+      programIdsInMessage = [...ids];
+    } else {
+      const msg = Message.from(messageBytes);
+      const keys = msg.accountKeys.map((k) => k.toBase58());
+      const ids = new Set<string>();
+      for (const ix of msg.instructions) {
+        const id = keys[ix.programIdIndex];
+        if (id) ids.add(id);
+      }
+      programIdsInMessage = [...ids];
+    }
+  }
+
   const pinnedBase: UnsignedSolanaTx = {
     chain: "solana",
     action: meta.action,
@@ -271,6 +326,8 @@ export function pinSolanaHandle(
       ? { estimatedFeeLamports: meta.estimatedFeeLamports }
       : {}),
     ...(meta.nonce ? { nonce: { ...meta.nonce } } : {}),
+    ...(meta.fastRetry ? { fastRetry: { ...meta.fastRetry } } : {}),
+    ...(programIdsInMessage ? { programIdsInMessage } : {}),
   };
   const verification = buildSolanaVerification(pinnedBase);
   const pinned: UnsignedSolanaTx = { ...pinnedBase, verification };
@@ -319,4 +376,138 @@ export function isSolanaHandlePinned(handle: string): boolean {
   prune();
   const entry = store.get(handle);
   return entry?.pinned != null;
+}
+
+// ----- MarginFi fast-retry approval cache -----
+
+/**
+ * The subset of a MarginFi action's identity used to key the approval cache.
+ * Matches the six user-visible dimensions that uniquely identify the op:
+ * same wallet, same direction (borrow/repay), same MarginfiAccount PDA
+ * (via accountIndex), same bank, same mint, same amount. Any difference in
+ * these six fields is treated as a semantically-different tx and the cache
+ * misses (full CHECKS path runs).
+ */
+export interface ApprovalKeyFields {
+  wallet: string;
+  action: "marginfi_borrow" | "marginfi_repay";
+  accountIndex: number;
+  bank: string;
+  mint: string;
+  /** Exact canonical decimal string (BigNumber.toFixed()). */
+  amount: string;
+}
+
+/**
+ * Record of a same-op Ledger approval the user performed in-process. The
+ * `approvedAt` timestamp gates TTL; `ledgerHash` is surfaced on the retry's
+ * advisory line so the user can see which prior on-device approval is being
+ * referenced. `decodedArgs` is the snapshot of the approved tx's decoded
+ * args (from its `meta.decoded.args`) — used for the abridged-template
+ * semantic-diff check on retry.
+ */
+export interface ApprovedMarginfiOp {
+  key: ApprovalKeyFields;
+  ledgerHash: string;
+  approvedAt: number;
+  decodedArgs: Record<string, string>;
+}
+
+/**
+ * Classification of the most recent failure seen for a given approved op.
+ * Only `oracle-transient` unlocks the abridged-checks retry path — any
+ * other failure kind (hard revert, user rejection, RPC error, unknown)
+ * falls back to the full-CHECKS default on the next prepare.
+ */
+export interface MarginfiFailureRecord {
+  kind: "oracle-transient" | "other";
+  reason: string;
+  failedAt: number;
+}
+
+const APPROVAL_TTL_MS = 15 * 60_000;
+
+interface ApprovalEntry {
+  approval: ApprovedMarginfiOp;
+  lastFailure?: MarginfiFailureRecord;
+  expiresAt: number;
+}
+
+const approvalCache = new Map<string, ApprovalEntry>();
+
+function approvalKey(fields: ApprovalKeyFields): string {
+  return [
+    fields.wallet,
+    fields.action,
+    String(fields.accountIndex),
+    fields.bank,
+    fields.mint,
+    fields.amount,
+  ].join("|");
+}
+
+function pruneApprovals(now = Date.now()): void {
+  for (const [k, entry] of approvalCache) {
+    if (entry.expiresAt < now) approvalCache.delete(k);
+  }
+}
+
+/**
+ * Record that the user physically approved a same-op tx at the Ledger. Called
+ * from `send_transaction` the instant the device returns a signature — BEFORE
+ * broadcast, since user-at-device consent is independent of any downstream
+ * broadcast outcome. A same-op re-prepare within TTL + (later) transient-
+ * oracle failure classification is what unlocks the abridged path.
+ */
+export function recordMarginfiApproval(op: ApprovedMarginfiOp): void {
+  pruneApprovals();
+  const k = approvalKey(op.key);
+  const existing = approvalCache.get(k);
+  approvalCache.set(k, {
+    approval: op,
+    ...(existing?.lastFailure ? { lastFailure: existing.lastFailure } : {}),
+    expiresAt: Date.now() + APPROVAL_TTL_MS,
+  });
+}
+
+/**
+ * Record the most recent failure classification for a same-op descriptor.
+ * Called from the broadcast / preview failure paths after the oracle-vs-
+ * other classifier runs. Idempotent overwrite — the freshest failure wins.
+ * If no prior approval exists in the cache, this is a no-op (fast-retry
+ * requires A ∧ B; without an approval, (A) never holds).
+ */
+export function recordMarginfiFailure(
+  fields: ApprovalKeyFields,
+  failure: MarginfiFailureRecord,
+): void {
+  pruneApprovals();
+  const k = approvalKey(fields);
+  const existing = approvalCache.get(k);
+  if (!existing) return;
+  approvalCache.set(k, { ...existing, lastFailure: failure });
+}
+
+/**
+ * Look up a same-op approval + last-failure state. Returns `null` when
+ * the cache has nothing for this descriptor, or when the approval has
+ * expired. Eligibility for fast-retry is computed at the call site —
+ * typically `approval && lastFailure?.kind === "oracle-transient"`.
+ */
+export function findMarginfiApproval(
+  fields: ApprovalKeyFields,
+): { approval: ApprovedMarginfiOp; lastFailure?: MarginfiFailureRecord } | null {
+  pruneApprovals();
+  const k = approvalKey(fields);
+  const entry = approvalCache.get(k);
+  if (!entry) return null;
+  return {
+    approval: entry.approval,
+    ...(entry.lastFailure ? { lastFailure: entry.lastFailure } : {}),
+  };
+}
+
+/** Test-only: clear the approval cache between tests. */
+export function __clearMarginfiApprovalCache(): void {
+  approvalCache.clear();
 }
