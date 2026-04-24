@@ -1,6 +1,6 @@
 {
   "name": "vaultpilot-mcp",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "mcpName": "io.github.szhygulin/vaultpilot-mcp",
   "description": "Hardware-verified DeFi for AI agents. The agent proposes, you approve on your Ledger — designed for when the AI can be compromised.",
   "type": "module",

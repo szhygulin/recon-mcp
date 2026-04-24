@@ -3,7 +3,7 @@
   "name": "io.github.szhygulin/vaultpilot-mcp",
   "title": "VaultPilot MCP",
   "description": "Hardware-verified DeFi for AI agents. The agent proposes, you approve on your Ledger — designed for when the AI can be compromised.",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "websiteUrl": "https://github.com/szhygulin/vaultpilot-mcp",
   "repository": {
     "url": "https://github.com/szhygulin/vaultpilot-mcp",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "vaultpilot-mcp",
-      "version": "0.5.2",
+      "version": "0.5.3",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {
