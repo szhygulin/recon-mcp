@@ -156,6 +156,35 @@ export async function getPortfolioSummary(
   };
 }
 
+/**
+ * Build the human-readable `coverage.compound.note` when one or more markets
+ * failed to read. Includes per-chain + per-market + raw error message so the
+ * agent can tell the user which specific market is broken instead of the
+ * generic "fetch failed on at least one market" string (issue #88). When no
+ * structured detail is available (empty array), falls back to the old
+ * generic message so callers still get a non-empty note.
+ *
+ * Error messages are truncated to keep the note readable — the full detail
+ * is available via `get_compound_positions` directly, which returns the
+ * same `erroredMarkets` array on its response.
+ *
+ * Exported for unit testing; the getPortfolioSummary path is the real caller.
+ */
+export function formatCompoundErrorNote(
+  erroredMarkets?: { chain: SupportedChain; market: string; error: string }[],
+): string {
+  const generic =
+    "Compound V3 fetch failed on at least one market — some positions may be missing from totals.";
+  if (!erroredMarkets || erroredMarkets.length === 0) return generic;
+  const MAX_ERR = 120;
+  const lines = erroredMarkets.map(({ chain, market, error }) => {
+    const trimmed =
+      error.length > MAX_ERR ? `${error.slice(0, MAX_ERR)}…` : error;
+    return `${chain}/${market}: ${trimmed}`;
+  });
+  return `${generic} Failures: ${lines.join("; ")}. Call get_compound_positions for the full per-market read.`;
+}
+
 function mergeCoverage(entries: { covered: boolean; errored?: boolean; note?: string }[]) {
   const anyErrored = entries.some((e) => e.errored);
   const allCovered = entries.every((e) => e.covered);
@@ -192,6 +221,13 @@ async function buildWalletSummary(
     tronStaking: false,
     solana: false,
   };
+  // Per-market Compound V3 failure detail, populated when at least one market
+  // read errored. Surfaced in coverage.compound.note so the agent can tell
+  // the user WHICH chain/market failed and WHY, instead of the generic "fetch
+  // failed on at least one market" message (issue #88).
+  let compoundErroredMarkets:
+    | { chain: SupportedChain; market: string; error: string }[]
+    | undefined;
   const [
     nativeAmounts,
     erc20Amounts,
@@ -221,12 +257,26 @@ async function buildWalletSummary(
           // that partial failure so coverage.compound.errored is correct —
           // without this, a flaky cUSDCv3 read would drop a six-figure
           // supply while the aggregator still reported clean coverage
-          // (issue #34).
-          if (r.errored) errors.compound = true;
+          // (issue #34). The underlying per-market error strings flow
+          // through to coverage.compound.note so callers can diagnose
+          // which chain/market is broken instead of guessing (issue #88).
+          if (r.errored) {
+            errors.compound = true;
+            if (r.erroredMarkets && r.erroredMarkets.length > 0) {
+              compoundErroredMarkets = r.erroredMarkets;
+            }
+          }
           return r;
         })
-        .catch(() => {
+        .catch((e) => {
           errors.compound = true;
+          compoundErroredMarkets = [
+            {
+              chain: "ethereum" as SupportedChain,
+              market: "(all)",
+              error: e instanceof Error ? e.message : String(e),
+            },
+          ];
           return emptyPositions as never;
         }),
       // Morpho has no multi-chain list endpoint; fan out per-chain and swallow
@@ -344,7 +394,15 @@ async function buildWalletSummary(
     solanaUnpriced;
   const coverage: PortfolioCoverage = {
     aave: { covered: !errors.aave, ...(errors.aave ? { errored: true, note: "Aave fetch failed — positions not included in totals." } : {}) },
-    compound: { covered: !errors.compound, ...(errors.compound ? { errored: true, note: "Compound V3 fetch failed on at least one market — some positions may be missing from totals." } : {}) },
+    compound: {
+      covered: !errors.compound,
+      ...(errors.compound
+        ? {
+            errored: true,
+            note: formatCompoundErrorNote(compoundErroredMarkets),
+          }
+        : {}),
+    },
     morpho: { covered: !errors.morpho, ...(errors.morpho ? { errored: true, note: "Morpho Blue event-log discovery failed on at least one chain — some positions may be missing from totals." } : {}) },
     uniswapV3: { covered: !errors.lp, ...(errors.lp ? { errored: true, note: "Uniswap V3 LP fetch failed — positions not included." } : {}) },
     staking: { covered: !errors.staking, ...(errors.staking ? { errored: true, note: "Staking (Lido/EigenLayer) fetch failed — positions not included." } : {}) },
