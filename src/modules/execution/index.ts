@@ -643,7 +643,16 @@ export async function previewSolanaSend(args: {
               `pick a different bank) and call prepare_* again.`;
         throw new Error(header + logTail + diagnosis + remediation);
       }
-      pinned.simulation = sim;
+      // v1.6: on success, strip `logs` (10-30 lines of program trace) and
+      // `unitsConsumed` from the pinned tx. Neither is consumed by any agent
+      // check (grep confirmed zero downstream readers). Keeping just `ok:true`
+      // cuts preview-response JSON by ~500–2500 chars per MarginFi tx, which
+      // the agent has to read on every preview. Narrows the attack surface
+      // slightly too — a compromised MCP can't inject misleading log prose
+      // into the agent's input. Failure paths throw above and never reach
+      // here; the full sim object still surfaces in the thrown error's text
+      // for debuggability.
+      pinned.simulation = { ok: true };
     } catch (e) {
       // Distinguish our own throw (preview-level rejection — re-raise) from
       // an RPC-level error (transient — swallow and proceed without the

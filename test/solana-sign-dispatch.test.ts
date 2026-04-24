@@ -389,8 +389,13 @@ describe("sendTransaction dispatch — Solana", () => {
     const pinned = await previewSolanaSend({ handle: draft.handle });
     expect(pinned.simulation).toBeDefined();
     expect(pinned.simulation!.ok).toBe(true);
-    expect(pinned.simulation!.unitsConsumed).toBe(1234);
-    expect(pinned.simulation!.logs).toHaveLength(2);
+    // v1.6: on success the pinned tx only carries `{ ok: true }` — `logs`
+    // and `unitsConsumed` are stripped because no agent check consumes them
+    // and they inflate the preview-response JSON by 500–2500 chars on
+    // MarginFi txs. See src/modules/execution/index.ts `pinned.simulation`
+    // comment for the full rationale.
+    expect(pinned.simulation!.unitsConsumed).toBeUndefined();
+    expect(pinned.simulation!.logs).toBeUndefined();
   });
 
   it("#115 preview proceeds (no simulation field) when the simulate RPC itself throws", async () => {

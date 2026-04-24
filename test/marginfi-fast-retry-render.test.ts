@@ -143,49 +143,56 @@ describe("renderSolanaPrepareSummaryBlock — fast-retry advisory banner", () =>
 });
 
 describe("renderSolanaAgentTaskBlock — abridged template when tx.fastRetry is set", () => {
-  it("emits the abridged template with CHECK A/B/C instead of CHECK 1/2", () => {
+  it("emits the compressed abridged template (v1.6): one-line output contract, all three checks, security-critical content retained", () => {
     const tx = makeUnsignedMarginfiBorrowWithFastRetry();
     const out = renderSolanaAgentTaskBlock(tx);
 
-    // Fast-retry header + references to the prior approval
-    expect(out).toMatch(/FAST-RETRY MODE/);
+    // Fast-retry header + references to the prior approval (security audit trail)
+    expect(out).toMatch(/FAST-RETRY \(MarginFi borrow\)/);
     expect(out).toContain("abc12345");
     expect(out).toMatch(/NotEnoughSamples/);
 
-    // Abridged checks
-    expect(out).toMatch(/CHECK A — PAIR-CONSISTENCY LEDGER HASH/);
-    expect(out).toMatch(/CHECK B — PROGRAM-ID WHITELIST/);
-    expect(out).toMatch(/CHECK C — SEMANTIC-ARGS MATCH/);
-    expect(out).toMatch(/CHECKS PERFORMED \(FAST-RETRY\)/);
+    // All three abridged checks are still present (compressed but named).
+    expect(out).toMatch(/CHECK A \(pair-consistency hash\)/);
+    expect(out).toMatch(/CHECK B \(program-id whitelist\)/);
+    expect(out).toMatch(/CHECK C \(semantic-args match\)/);
 
-    // The full-path instruction-decode narrative and ABI-style markers
-    // must NOT appear — that's the whole point of the abridge.
+    // Old multi-line CHECKS PERFORMED box-drawing block is GONE on v1.6
+    // (that's the main LLM-output compression lever).
+    expect(out).not.toMatch(/═══════ CHECKS PERFORMED/);
+    expect(out).not.toMatch(/────────────────────────────────/);
+    expect(out).not.toMatch(/\{✓\|✗\} PAIR-CONSISTENCY LEDGER HASH — <verdict>/);
+
+    // Full-path instruction-decode markers must still NOT appear.
     expect(out).not.toMatch(/CHECK 1 — AGENT-SIDE INSTRUCTION DECODE/);
-    expect(out).not.toMatch(/CHECK 2 — PAIR-CONSISTENCY LEDGER HASH/);
     expect(out).not.toMatch(/INSTRUCTION DECODE — <one-line verdict>/);
 
-    // Program-id whitelist: both the retry's actual IDs and the curated
-    // allow-list must be present so the agent can visually diff them.
+    // Program-id whitelist: both retry IDs and allow-list present (inline now).
     expect(out).toContain("MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA");
     expect(out).toContain("SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv");
 
-    // Semantic-args diff: both prior and current arg bundles must render.
-    expect(out).toMatch(/Prior approval args/);
-    expect(out).toMatch(/Retry args/);
+    // Semantic-args diff: prior + retry args both render (as JSON on compressed path).
+    expect(out).toMatch(/prior:/);
+    expect(out).toMatch(/retry:/);
 
-    // Second-LLM escape hatch stays available on retry.
-    expect(out).toMatch(/SECOND-LLM CHECK/);
+    // New one-line output contract — the compression's biggest LLM-cost win.
+    expect(out).toMatch(/✓ FAST-RETRY CHECKS PASSED — approve on Ledger \(hash /);
+    expect(out).toMatch(/✗ CHECK <A\|B\|C> FAILED — DO NOT SIGN:/);
 
-    // Fallback instruction if the agent has no memory of the prior approval.
-    expect(out).toMatch(/DO NOT trust this FAST-RETRY header/);
+    // Security-critical: no-session-memory fallback kept verbatim in spirit.
+    expect(out).toMatch(/I don't recognize this prior approval/);
 
-    // v1.5 measurement instrumentation: the abridged CHECK A script drops
-    // @solana/web3.js entirely (inline base58) and prints a timingsMs JSON
-    // object so the user can attribute latency. Surface via a ⏱ Timings
-    // line in the CHECKS PERFORMED template.
+    // Security-critical: second-LLM escape hatch still points at the right tool.
+    expect(out).toMatch(/get_verification_artifact/);
+
+    // v1.5 inline base58 (no @solana/web3.js) + timingsMs still present.
     expect(out).not.toMatch(/require\('@solana\/web3\.js'\)/);
     expect(out).toMatch(/timingsMs/);
-    expect(out).toMatch(/⏱ Timings:/);
+
+    // Hard compression ceiling — the abridged block must stay ≤40 lines
+    // (it was ~120 before v1.6). Going over this without updating the
+    // ceiling means the compression has regressed and needs a look.
+    expect(out.split("\n").length).toBeLessThanOrEqual(40);
   });
 
   it("the full template renders when tx.fastRetry is absent on marginfi_borrow", () => {
