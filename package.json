@@ -141,7 +141,8 @@
   },
   "overrides": {
     "uuid": "^14.0.0",
-    "hono": "^4.12.14"
+    "hono": "^4.12.14",
+    "@solana/web3.js": "$@solana/web3.js"
   },
   "engines": {
     "node": ">=18.17.0"
