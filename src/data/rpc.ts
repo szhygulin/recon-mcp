@@ -32,24 +32,24 @@ export function getClient(chain: SupportedChain): PublicClient {
   // requests are slower but never ghost-fail. Users on premium endpoints can opt back in
   // via RPC_BATCH=1. Multicall3 still batches at the contract layer regardless.
   const batchEnabled = process.env.RPC_BATCH === "1";
-  // retryCount/retryDelay: viem's http transport retries on 429 (and other
-  // transient 4xx/5xx) by default using exponential backoff with
-  // `retryDelay * 2^attempt` per retry. The previous `3 / 500ms` setting
-  // gave a worst-case of ~3.5s (500, 1000, 2000) which wasn't enough to
-  // ride out sustained Infura rate-limit windows — issue #88 trace showed
-  // Morpho + Lido + cross-chain Compound all collateral-damaged during
-  // portfolio fan-outs. Bumping to `5 / 600ms` gives 600/1200/2400/4800/
-  // 9600ms (~18.6s worst-case) which covers most free-tier burst windows
-  // without blocking user-visible calls absurdly long. 429-aware retry is
-  // universal here (applies to every chain + tool), complementing the
-  // per-tool caching (e.g. Morpho discovery) that cuts the pressure at
-  // its source.
+  // retryCount/retryDelay: viem's http transport retries on 429 (and
+  // other transient 4xx/5xx) with exponential backoff `retryDelay *
+  // 2^attempt`. An earlier iteration bumped these to 5/600ms to ride out
+  // sustained Infura saturation; live testing (#88 trace, 6-minute hangs
+  // on multi-wallet portfolio fan-outs) showed that aggressive retry
+  // multiplies wall-clock pain under rate-limit — each retry attempt adds
+  // 600ms-10s of blocked time, and when hundreds of calls retry in
+  // parallel, the user watches the tool "think" for minutes before any
+  // coverage fails. Correct direction: REDUCE requests at the source
+  // (Morpho discovery is now opt-in, the dominant hotspot) rather than
+  // retry harder. Original `3/500` stays — worst-case ~3.5s is a sane
+  // bound for a request that's going to fail anyway.
   const client = createPublicClient({
     chain: VIEM_CHAINS[chain],
     transport: http(url, {
       batch: batchEnabled,
-      retryCount: 5,
-      retryDelay: 600,
+      retryCount: 3,
+      retryDelay: 500,
     }),
   });
   clients.set(chain, client);

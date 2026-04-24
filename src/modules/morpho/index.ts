@@ -133,17 +133,49 @@ async function readMarketPosition(
   };
 }
 
+/**
+ * Environment flag that enables automatic Morpho Blue market-id discovery
+ * via event-log scan. Default OFF because discovery is ~300 chunked
+ * `eth_getLogs` calls per wallet per chain on mainnet — the dominant
+ * source of Infura 429s in #88 traces. Users who actively hold Morpho
+ * positions opt in with `VAULTPILOT_MORPHO_DISCOVERY=1` (or pass explicit
+ * `marketIds` to this tool, which bypasses the flag entirely for a
+ * fast-path read).
+ */
+function morphoDiscoveryEnabled(): boolean {
+  return process.env.VAULTPILOT_MORPHO_DISCOVERY === "1";
+}
+
 export async function getMorphoPositions(
   args: GetMorphoPositionsArgs
-): Promise<{ wallet: `0x${string}`; positions: MorphoPosition[] }> {
+): Promise<{
+  wallet: `0x${string}`;
+  positions: MorphoPosition[];
+  /**
+   * True iff we hit the discovery path AND the opt-in env var was unset,
+   * so discovery was skipped without RPC calls. The aggregator surfaces
+   * this as a non-errored "covered:false" status with a note pointing at
+   * the opt-in mechanism — distinct from an errored/429 coverage.morpho.
+   */
+  discoverySkipped?: boolean;
+}> {
   const wallet = args.wallet as `0x${string}`;
   const chain = args.chain as SupportedChain;
   const morpho = morphoAddress(chain);
   if (!morpho) {
     return { wallet, positions: [] };
   }
-  const marketIds = (args.marketIds as `0x${string}`[] | undefined) ??
-    (await discoverMorphoMarketIds(wallet, chain));
+  const explicitIds = args.marketIds as `0x${string}`[] | undefined;
+  let marketIds: `0x${string}`[];
+  if (explicitIds !== undefined) {
+    marketIds = explicitIds;
+  } else if (morphoDiscoveryEnabled()) {
+    marketIds = await discoverMorphoMarketIds(wallet, chain);
+  } else {
+    // Discovery is opt-in. Return cleanly with a flag so coverage.morpho
+    // becomes an opt-in guidance note rather than an errored coverage.
+    return { wallet, positions: [], discoverySkipped: true };
+  }
   if (marketIds.length === 0) {
     return { wallet, positions: [] };
   }
