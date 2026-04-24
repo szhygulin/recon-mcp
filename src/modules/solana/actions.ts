@@ -109,7 +109,17 @@ export interface SolanaNativeSendParams {
  */
 export interface PreparedSolanaTx {
   handle: string;
-  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close" | "jupiter_swap";
+  action:
+    | "native_send"
+    | "spl_send"
+    | "nonce_init"
+    | "nonce_close"
+    | "jupiter_swap"
+    | "marginfi_init"
+    | "marginfi_supply"
+    | "marginfi_withdraw"
+    | "marginfi_borrow"
+    | "marginfi_repay";
   chain: "solana";
   from: string;
   description: string;

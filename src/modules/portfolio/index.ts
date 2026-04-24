@@ -12,12 +12,15 @@ import { getMorphoPositions } from "../morpho/index.js";
 import { getTronBalances } from "../tron/balances.js";
 import { getTronStaking } from "../tron/staking.js";
 import { getSolanaBalances } from "../solana/balances.js";
+import { getMarginfiPositions as readMarginfiPositions } from "../positions/marginfi.js";
+import { getSolanaConnection } from "../solana/rpc.js";
 import type { GetPortfolioSummaryArgs } from "./schemas.js";
 import type {
   LendingPositionUnion,
   MultiWalletPortfolioSummary,
   PortfolioCoverage,
   PortfolioSummary,
+  SolanaMarginfiPositionSlice,
   SolanaPortfolioSlice,
   SupportedChain,
   TokenAmount,
@@ -304,6 +307,7 @@ async function buildWalletSummary(
     tron: false,
     tronStaking: false,
     solana: false,
+    marginfi: false,
   };
   // Per-market Compound V3 failure detail, populated when at least one market
   // read errored. Surfaced in coverage.compound.note so the agent can tell
@@ -341,6 +345,7 @@ async function buildWalletSummary(
     tronSlice,
     tronStakingSlice,
     solanaSlice,
+    marginfiPositionsRaw,
   ] = await Promise.all([
       Promise.all(
         chains.map((c) =>
@@ -465,6 +470,18 @@ async function buildWalletSummary(
             return null as SolanaPortfolioSlice | null;
           })
         : (Promise.resolve(null) as Promise<SolanaPortfolioSlice | null>),
+      // MarginFi positions ride the same "solanaAddress was passed" gate as
+      // Solana balances. The reader deliberately short-circuits when the
+      // wallet has no MarginfiAccount (1 RPC lookup, then return []) so the
+      // cost of the idle case is essentially free.
+      solanaAddress
+        ? readMarginfiPositions(getSolanaConnection(), solanaAddress).catch(() => {
+            errors.marginfi = true;
+            return [] as Awaited<ReturnType<typeof readMarginfiPositions>>;
+          })
+        : (Promise.resolve([]) as Promise<
+            Awaited<ReturnType<typeof readMarginfiPositions>>
+          >),
     ]);
   const morphoPositions = morphoByChain.flatMap((r) => r.positions);
 
@@ -483,6 +500,36 @@ async function buildWalletSummary(
   const tronBalancesUsd = tronSlice?.walletBalancesUsd ?? 0;
   const tronStakingUsd = tronStakingSlice?.totalStakedUsd ?? 0;
   const solanaBalancesUsd = solanaSlice?.walletBalancesUsd ?? 0;
+  // Project the reader's full MarginfiPosition into the thin slice the
+  // types module exposes. Dropping bank/mint keeps the portfolio JSON
+  // compact — callers who want the full per-bank detail call
+  // get_marginfi_positions directly.
+  const marginfiSlices: SolanaMarginfiPositionSlice[] = marginfiPositionsRaw.map(
+    (pos) => ({
+      protocol: "marginfi",
+      chain: "solana",
+      marginfiAccount: pos.marginfiAccount,
+      supplied: pos.supplied.map((b) => ({
+        symbol: b.symbol,
+        amount: b.amount,
+        valueUsd: b.valueUsd,
+      })),
+      borrowed: pos.borrowed.map((b) => ({
+        symbol: b.symbol,
+        amount: b.amount,
+        valueUsd: b.valueUsd,
+      })),
+      totalSuppliedUsd: pos.totalSuppliedUsd,
+      totalBorrowedUsd: pos.totalBorrowedUsd,
+      netValueUsd: pos.netValueUsd,
+      healthFactor: pos.healthFactor,
+      warnings: pos.warnings,
+    }),
+  );
+  const solanaLendingUsd = marginfiSlices.reduce(
+    (s, p) => s + p.netValueUsd,
+    0,
+  );
   const walletBalancesUsd = round(
     [...native, ...erc20].reduce((sum, t) => sum + (t.valueUsd ?? 0), 0) +
       tronBalancesUsd +
@@ -503,7 +550,12 @@ async function buildWalletSummary(
   // is surfaced separately (Phase 2 for Solana staking). EVM-only slices
   // (lending/LP/staking) are added here.
   const totalUsd = round(
-    walletBalancesUsd + lendingNetUsd + lpUsd + stakingUsd + tronStakingUsd,
+    walletBalancesUsd +
+      lendingNetUsd +
+      lpUsd +
+      stakingUsd +
+      tronStakingUsd +
+      solanaLendingUsd,
     2
   );
 
@@ -612,6 +664,13 @@ async function buildWalletSummary(
           solana: errors.solana
             ? { covered: false, errored: true, note: "Solana balance fetch failed — SOL/SPL not included in totals. Check SOLANA_RPC_URL or the solanaRpcUrl config." }
             : { covered: true },
+          marginfi: errors.marginfi
+            ? {
+                covered: false,
+                errored: true,
+                note: "MarginFi position fetch failed — lending positions not included in totals. SDK or oracle RPC error; balances still loaded if coverage.solana is covered.",
+              }
+            : { covered: true },
         }
       : {}),
     unpricedAssets,
@@ -650,6 +709,9 @@ async function buildWalletSummary(
     ...(tronBreakdown ? { tronUsd: tronUsdTotal } : {}),
     ...(tronStakingSlice ? { tronStakingUsd: round(tronStakingUsd, 2) } : {}),
     ...(solanaSlice ? { solanaUsd: round(solanaBalancesUsd, 2) } : {}),
+    ...(marginfiSlices.length > 0
+      ? { solanaLendingUsd: round(solanaLendingUsd, 2) }
+      : {}),
     breakdown: {
       native,
       erc20,
@@ -657,7 +719,19 @@ async function buildWalletSummary(
       lp: lp.positions,
       staking: staking.positions,
       ...(tronBreakdown ? { tron: tronBreakdown } : {}),
-      ...(solanaSlice ? { solana: solanaSlice } : {}),
+      ...(solanaSlice
+        ? {
+            solana: {
+              ...solanaSlice,
+              ...(marginfiSlices.length > 0
+                ? {
+                    marginfi: marginfiSlices,
+                    marginfiNetUsd: round(solanaLendingUsd, 2),
+                  }
+                : {}),
+            },
+          }
+        : {}),
     },
     coverage,
   };

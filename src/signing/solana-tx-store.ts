@@ -39,7 +39,17 @@ const TX_TTL_MS = 15 * 60_000;
  * cost, etc. Mirrors the non-message fields of `UnsignedSolanaTx`.
  */
 export interface SolanaDraftMeta {
-  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close" | "jupiter_swap";
+  action:
+    | "native_send"
+    | "spl_send"
+    | "nonce_init"
+    | "nonce_close"
+    | "jupiter_swap"
+    | "marginfi_init"
+    | "marginfi_supply"
+    | "marginfi_withdraw"
+    | "marginfi_borrow"
+    | "marginfi_repay";
   from: string;
   description: string;
   decoded: {

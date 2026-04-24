@@ -63,6 +63,14 @@ import {
   prepareSolanaNonceClose,
   getSolanaSwapQuote,
   prepareSolanaSwap,
+  prepareMarginfiInit,
+  prepareMarginfiSupply,
+  prepareMarginfiWithdraw,
+  prepareMarginfiBorrow,
+  prepareMarginfiRepay,
+  getMarginfiPositions,
+  getMarginfiDiagnostics,
+  getSolanaSetupStatus,
   prepareAaveSupply,
   prepareAaveWithdraw,
   prepareAaveBorrow,
@@ -91,6 +99,14 @@ import {
   prepareSolanaNonceCloseInput,
   getSolanaSwapQuoteInput,
   prepareSolanaSwapInput,
+  prepareMarginfiInitInput,
+  prepareMarginfiSupplyInput,
+  prepareMarginfiWithdrawInput,
+  prepareMarginfiBorrowInput,
+  prepareMarginfiRepayInput,
+  getMarginfiPositionsInput,
+  getMarginfiDiagnosticsInput,
+  getSolanaSetupStatusInput,
   getLedgerStatusInput,
   prepareAaveSupplyInput,
   prepareAaveWithdrawInput,
@@ -1287,6 +1303,142 @@ async function main() {
       inputSchema: prepareSolanaSwapInput.shape,
     },
     handler(prepareSolanaSwap)
+  );
+
+  server.registerTool(
+    "prepare_marginfi_init",
+    {
+      description:
+        "One-time setup: build a tx that creates a deterministic MarginfiAccount PDA " +
+        "under the user's wallet on MarginFi mainnet. Uses `marginfi_account_initialize_pda` " +
+        "so only the wallet (authority + fee_payer) signs — no ephemeral keypair required, " +
+        "Ledger-compatible. PDA seeds are [\"marginfi_account\", group, wallet, accountIndex, 0], " +
+        "with `accountIndex` defaulting to 0. After broadcast, `prepare_marginfi_supply / " +
+        "withdraw / borrow / repay` for this wallet will use this MarginfiAccount automatically. " +
+        "COST: ~0.01698 SOL rent-exempt minimum (for the 2312-byte PDA) + ~0.000005 SOL tx fee. " +
+        "The rent is PAID FROM THE USER WALLET DIRECTLY (not via an ephemeral keypair) and is " +
+        "reclaimable when the MarginfiAccount is closed. Surface this cost to the user before " +
+        "they approve on Ledger — the blind-sign screen only shows a Message Hash, so the user " +
+        "has no on-device check of the balance delta. " +
+        "DURABLE NONCE REQUIRED: this tx carries ix[0] = nonceAdvance (same pattern as every " +
+        "other Solana send in this server), so the wallet must have run `prepare_solana_nonce_init` " +
+        "first; otherwise this tool errors with a clear pointer. BLIND-SIGN on Ledger (MarginFi's " +
+        "program ID is not in the Solana app's clear-sign registry) — the user matches the Message " +
+        "Hash on-device after `preview_solana_send`. Refuses if a MarginfiAccount already exists at " +
+        "the derived PDA.",
+      inputSchema: prepareMarginfiInitInput.shape,
+    },
+    handler(prepareMarginfiInit)
+  );
+
+  server.registerTool(
+    "prepare_marginfi_supply",
+    {
+      description:
+        "Build an unsigned MarginFi SUPPLY tx for a given bank (by symbol or mint). " +
+        "Supplies the specified amount of the underlying token into the user's MarginfiAccount " +
+        "position in that bank, earning the bank's supply APY. DURABLE NONCE REQUIRED + " +
+        "prepare_marginfi_init must have run first; otherwise this tool errors. Pre-flight: " +
+        "bank-pause check; invalid-mint check (MarginFi only lists a subset of SPL tokens). " +
+        "Uses v0 VersionedTransaction + MarginFi group ALTs for compact wire size. BLIND-SIGN " +
+        "on Ledger — match the Message Hash on-device after `preview_solana_send`.",
+      inputSchema: prepareMarginfiSupplyInput.shape,
+    },
+    handler(prepareMarginfiSupply)
+  );
+
+  server.registerTool(
+    "prepare_marginfi_withdraw",
+    {
+      description:
+        "Build an unsigned MarginFi WITHDRAW tx. Withdraws the specified amount (or ALL, via " +
+        "`withdrawAll: true`) from the user's supplied position in the named bank. Pre-flight " +
+        "refuses if the account has zero free collateral (the withdraw would push the health " +
+        "factor below the maintenance threshold — the on-chain tx would revert). DURABLE NONCE + " +
+        "prepare_marginfi_init prerequisites identical to prepare_marginfi_supply. BLIND-SIGN on " +
+        "Ledger.",
+      inputSchema: prepareMarginfiWithdrawInput.shape,
+    },
+    handler(prepareMarginfiWithdraw)
+  );
+
+  server.registerTool(
+    "prepare_marginfi_borrow",
+    {
+      description:
+        "Build an unsigned MarginFi BORROW tx against the user's supplied collateral. " +
+        "Pre-flight refuses if the account has zero free collateral. The SDK computes the " +
+        "required oracle-refresh instructions and the health-factor gate is enforced on-chain " +
+        "— but this tool is the right place to surface a clear error rather than burning SOL " +
+        "on a reverting tx. DURABLE NONCE + prepare_marginfi_init prerequisites identical to " +
+        "prepare_marginfi_supply. BLIND-SIGN on Ledger.",
+      inputSchema: prepareMarginfiBorrowInput.shape,
+    },
+    handler(prepareMarginfiBorrow)
+  );
+
+  server.registerTool(
+    "prepare_marginfi_repay",
+    {
+      description:
+        "Build an unsigned MarginFi REPAY tx against outstanding debt in the named bank. " +
+        "Pass `repayAll: true` to repay the full outstanding debt (also clears the balance " +
+        "slot). DURABLE NONCE + prepare_marginfi_init prerequisites identical to " +
+        "prepare_marginfi_supply. BLIND-SIGN on Ledger.",
+      inputSchema: prepareMarginfiRepayInput.shape,
+    },
+    handler(prepareMarginfiRepay)
+  );
+
+  server.registerTool(
+    "get_solana_setup_status",
+    {
+      description:
+        "READ-ONLY — probe which one-time setup pieces are already in place for a Solana " +
+        "wallet: the durable-nonce account (exists / address / current nonce value / authority) " +
+        "and the set of MarginfiAccount PDAs (index + address). Call this BEFORE planning a " +
+        "multi-step Solana flow (nonce init → MarginFi init → supply) so agents can skip " +
+        "redundant prepare_* calls instead of re-proposing them and letting the user correct " +
+        "you. Mirrors the get_ledger_status pattern of cheap chain-read setup introspection. " +
+        "One getAccountInfo per probed PDA; no SDK load, no oracle fetch. Returns empty " +
+        "arrays / exists:false when nothing's set up — never throws for an empty wallet.",
+      inputSchema: getSolanaSetupStatusInput.shape,
+    },
+    handler(getSolanaSetupStatus)
+  );
+
+  server.registerTool(
+    "get_marginfi_positions",
+    {
+      description:
+        "READ-ONLY — enumerate a Solana wallet's MarginFi lending positions. Probes the first 4 " +
+        "MarginfiAccount PDAs under the wallet (accountIndex 0..3) and returns one entry per " +
+        "existing account. Each entry reports the supplied and borrowed balances per bank " +
+        "(human amount + USD value), aggregate totals, and the health factor " +
+        "(assets/liabilities, >1 safe, <1 liquidatable, Infinity when no debt). Bank-level " +
+        "pause warnings surface in the `warnings` field. Parallel to EVM's `get_compound_positions` " +
+        "/ `get_morpho_positions`. Returns an empty array when the wallet has no MarginfiAccount.",
+      inputSchema: getMarginfiPositionsInput.shape,
+    },
+    handler(getMarginfiPositions)
+  );
+
+  server.registerTool(
+    "get_marginfi_diagnostics",
+    {
+      description:
+        "READ-ONLY — diagnostic surface for the hardened MarginFi client load. Returns the list " +
+        "of banks the bundled SDK (v6.4.1, IDL 0.1.7) had to skip while fetching the production " +
+        "group, with each record carrying the bank address, best-effort mint + symbol (recovered " +
+        "from raw bytes even when Borsh decode fails), the step where the skip happened " +
+        "(`decode` / `hydrate` / `tokenData` / `priceInfo`), and the raw error reason. Call this " +
+        "when `prepare_marginfi_*` reports that a mint you know is listed on mainnet (e.g. USDC) " +
+        "was missed — it will either name the bank explicitly as skipped with the root cause, or " +
+        "confirm the mint truly isn't in the current group. The snapshot reflects the most recent " +
+        "`fetchGroupData` pass in this process; an empty cache is warmed on demand. No input args.",
+      inputSchema: getMarginfiDiagnosticsInput.shape,
+    },
+    handler(getMarginfiDiagnostics)
   );
 
   server.registerTool(

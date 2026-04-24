@@ -849,7 +849,17 @@ export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification:
  */
 export interface RenderableSolanaPrepareResult {
   handle: string;
-  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close" | "jupiter_swap";
+  action:
+    | "native_send"
+    | "spl_send"
+    | "nonce_init"
+    | "nonce_close"
+    | "jupiter_swap"
+    | "marginfi_init"
+    | "marginfi_supply"
+    | "marginfi_withdraw"
+    | "marginfi_borrow"
+    | "marginfi_repay";
   from: string;
   description: string;
   decoded: { functionName: string; args: Record<string, string> };
@@ -877,6 +887,16 @@ function solanaActionLabel(action: RenderableSolanaPrepareResult["action"]): str
       return "durable-nonce close (reclaim rent-exempt seed)";
     case "jupiter_swap":
       return "Jupiter swap";
+    case "marginfi_init":
+      return "MarginFi account init (one-time setup)";
+    case "marginfi_supply":
+      return "MarginFi supply";
+    case "marginfi_withdraw":
+      return "MarginFi withdraw";
+    case "marginfi_borrow":
+      return "MarginFi borrow";
+    case "marginfi_repay":
+      return "MarginFi repay";
   }
 }
 
@@ -934,6 +954,19 @@ export function renderSolanaPrepareSummaryBlock(
 export function renderSolanaPrepareAgentTaskBlock(
   r: RenderableSolanaPrepareResult,
 ): string {
+  const isMarginfi = r.action.startsWith("marginfi_");
+  const marginfiActionWord =
+    r.action === "marginfi_init"
+      ? "MarginFi account init"
+      : r.action === "marginfi_supply"
+        ? "MarginFi supply"
+        : r.action === "marginfi_withdraw"
+          ? "MarginFi withdraw"
+          : r.action === "marginfi_borrow"
+            ? "MarginFi borrow"
+            : r.action === "marginfi_repay"
+              ? "MarginFi repay"
+              : null;
   const actionWord =
     r.action === "native_send"
       ? "native SOL send"
@@ -941,7 +974,11 @@ export function renderSolanaPrepareAgentTaskBlock(
         ? "SPL send"
         : r.action === "nonce_init"
           ? "durable-nonce init"
-          : "durable-nonce close";
+          : r.action === "nonce_close"
+            ? "durable-nonce close"
+            : r.action === "jupiter_swap"
+              ? "Jupiter swap"
+              : marginfiActionWord ?? "Solana tx";
   const nonceBullet =
     r.nonceAccount && r.action !== "nonce_init"
       ? ["  - Nonce: <short nonce-account addr>"]
@@ -976,16 +1013,60 @@ export function renderSolanaPrepareAgentTaskBlock(
               "  - Fee: <est. fee in SOL>",
               "  - Note: one-time setup; reclaimable via prepare_solana_nonce_close",
             ]
-          : [
-              // nonce_close
-              "  - Headline: \"Prepared durable-nonce close — returning <balance> SOL to main wallet\"",
-              "  - Wallet: <from address>",
-              "  - Nonce account: <will be destroyed after this tx>",
-              "  - Destination: <from address (returns to the same wallet)>",
-              "  - Withdraw amount: <balance in SOL>",
-              ...nonceBullet,
-              "  - Fee: <est. fee in SOL>",
-            ];
+          : r.action === "nonce_close"
+            ? [
+                "  - Headline: \"Prepared durable-nonce close — returning <balance> SOL to main wallet\"",
+                "  - Wallet: <from address>",
+                "  - Nonce account: <will be destroyed after this tx>",
+                "  - Destination: <from address (returns to the same wallet)>",
+                "  - Withdraw amount: <balance in SOL>",
+                ...nonceBullet,
+                "  - Fee: <est. fee in SOL>",
+              ]
+            : r.action === "jupiter_swap"
+              ? [
+                  "  - Headline: \"Prepared Solana swap — <inputAmount> <inputSymbol> → <outputAmount> <outputSymbol> via Jupiter\"",
+                  "  - From: <from address>",
+                  "  - Input mint: <inputMint from decoded.args> (<inputSymbol if known>)",
+                  "  - Output mint: <outputMint from decoded.args> (<outputSymbol if known>)",
+                  "  - Expected output: <outputAmount> <outputSymbol> (min <minOutput> @ <slippageBps> bps)",
+                  "  - Route: <route labels joined with →, from decoded.args.route>",
+                  "  - Price impact: <priceImpactPct>%",
+                  ...nonceBullet,
+                  "  - Fee: <est. fee in SOL (priority + base)>",
+                ]
+              : r.action === "marginfi_init"
+                ? [
+                    "  - Headline: \"Prepared MarginFi account init — <short PDA>\"",
+                    "  - Wallet: <from address>",
+                    "  - MarginfiAccount PDA: <marginfiAccount from decoded.args>",
+                    "  - Account index: <accountIndex from decoded.args, default 0>",
+                    ...nonceBullet,
+                    "  - Rent: ~0.017 SOL (rent-exempt minimum for the MarginfiAccount PDA; reclaimable when the account is closed)",
+                    "  - Fee: <est. fee in SOL>",
+                  ]
+                : isMarginfi
+                  ? [
+                      // marginfi_supply / withdraw / borrow / repay — same
+                      // shape; the action word differentiates the headline.
+                      `  - Headline: \"Prepared ${marginfiActionWord} — <amount> <symbol>\"`,
+                      "  - Wallet: <from address>",
+                      "  - MarginfiAccount: <marginfiAccount from decoded.args>",
+                      "  - Bank: <bank from decoded.args> (<symbol>)",
+                      "  - Amount: <human amount + symbol>",
+                      ...nonceBullet,
+                      "  - Fee: <est. fee in SOL>",
+                    ]
+                  : [
+                      // Fallback for any newly-added Solana action that
+                      // hasn't been wired up here yet — surface a generic
+                      // shape rather than reusing the nonce_close template
+                      // (which was #97's silent-mismatch bug).
+                      `  - Headline: \"Prepared ${actionWord}\"`,
+                      "  - From: <from address>",
+                      ...nonceBullet,
+                      "  - Fee: <est. fee in SOL>",
+                    ];
   const closingLine =
     r.action === "nonce_init"
       ? '  "Reply \'send\' to continue — I\'ll pin a fresh blockhash (this init tx is the one exception that uses legacy-blockhash mode), run the mandatory integrity checks, and surface the Ledger Message Hash for you to match on-device."'
@@ -1123,6 +1204,24 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
   const isNonceInit = tx.action === "nonce_init";
   const isNonceClose = tx.action === "nonce_close";
   const isJupiterSwap = tx.action === "jupiter_swap";
+  const isMarginfi =
+    tx.action === "marginfi_init" ||
+    tx.action === "marginfi_supply" ||
+    tx.action === "marginfi_withdraw" ||
+    tx.action === "marginfi_borrow" ||
+    tx.action === "marginfi_repay";
+  const marginfiActionLabel =
+    tx.action === "marginfi_init"
+      ? "account init"
+      : tx.action === "marginfi_supply"
+        ? "supply"
+        : tx.action === "marginfi_withdraw"
+          ? "withdraw"
+          : tx.action === "marginfi_borrow"
+            ? "borrow"
+            : tx.action === "marginfi_repay"
+              ? "repay"
+              : null;
 
   // SPECIAL CASE — nonce_init is the one Solana action where ALL the
   // standard checks are pure ceremony. Why:
@@ -1190,14 +1289,14 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
   // as ix[0] — this flag drives the "DURABLE-NONCE MODE" explainer text +
   // the Nonce bullet in the summary + the expected-shape text for CHECK 1.
   const hasAdvanceNonceIx =
-    isNativeSend || isSpl || isNonceClose || isJupiterSwap;
+    isNativeSend || isSpl || isNonceClose || isJupiterSwap || isMarginfi;
   // The Ledger Solana app only clear-signs a small allowlist of programs
   // (System Program's transfer/advance/initialize/withdraw, and a few
   // others). Everything else falls to blind-sign, which shows only the
   // Message Hash on-device and requires the user to match it against the
   // hash the server displayed. SPL TransferChecked AND Jupiter swaps both
   // fall in that bucket.
-  const isBlindSign = isSpl || isJupiterSwap;
+  const isBlindSign = isSpl || isJupiterSwap || isMarginfi;
   const ledgerHash = isBlindSign ? solanaLedgerMessageHash(tx.messageBase64) : null;
 
   const checksPayload = {
@@ -1206,7 +1305,7 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
       threat: "MCP-side Solana message tampering",
       keywords: ["Solana", "tampering"],
     },
-    ...(isSpl
+    ...(isBlindSign
       ? {
           pairConsistencyLedgerHash: {
             autoRun: true,
@@ -1264,18 +1363,39 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
               ...(nonceBullet ? [nonceBullet] : []),
               "  - Fee: <fee in SOL>",
             ]
-          : [
-              // jupiter_swap
-              "  - Headline: \"Prepared Solana swap — <inputAmount> <inputSymbol> → <outputAmount> <outputSymbol> via Jupiter\"",
-              "  - From: <from address>",
-              "  - Input mint: <inputMint> (<inputSymbol if known>)",
-              "  - Output mint: <outputMint> (<outputSymbol if known>)",
-              "  - Expected output: <outputAmount> <outputSymbol> (min <minOutput> @ <slippageBps> bps)",
-              "  - Route: <route labels joined with →, from decoded.args.route>",
-              "  - Price impact: <priceImpactPct>%",
-              ...(nonceBullet ? [nonceBullet] : []),
-              "  - Fee: <fee in SOL (priority + base)>",
-            ];
+          : isJupiterSwap
+            ? [
+                "  - Headline: \"Prepared Solana swap — <inputAmount> <inputSymbol> → <outputAmount> <outputSymbol> via Jupiter\"",
+                "  - From: <from address>",
+                "  - Input mint: <inputMint> (<inputSymbol if known>)",
+                "  - Output mint: <outputMint> (<outputSymbol if known>)",
+                "  - Expected output: <outputAmount> <outputSymbol> (min <minOutput> @ <slippageBps> bps)",
+                "  - Route: <route labels joined with →, from decoded.args.route>",
+                "  - Price impact: <priceImpactPct>%",
+                ...(nonceBullet ? [nonceBullet] : []),
+                "  - Fee: <fee in SOL (priority + base)>",
+              ]
+            : tx.action === "marginfi_init"
+              ? [
+                  "  - Headline: \"Prepared MarginFi account init — <short PDA>\"",
+                  "  - Wallet: <from address>",
+                  "  - MarginfiAccount PDA: <marginfiAccount from decoded.args>",
+                  "  - Account index: <accountIndex from decoded.args, default 0>",
+                  ...(nonceBullet ? [nonceBullet] : []),
+                  "  - Fee: <est. fee in SOL>",
+                  "  - Note: one-time deterministic PDA — no rent-exempt seed moved",
+                ]
+              : [
+                  // marginfi_supply / withdraw / borrow / repay — same shape,
+                  // only the "Action" bullet text differs; keep one template.
+                  `  - Headline: \"Prepared MarginFi ${marginfiActionLabel} — <amount> <symbol>\"`,
+                  "  - Wallet: <from address>",
+                  "  - MarginfiAccount: <marginfiAccount from decoded.args>",
+                  "  - Bank: <bank from decoded.args> (<symbol>)",
+                  "  - Amount: <human amount + symbol>",
+                  ...(nonceBullet ? [nonceBullet] : []),
+                  "  - Fee: <est. fee in SOL>",
+                ];
 
   const inspectorUrl = solanaInspectorUrl(tx.messageBase64);
 
@@ -1499,9 +1619,15 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
     "        (protects against a coordinated agent compromise)",
     "    ────────────────────────────────",
     "    NEXT ON-DEVICE — final check happens on your Ledger screen:",
-    ...(isSpl || isJupiterSwap
+    ...(isBlindSign
       ? [
-          `      • BLIND-SIGN (this tx — ${isJupiterSwap ? "Jupiter routing" : "SPL TransferChecked"} is not in the Solana app's clear-sign registry, so the device shows only 'Message Hash'):`,
+          `      • BLIND-SIGN (this tx — ${
+            isJupiterSwap
+              ? "Jupiter routing"
+              : isMarginfi
+                ? `MarginFi ${marginfiActionLabel}`
+                : "SPL TransferChecked"
+          } is not in the Solana app's clear-sign registry, so the device shows only 'Message Hash'):`,
           `          check the value on-device is exactly **\`${ledgerHash}\`**.`,
           "          Any difference → REJECT.",
           "          Prerequisite: Allow blind signing must be ON in Solana app Settings.",

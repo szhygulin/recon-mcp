@@ -122,6 +122,7 @@
     "@ledgerhq/hw-transport-node-hid": "^6.32.1",
     "@lifi/sdk": "^3.16.3",
     "@modelcontextprotocol/sdk": "^1.0.4",
+    "@mrgnlabs/marginfi-client-v2": "^6.4.1",
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
     "@walletconnect/sign-client": "^2.17.0",
@@ -140,7 +141,8 @@
   },
   "overrides": {
     "uuid": "^14.0.0",
-    "hono": "^4.12.14"
+    "hono": "^4.12.14",
+    "@solana/web3.js": "$@solana/web3.js"
   },
   "engines": {
     "node": ">=18.17.0"

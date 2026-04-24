@@ -155,6 +155,68 @@ describe("renderSolanaPrepareAgentTaskBlock", () => {
     // Don't pre-decode or fabricate a hash at prepare time.
     expect(block).toContain("Do NOT fabricate a hash");
   });
+
+  // Issue #97 regression: jupiter_swap used to fall through to the
+  // nonce_close template, misleading agents into rendering "returning X
+  // SOL to main wallet" for an actual token swap.
+  it("jupiter_swap: emits the Jupiter-shaped summary, not the nonce_close fallback", () => {
+    const block = renderSolanaPrepareAgentTaskBlock({
+      handle: "jup-1",
+      action: "jupiter_swap",
+      from: "4FLpszPQR1Cno8TDnEwYHzxhQSJQAWvb7mMzynArAQGf",
+      description: "Swap 1 USDC → 0.011 SOL via Jupiter",
+      decoded: {
+        functionName: "solana.jupiter.swap",
+        args: { route: "HumidiFi", slippageBps: "50" },
+      },
+      nonceAccount: "NoncE11111111111111111111111111111111111111",
+    });
+    expect(block).toContain("Prepared Solana swap");
+    expect(block).toContain("Jupiter");
+    expect(block).toContain("Route: <route labels");
+    expect(block).toContain("Price impact");
+    // The bug shape — nonce_close template leaking into swap UX.
+    expect(block).not.toContain("Prepared durable-nonce close");
+    expect(block).not.toContain("returning <balance> SOL to main wallet");
+  });
+
+  it("marginfi_supply: emits MarginFi-shaped summary, not nonce_close fallback", () => {
+    const block = renderSolanaPrepareAgentTaskBlock({
+      handle: "mfn-1",
+      action: "marginfi_supply",
+      from: "4FLpszPQR1Cno8TDnEwYHzxhQSJQAWvb7mMzynArAQGf",
+      description: "MarginFi supply 1 USDC",
+      decoded: {
+        functionName: "marginfi.lending_account_deposit",
+        args: { symbol: "USDC", amount: "1 USDC" },
+      },
+      nonceAccount: "NoncE11111111111111111111111111111111111111",
+    });
+    expect(block).toContain("Prepared MarginFi supply");
+    expect(block).toContain("MarginfiAccount");
+    expect(block).toContain("Bank:");
+    expect(block).not.toContain("Prepared durable-nonce close");
+  });
+
+  it("marginfi_init: surfaces the real ~0.017 SOL rent (issue #103)", () => {
+    const block = renderSolanaPrepareAgentTaskBlock({
+      handle: "mfn-init-1",
+      action: "marginfi_init",
+      from: "4FLpszPQR1Cno8TDnEwYHzxhQSJQAWvb7mMzynArAQGf",
+      description: "Initialize MarginfiAccount",
+      decoded: {
+        functionName: "marginfi.account_initialize_pda",
+        args: { accountIndex: "0" },
+      },
+      nonceAccount: "NoncE11111111111111111111111111111111111111",
+    });
+    expect(block).toContain("Prepared MarginFi account init");
+    // The rent line must be present — prior wording implied "no rent
+    // moved", which misled the agent into quoting a 5 µSOL tx-fee-only
+    // cost (actual is ~0.017 SOL).
+    expect(block).toContain("Rent:");
+    expect(block).toMatch(/0\.017|rent-exempt/);
+  });
 });
 
 describe("renderSolanaAgentTaskBlock", () => {

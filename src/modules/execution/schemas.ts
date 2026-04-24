@@ -144,6 +144,137 @@ export const prepareSolanaSwapInput = z.object({
     ),
 });
 
+/**
+ * MarginFi action schemas. `symbol` OR `mint` identifies the bank — pass
+ * either, not both. The builder resolves the symbol via the canonical
+ * SOLANA_TOKENS table; pass `mint` explicitly when the token isn't in that
+ * (small) allowlist but MarginFi does list it.
+ */
+const marginfiBankTarget = {
+  symbol: z
+    .string()
+    .optional()
+    .describe(
+      "Canonical token symbol (USDC, SOL, USDT, JUP, BONK, JTO, mSOL, jitoSOL). " +
+        "The builder resolves this to the underlying mint; MarginFi treats SOL as wSOL internally " +
+        "with auto-wrap/unwrap. Pass `mint` instead if your token isn't in the canonical list."
+    ),
+  mint: solanaAddressSchema
+    .optional()
+    .describe(
+      "Base58 SPL mint address. Used as an override or when the token isn't in the canonical " +
+        "SOLANA_TOKENS table. Exactly one of `symbol` or `mint` must be passed."
+    ),
+  accountIndex: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .optional()
+    .describe(
+      "MarginfiAccount slot (0 = first, 1 = second, ...). Most users stay on 0. " +
+        "Use a different index to segregate positions across multiple MarginfiAccounts " +
+        "owned by the same wallet."
+    ),
+};
+
+export const prepareMarginfiInitInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana wallet that will own the MarginfiAccount PDA. The account is deterministic — " +
+      "seeds (marginfi_account, group, authority, accountIndex, third_party_id=0) produce " +
+      "the same PDA every time. Only the user (authority + fee_payer) signs; no rent-exempt " +
+      "seed is moved (this is a PDA, not a fresh account)."
+  ),
+  accountIndex: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .optional()
+    .describe(
+      "Account slot (default 0). Pass a different index to init a second MarginfiAccount " +
+        "under the same wallet."
+    ),
+});
+
+export const prepareMarginfiSupplyInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana wallet executing the supply. Must have an initialized MarginfiAccount (run " +
+      "prepare_marginfi_init first) AND a durable-nonce account (prepare_solana_nonce_init)."
+  ),
+  ...marginfiBankTarget,
+  amount: z
+    .string()
+    .describe(
+      'Human-readable decimal amount to supply (e.g. "1.5" for 1.5 USDC). Decimals resolved ' +
+        'from the bank\'s mint — do NOT pass raw base units.'
+    ),
+});
+
+export const prepareMarginfiWithdrawInput = z.object({
+  wallet: solanaAddressSchema,
+  ...marginfiBankTarget,
+  amount: z
+    .string()
+    .describe(
+      'Human-readable decimal amount to withdraw. Pre-flight refuses if the withdraw would ' +
+        'push the health factor below the maintenance threshold.'
+    ),
+  withdrawAll: z
+    .boolean()
+    .optional()
+    .describe(
+      "Set true to close the entire supplied position in this bank (lets the SDK pass the " +
+        "`withdraw_all` on-chain flag so the bank clears the balance slot). Omit for partial."
+    ),
+});
+
+export const prepareMarginfiBorrowInput = z.object({
+  wallet: solanaAddressSchema,
+  ...marginfiBankTarget,
+  amount: z
+    .string()
+    .describe(
+      'Human-readable decimal amount to borrow. Pre-flight refuses if the account has zero ' +
+        'free collateral.'
+    ),
+});
+
+export const prepareMarginfiRepayInput = z.object({
+  wallet: solanaAddressSchema,
+  ...marginfiBankTarget,
+  amount: z
+    .string()
+    .describe(
+      'Human-readable decimal amount to repay against outstanding debt in this bank.'
+    ),
+  repayAll: z
+    .boolean()
+    .optional()
+    .describe(
+      "Set true to repay the full outstanding debt in this bank (SDK also clears the balance " +
+        "slot — cheaper for the user if they're closing out). Omit for partial."
+    ),
+});
+
+export const getSolanaSetupStatusInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana wallet to probe. Returns the state of the durable-nonce account " +
+      "(exists / address / lamports / currentNonce / authority) and the list of " +
+      "existing MarginfiAccount PDAs (accountIndex + address) for the wallet. " +
+      "Read-only, no RPC fan-out — one getAccountInfo per probed PDA."
+  ),
+});
+
+export const getMarginfiPositionsInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana wallet to enumerate MarginFi positions for. Probes the first 4 MarginfiAccount " +
+      "PDAs under this wallet (accountIndex 0..3) and returns one entry per existing account."
+  ),
+});
+
+export const getMarginfiDiagnosticsInput = z.object({});
+
 export const getLedgerStatusInput = z.object({});
 
 const baseAaveAction = z.object({
@@ -391,3 +522,10 @@ export type SendTransactionArgs = z.infer<typeof sendTransactionInput>;
 export type GetTransactionStatusArgs = z.infer<typeof getTransactionStatusInput>;
 export type GetTxVerificationArgs = z.infer<typeof getTxVerificationInput>;
 export type GetVerificationArtifactArgs = z.infer<typeof getVerificationArtifactInput>;
+export type PrepareMarginfiInitArgs = z.infer<typeof prepareMarginfiInitInput>;
+export type PrepareMarginfiSupplyArgs = z.infer<typeof prepareMarginfiSupplyInput>;
+export type PrepareMarginfiWithdrawArgs = z.infer<typeof prepareMarginfiWithdrawInput>;
+export type PrepareMarginfiBorrowArgs = z.infer<typeof prepareMarginfiBorrowInput>;
+export type PrepareMarginfiRepayArgs = z.infer<typeof prepareMarginfiRepayInput>;
+export type GetMarginfiPositionsArgs = z.infer<typeof getMarginfiPositionsInput>;
+export type GetSolanaSetupStatusArgs = z.infer<typeof getSolanaSetupStatusInput>;

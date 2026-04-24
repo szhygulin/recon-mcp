@@ -92,6 +92,12 @@ import type {
   PrepareSolanaNonceCloseArgs,
   GetSolanaSwapQuoteArgs,
   PrepareSolanaSwapArgs,
+  PrepareMarginfiInitArgs,
+  PrepareMarginfiSupplyArgs,
+  PrepareMarginfiWithdrawArgs,
+  PrepareMarginfiBorrowArgs,
+  PrepareMarginfiRepayArgs,
+  GetMarginfiPositionsArgs,
   PreviewSendArgs,
   SendTransactionArgs,
   GetTransactionStatusArgs,
@@ -260,6 +266,233 @@ export async function getSolanaSwapQuote(args: GetSolanaSwapQuoteArgs) {
     slippageBps: args.slippageBps,
     swapMode: args.swapMode,
   });
+}
+
+export async function prepareMarginfiInit(
+  args: PrepareMarginfiInitArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildMarginfiInit } = await import("../solana/marginfi.js");
+  const prepared = await buildMarginfiInit({
+    wallet: args.wallet,
+    ...(args.accountIndex !== undefined ? { accountIndex: args.accountIndex } : {}),
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareMarginfiSupply(
+  args: PrepareMarginfiSupplyArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildMarginfiSupply } = await import("../solana/marginfi.js");
+  const prepared = await buildMarginfiSupply({
+    wallet: args.wallet,
+    ...(args.symbol !== undefined ? { symbol: args.symbol } : {}),
+    ...(args.mint !== undefined ? { mint: args.mint } : {}),
+    amount: args.amount,
+    ...(args.accountIndex !== undefined ? { accountIndex: args.accountIndex } : {}),
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareMarginfiWithdraw(
+  args: PrepareMarginfiWithdrawArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildMarginfiWithdraw } = await import("../solana/marginfi.js");
+  const prepared = await buildMarginfiWithdraw({
+    wallet: args.wallet,
+    ...(args.symbol !== undefined ? { symbol: args.symbol } : {}),
+    ...(args.mint !== undefined ? { mint: args.mint } : {}),
+    amount: args.amount,
+    ...(args.accountIndex !== undefined ? { accountIndex: args.accountIndex } : {}),
+    ...(args.withdrawAll !== undefined ? { withdrawAll: args.withdrawAll } : {}),
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareMarginfiBorrow(
+  args: PrepareMarginfiBorrowArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildMarginfiBorrow } = await import("../solana/marginfi.js");
+  const prepared = await buildMarginfiBorrow({
+    wallet: args.wallet,
+    ...(args.symbol !== undefined ? { symbol: args.symbol } : {}),
+    ...(args.mint !== undefined ? { mint: args.mint } : {}),
+    amount: args.amount,
+    ...(args.accountIndex !== undefined ? { accountIndex: args.accountIndex } : {}),
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareMarginfiRepay(
+  args: PrepareMarginfiRepayArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildMarginfiRepay } = await import("../solana/marginfi.js");
+  const prepared = await buildMarginfiRepay({
+    wallet: args.wallet,
+    ...(args.symbol !== undefined ? { symbol: args.symbol } : {}),
+    ...(args.mint !== undefined ? { mint: args.mint } : {}),
+    amount: args.amount,
+    ...(args.accountIndex !== undefined ? { accountIndex: args.accountIndex } : {}),
+    ...(args.repayAll !== undefined ? { repayAll: args.repayAll } : {}),
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function getMarginfiPositions(args: GetMarginfiPositionsArgs) {
+  const { getMarginfiPositions: reader } = await import(
+    "../positions/marginfi.js"
+  );
+  const conn = getSolanaConnection();
+  return { positions: await reader(conn, args.wallet) };
+}
+
+/**
+ * Read-only diagnostic surface for the hardened MarginFi client load.
+ * Returns per-bank skip records (address, best-effort mint, step, reason)
+ * from the last `fetchGroupData` pass in this process — the data that
+ * powers `findBankForMint`'s "bank listed but skipped" branch (issue #107).
+ *
+ * Triggers a fresh load if the cache is cold so the snapshot is always
+ * recent on demand.
+ */
+export async function getMarginfiDiagnostics(
+  _args?: Record<string, never>,
+): Promise<{
+  group: string;
+  fetchedAt: number | null;
+  addressesFetched: number;
+  banksHydrated: number;
+  skippedIntegrator: number;
+  skipped: Array<{
+    address: string;
+    mint: string | null;
+    symbol: string;
+    step: "decode" | "hydrate" | "tokenData" | "priceInfo";
+    reason: string;
+  }>;
+}> {
+  const marginfi = await import("../solana/marginfi.js");
+  const conn = getSolanaConnection();
+  let snap = marginfi.getLastMarginfiGroupDiagnostics();
+  if (!snap) {
+    // Warm the cache — picks a valid pubkey as the stub authority since
+    // the hardened fetch doesn't actually use it, only the SDK's wallet
+    // type-check does.
+    const { PublicKey } = await import("@solana/web3.js");
+    await marginfi.getHardenedMarginfiClient(
+      conn,
+      new PublicKey("11111111111111111111111111111111"),
+    );
+    snap = marginfi.getLastMarginfiGroupDiagnostics();
+  }
+  if (!snap) {
+    return {
+      group: marginfi.__internals.MAINNET_GROUP.toBase58(),
+      fetchedAt: null,
+      addressesFetched: 0,
+      banksHydrated: 0,
+      skippedIntegrator: 0,
+      skipped: [],
+    };
+  }
+  return {
+    group: marginfi.__internals.MAINNET_GROUP.toBase58(),
+    fetchedAt: snap.fetchedAt,
+    addressesFetched: snap.addressesFetched,
+    banksHydrated: snap.banksHydrated,
+    skippedIntegrator: snap.skippedIntegrator,
+    skipped: snap.records.map((r) => ({
+      address: r.address,
+      mint: r.mint,
+      symbol: r.mint
+        ? marginfi.__internals.resolveMintSymbol(r.mint)
+        : "UNKNOWN",
+      step: r.step,
+      reason: r.reason,
+    })),
+  };
+}
+
+/**
+ * Read-only setup probe for a Solana wallet. Returns which one-time-setup
+ * prerequisites are already in place (durable-nonce account + MarginFi
+ * PDAs) so agents planning a supply/borrow/etc. don't re-propose a
+ * redundant prepare_solana_nonce_init or prepare_marginfi_init step.
+ *
+ * Mirrors `get_ledger_status` in spirit: a cheap inspection tool that
+ * turns "ask the user what's set up" into "read the chain". Issue #101.
+ */
+export async function getSolanaSetupStatus(args: {
+  wallet: string;
+}): Promise<{
+  wallet: string;
+  nonce: {
+    exists: boolean;
+    address: string;
+    lamports?: number;
+    currentNonce?: string;
+    authority?: string;
+  };
+  marginfi: {
+    accounts: Array<{ index: number; address: string }>;
+  };
+}> {
+  const { assertSolanaAddress } = await import("../solana/address.js");
+  const { deriveNonceAccountAddress, getNonceAccountValue } = await import(
+    "../solana/nonce.js"
+  );
+  const { deriveMarginfiAccountPda } = await import("../solana/marginfi.js");
+
+  const authority = assertSolanaAddress(args.wallet);
+  const conn = getSolanaConnection();
+
+  // Nonce lookup — one RPC + one decode.
+  const noncePubkey = await deriveNonceAccountAddress(authority);
+  const nonceInfo = await conn.getAccountInfo(noncePubkey, "confirmed");
+  let nonceState: { nonce: string; authority: string } | undefined;
+  let nonceLamports: number | undefined;
+  if (nonceInfo) {
+    nonceLamports = nonceInfo.lamports;
+    try {
+      const v = await getNonceAccountValue(conn, noncePubkey);
+      if (v) {
+        nonceState = { nonce: v.nonce, authority: v.authority.toBase58() };
+      }
+    } catch {
+      // Account exists but isn't a System-owned nonce — surface as
+      // exists:true without the nonce value. Caller should inspect the
+      // lamports + our own nonce tool's refusal to explain.
+    }
+  }
+
+  // MarginFi PDA probe — same 4-slot pattern as getMarginfiPositions, but
+  // stops at the existence check. No SDK load, no oracle fetch — cheap.
+  const marginfiAccounts: Array<{ index: number; address: string }> = [];
+  const MAX_SLOTS = 4;
+  for (let idx = 0; idx < MAX_SLOTS; idx++) {
+    const pda = deriveMarginfiAccountPda(authority, idx);
+    const info = await conn.getAccountInfo(pda, "confirmed");
+    if (!info) {
+      if (marginfiAccounts.length === 0 && idx === 0) break; // common: none
+      break; // gap in the slot sequence
+    }
+    marginfiAccounts.push({ index: idx, address: pda.toBase58() });
+  }
+
+  return {
+    wallet: args.wallet,
+    nonce: {
+      exists: nonceInfo !== null,
+      address: noncePubkey.toBase58(),
+      ...(nonceLamports !== undefined ? { lamports: nonceLamports } : {}),
+      ...(nonceState
+        ? {
+            currentNonce: nonceState.nonce,
+            authority: nonceState.authority,
+          }
+        : {}),
+    },
+    marginfi: { accounts: marginfiAccounts },
+  };
 }
 
 export async function prepareSolanaSwap(
@@ -1289,7 +1522,17 @@ export interface SolanaVerificationArtifact {
   artifactVersion: "v1";
   handle: string;
   chain: "solana";
-  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close" | "jupiter_swap";
+  action:
+    | "native_send"
+    | "spl_send"
+    | "nonce_init"
+    | "nonce_close"
+    | "jupiter_swap"
+    | "marginfi_init"
+    | "marginfi_supply"
+    | "marginfi_withdraw"
+    | "marginfi_borrow"
+    | "marginfi_repay";
   from: string;
   messageBase64: string;
   recentBlockhash: string;
@@ -1390,8 +1633,23 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
     if (!tx.verification) {
       throw new Error(`Internal: Solana tx for handle '${args.handle}' missing verification metadata.`);
     }
-    const ledgerMessageHash =
-      tx.action === "spl_send" ? solanaLedgerMessageHash(tx.messageBase64) : undefined;
+    // Blind-sign actions need the server-computed Ledger Message Hash in the
+    // artifact payload so the second LLM can tell the user which value to
+    // match against the on-device screen. Clear-sign actions (native_send,
+    // nonce_init, nonce_close) omit it — the device shows decoded fields
+    // and there is no hash to match.
+    const blindSignActions = new Set([
+      "spl_send",
+      "jupiter_swap",
+      "marginfi_init",
+      "marginfi_supply",
+      "marginfi_withdraw",
+      "marginfi_borrow",
+      "marginfi_repay",
+    ]);
+    const ledgerMessageHash = blindSignActions.has(tx.action)
+      ? solanaLedgerMessageHash(tx.messageBase64)
+      : undefined;
     // `description` and `decoded` are the human/structured summary the FIRST
     // agent showed the user. The second LLM uses them as a comparison target
     // (step 3 of SECOND_AGENT_INSTRUCTIONS) AFTER it independently decodes

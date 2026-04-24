@@ -121,10 +121,15 @@ export interface PortfolioCoverage {
   /**
    * Solana balance fetch coverage (SOL + SPL). `covered:false, errored:false`
    * means no Solana address was queried; errored:true means the Solana RPC
-   * call failed and SOL/SPL are missing from totals. Staking coverage is
-   * deferred to Phase 2.
+   * call failed and SOL/SPL are missing from totals.
    */
   solana?: CoverageStatus;
+  /**
+   * MarginFi position fetch coverage. Tracked separately from `solana` so a
+   * MarginFi-reader failure doesn't mask a successful balance read (mirror of
+   * `tronStaking` / `tron` split). Absent when no Solana address was queried.
+   */
+  marginfi?: CoverageStatus;
   /** Number of token balances whose USD valuation could not be resolved. */
   unpricedAssets: number;
   /**
@@ -332,7 +337,8 @@ export interface SolanaBalance {
 
 /**
  * Solana slice of a portfolio summary. Parallel to TronPortfolioSlice.
- * Phase 1 does not enumerate native validator staking; defer to Phase 2.
+ * Phase 1 did not enumerate native validator staking; Phase 3 adds
+ * MarginFi lending.
  */
 export interface SolanaPortfolioSlice {
   /** Base58 Solana address the balances were resolved for. */
@@ -340,6 +346,36 @@ export interface SolanaPortfolioSlice {
   native: SolanaBalance[];
   spl: SolanaBalance[];
   walletBalancesUsd: number;
+  /**
+   * MarginFi lending positions (Phase 3). Present only when the wallet has
+   * at least one MarginfiAccount with non-zero balances — probed via the
+   * deterministic PDA at accountIndex 0..3. An empty/missing field means
+   * no MarginFi position, not "reader errored" (errored case is surfaced
+   * through PortfolioCoverage.marginfi).
+   */
+  marginfi?: SolanaMarginfiPositionSlice[];
+  /** MarginFi aggregate net USD (sum of netValueUsd across positions). */
+  marginfiNetUsd?: number;
+}
+
+/**
+ * Thin projection of the full `MarginfiPosition` type exposed by
+ * `src/modules/positions/marginfi.ts`. Kept here so the portfolio types
+ * module doesn't pull in the reader module's internals, matching how
+ * CompoundLendingPosition / MorphoLendingPosition are projections of their
+ * reader modules.
+ */
+export interface SolanaMarginfiPositionSlice {
+  protocol: "marginfi";
+  chain: "solana";
+  marginfiAccount: string;
+  supplied: Array<{ symbol: string; amount: string; valueUsd: number }>;
+  borrowed: Array<{ symbol: string; amount: string; valueUsd: number }>;
+  totalSuppliedUsd: number;
+  totalBorrowedUsd: number;
+  netValueUsd: number;
+  healthFactor: number;
+  warnings: string[];
 }
 
 /**
@@ -543,10 +579,17 @@ export interface PortfolioSummary {
   tronStakingUsd?: number;
   /**
    * Solana totals folded into the same aggregate as EVM/TRON. Present when
-   * the caller passed a `solanaAddress`. Phase 1 covers balances only
-   * (SOL native + SPL via ATAs); staking lands in Phase 2.
+   * the caller passed a `solanaAddress`. Phase 1 covers balances; Phase 3
+   * adds MarginFi lending (surfaced separately via `solanaLendingUsd`).
    */
   solanaUsd?: number;
+  /**
+   * Solana lending net USD — MarginFi (Phase 3). Parallels `tronStakingUsd`
+   * as a carve-out that's separately surfaced in UIs but also folded into
+   * `totalUsd`. Present only when at least one MarginfiAccount was found
+   * for the wallet.
+   */
+  solanaLendingUsd?: number;
   breakdown: {
     native: TokenAmount[];
     erc20: TokenAmount[];
@@ -667,7 +710,17 @@ export interface UnsignedSolanaTx {
    * - `nonce_close` — teardown: nonceAdvance + nonceWithdraw. Drains the
    *   rent-exempt balance back to the user's main wallet.
    */
-  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close" | "jupiter_swap";
+  action:
+    | "native_send"
+    | "spl_send"
+    | "nonce_init"
+    | "nonce_close"
+    | "jupiter_swap"
+    | "marginfi_init"
+    | "marginfi_supply"
+    | "marginfi_withdraw"
+    | "marginfi_borrow"
+    | "marginfi_repay";
   /** Base58 owner address (44-char ed25519 pubkey). */
   from: string;
   /**
