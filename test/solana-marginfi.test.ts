@@ -411,6 +411,43 @@ describe("buildMarginfiSupply / Withdraw / Borrow / Repay", () => {
  * at the module boundary) and verify the override is present.
  */
 describe("hardened MarginfiClient.fetch (issue #105)", () => {
+  // Issue #105 — documentation test for the Anchor 0.30.1 coder API that
+  // our hardened override depends on. A real BorshAccountsCoder:
+  //   • exposes .decode(name, data) — the flat API we USE
+  //   • has NO .accounts namespace (coder.accounts === undefined)
+  // If Anchor ever changes the shape (e.g. reintroduces .accounts.decode)
+  // or we accidentally reach for the wrong method, this test forces the
+  // decision to be made consciously. Guards against the exact regression
+  // we caught in live probing where coder.accounts.decode silently failed
+  // every bank (issue #105, 2026-04-24).
+  it("BorshAccountsCoder exposes .decode(name, data) but not .accounts", async () => {
+    const { BorshAccountsCoder } = await vi.importActual<
+      typeof import("@coral-xyz/anchor")
+    >("@coral-xyz/anchor");
+    // Minimum valid IDL — one empty-struct account is enough.
+    const minimalIdl = {
+      version: "0.1.0",
+      name: "probe",
+      instructions: [],
+      accounts: [
+        {
+          name: "Thing",
+          discriminator: [1, 2, 3, 4, 5, 6, 7, 8],
+        },
+      ],
+      types: [
+        {
+          name: "Thing",
+          type: { kind: "struct", fields: [] },
+        },
+      ],
+    };
+    const coder = new BorshAccountsCoder(minimalIdl as never);
+    expect(typeof coder.decode).toBe("function");
+    // The key invariant: no .accounts namespace on the accounts-coder.
+    expect((coder as unknown as { accounts?: unknown }).accounts).toBeUndefined();
+  });
+
   it("passes fetchGroupDataOverride to MarginfiClient.fetch", async () => {
     // Re-mock MarginfiClient.fetch for this test to capture the options.
     const captured: { clientOptions?: Record<string, unknown> } = {};

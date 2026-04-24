@@ -291,7 +291,13 @@ async function hardenedFetchGroupData(
 
   const p = program as {
     provider: { connection: Connection };
-    coder: { accounts: { decode(name: string, data: Buffer): unknown } };
+    // Anchor 0.30.1's coder exposes decode/encode directly — there is NO
+    // `coder.accounts` namespace (unlike the `program.account` namespace
+    // off a Program instance, which is a different object). Verified via
+    // empirical probe against `@coral-xyz/anchor@0.30.1`
+    // (`dist/cjs/coder/borsh/accounts.js` — the class is
+    // `BorshAccountsCoder` with top-level `decode`/`encode` methods).
+    coder: { decode(name: string, data: Buffer): unknown };
     programId: PublicKey;
     idl: unknown;
   };
@@ -338,11 +344,8 @@ async function hardenedFetchGroupData(
       // in marginfi_0.1.7.json). Anchor's BorshAccountsCoder keys its
       // `accountLayouts` map on that exact name, so the decode call must
       // use "Bank", not the camelCase `program.account.bank` accessor
-      // form.
-      const decoded = p.coder.accounts.decode(
-        "Bank",
-        ai.data,
-      ) as BankDecodedLike;
+      // form used elsewhere in the SDK.
+      const decoded = p.coder.decode("Bank", ai.data) as BankDecodedLike;
       // Skip integrator banks (KAMINO = 3, DRIFT = 4, SOLEND = 5). These
       // ride a different layout and aren't relevant to core lending.
       const tag = decoded.config?.assetTag;
@@ -462,6 +465,9 @@ export async function getHardenedMarginfiClient(
 ): Promise<unknown> {
   return getMarginfiClient(conn, authority);
 }
+
+/** Test-only: expose the hardened fetchGroupData for direct-path testing. */
+export const __hardenedFetchGroupDataForTest = hardenedFetchGroupData;
 
 /** Test-only hook so unit tests don't pay the cost of a live fetch. */
 export function __setMarginfiClientCacheEntry(client: unknown): void {
