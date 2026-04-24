@@ -33,7 +33,7 @@ const TX_TTL_MS = 15 * 60_000;
  * cost, etc. Mirrors the non-message fields of `UnsignedSolanaTx`.
  */
 export interface SolanaDraftMeta {
-  action: "native_send" | "spl_send";
+  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close";
   from: string;
   description: string;
   decoded: {
@@ -44,6 +44,23 @@ export interface SolanaDraftMeta {
   priorityFeeMicroLamports?: number;
   computeUnitLimit?: number;
   estimatedFeeLamports?: number;
+  /**
+   * Durable-nonce metadata for txs that use ix[0] = nonceAdvance. Present
+   * on `native_send` / `spl_send` / `nonce_close` (all of which self-
+   * protect with the existing nonce account); absent on `nonce_init` (the
+   * create-nonce tx has no nonce to consume yet — uses a regular recent
+   * blockhash one time only).
+   *
+   * The `value` field is what pinSolanaHandle writes into the message's
+   * `recentBlockhash` field — not a network blockhash, but the current
+   * on-chain nonce value. Agave detects the durable-nonce tx via ix[0]
+   * and validates this field against the nonce account's state.
+   */
+  nonce?: {
+    account: string;
+    authority: string;
+    value: string;
+  };
 }
 
 /**
@@ -104,12 +121,20 @@ export function getSolanaDraft(handle: string): SolanaTxDraft {
 }
 
 /**
- * Pin a draft with the given fresh blockhash. Serializes the message bytes,
- * computes the verification bundle (including the base58(sha256(…)) that
- * the Ledger Solana app displays on blind-sign), and stores the result so
+ * Pin a draft with the given fresh blockhash (or current nonce value, for
+ * durable-nonce txs). Serializes the message bytes, computes the
+ * verification bundle (including the base58(sha256(…)) that the Ledger
+ * Solana app displays on blind-sign), and stores the result so
  * `send_transaction` can consume it. Re-callable — a second `preview_solana_send`
- * on the same handle just re-pins with an even fresher blockhash (replacing
- * the earlier pinned form).
+ * on the same handle just re-pins with a fresher blockhash/nonce value
+ * (replacing the earlier pinned form).
+ *
+ * For durable-nonce txs (`meta.nonce` present), the caller should pass the
+ * current nonce value as `freshBlockhash` AND have already updated
+ * `meta.nonce.value` to match — we assert the two agree, catching caller
+ * bugs where preview forgot to refresh one or the other. For `nonce_init`
+ * (the only non-nonce-protected tx in the current scheme), `freshBlockhash`
+ * is a real network blockhash fetched via `getLatestBlockhash`.
  */
 export function pinSolanaHandle(
   handle: string,
@@ -122,12 +147,20 @@ export function pinSolanaHandle(
       `Unknown or expired Solana tx handle '${handle}'. Re-run the prepare_solana_* tool.`,
     );
   }
+  const meta = entry.draft.meta;
+  if (meta.nonce && meta.nonce.value !== freshBlockhash) {
+    throw new Error(
+      `pinSolanaHandle consistency check failed: meta.nonce.value='${meta.nonce.value}' ` +
+        `does not match passed freshBlockhash='${freshBlockhash}'. The preview handler must ` +
+        `refresh both in lockstep — pass the just-fetched nonce value as freshBlockhash and ` +
+        `update meta.nonce.value to the same string before calling pin.`,
+    );
+  }
   const { draftTx } = entry.draft;
   draftTx.recentBlockhash = freshBlockhash;
   const messageBytes = draftTx.serializeMessage();
   const messageBase64 = messageBytes.toString("base64");
 
-  const meta = entry.draft.meta;
   const pinnedBase: UnsignedSolanaTx = {
     chain: "solana",
     action: meta.action,
@@ -137,7 +170,12 @@ export function pinSolanaHandle(
     description: meta.description,
     decoded: meta.decoded,
     handle,
-    ...(lastValidBlockHeight !== undefined ? { lastValidBlockHeight } : {}),
+    // lastValidBlockHeight is meaningless for durable-nonce txs (they
+    // never expire via block-height) — only carry it through when meta
+    // indicates this is a legacy-blockhash tx.
+    ...(lastValidBlockHeight !== undefined && !meta.nonce
+      ? { lastValidBlockHeight }
+      : {}),
     ...(meta.rentLamports !== undefined ? { rentLamports: meta.rentLamports } : {}),
     ...(meta.priorityFeeMicroLamports !== undefined
       ? { priorityFeeMicroLamports: meta.priorityFeeMicroLamports }
@@ -148,6 +186,7 @@ export function pinSolanaHandle(
     ...(meta.estimatedFeeLamports !== undefined
       ? { estimatedFeeLamports: meta.estimatedFeeLamports }
       : {}),
+    ...(meta.nonce ? { nonce: { ...meta.nonce } } : {}),
   };
   const verification = buildSolanaVerification(pinnedBase);
   const pinned: UnsignedSolanaTx = { ...pinnedBase, verification };

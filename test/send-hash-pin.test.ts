@@ -190,6 +190,58 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     expect(block).not.toMatch(/\(1\)\s*<plain-English pair-consistency/);
   });
 
+  it("tells the agent it MAY cite the prepare-time [CROSS-CHECK SUMMARY] as a selector→name anchor when model weights miss the selector", async () => {
+    // Live-session regression: on a LiFi swap the agent hit
+    // selector 0x2c57e884 (swapTokensMultipleV3ERC20ToNative), which is
+    // outside its model-weight ABI coverage, and reported ⚠ DECODE
+    // UNAVAILABLE — despite the prepare-time 4byte cross-check already
+    // having resolved the selector name byte-for-byte. The block above
+    // was telling the agent "use only your built-in ABI knowledge" and
+    // neglecting to mention 4byte as a legitimate third data source.
+    // Fix: explicitly surface the upgrade path (model-weights-miss +
+    // 4byte-hit + static-head-match → ✓ ABI DECODE) and the narrow
+    // fallback (both model-weights AND 4byte empty → ⚠ DECODE UNAVAILABLE).
+    const { renderPreviewVerifyAgentTaskBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const block = renderPreviewVerifyAgentTaskBlock({
+      chain: "ethereum",
+      preSignHash: "0xabc",
+      pinned: {
+        nonce: 1,
+        maxFeePerGas: "22000000000",
+        maxPriorityFeePerGas: "2000000000",
+        gas: "200000",
+      },
+      to: "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE",
+      valueWei: "0",
+      decoderUrl: "https://calldata.swiss-knife.xyz/decoder?calldata=0x2c57e884",
+    });
+    // Explicit permission to cite the prepare-time cross-check.
+    expect(block).toMatch(/CROSS-CHECK SUMMARY/);
+    expect(block).toMatch(/4byte\.directory/);
+    expect(block).toMatch(/selector[-→]?name anchor/i);
+    // The upgrade path must be stated plainly — otherwise the agent
+    // stays conservative and the fix doesn't land.
+    expect(block).toMatch(/(upgrade|report.*✓ ABI DECODE)/i);
+    // And the narrow fallback (both weights AND 4byte empty) is still
+    // the only trigger for ⚠ DECODE UNAVAILABLE. The assertion below
+    // uses [\s\S] rather than `.` because the template wraps lines and
+    // JS regex dot doesn't span \n by default.
+    expect(block).toMatch(
+      /only mark ⚠ DECODE UNAVAILABLE when BOTH[\s\S]*?4byte[\s\S]*?empty/i,
+    );
+    expect(block).toContain("`no-signature`");
+    // The compromised-server caveat is acknowledged (skill stays strict;
+    // this block speaks to the honest-server path). This keeps the
+    // layered-defense story consistent with SECURITY.md.
+    expect(block).toMatch(/compromised[- ]server/i);
+    expect(block).toMatch(/vaultpilot-preflight/);
+    // Swiss-knife fallback still rendered — removing it would break the
+    // ⚠ DECODE UNAVAILABLE path entirely. Regression guard.
+    expect(block).toContain("[Open in swiss-knife decoder]");
+  });
+
   it("splices the swiss-knife decoder URL into the ⚠ DECODE UNAVAILABLE branch of the render template", async () => {
     const { renderPreviewVerifyAgentTaskBlock } = await import(
       "../src/signing/render-verification.js"
@@ -413,6 +465,74 @@ describe("renderLedgerHashBlock", () => {
     // Eyeball values in scope.
     expect(block).toContain("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2");
     expect(block).toContain("500000000000000000");
+  });
+});
+
+describe("previewSendHandler — LEDGER BLIND-SIGN HASH gating", () => {
+  beforeEach(() => vi.resetModules());
+  afterEach(() => vi.restoreAllMocks());
+
+  // Live-test regression: on a 0.1 ETH self-send the user saw a
+  // `LEDGER BLIND-SIGN HASH — RELAY VERBATIM TO USER` block even though
+  // the Ledger Ethereum app clear-signs native sends and displays no hash
+  // on-device. Showing a blind-sign hash for clear-sign txs trains the
+  // user to hunt for a match that doesn't exist — worse than useless; it
+  // dilutes the signal value of the hash block in real blind-sign flows.
+  // previewSendHandler must suppress the block when result.clearSignOnly
+  // is true.
+  it("does NOT emit the LEDGER BLIND-SIGN HASH block when result.clearSignOnly is true", async () => {
+    const { previewSendHandler } = await import("../src/index.js");
+    const fakePreview = async () => ({
+      handle: "h",
+      chain: "ethereum" as const,
+      to: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as `0x${string}`,
+      valueWei: "500000000000000000",
+      preSignHash:
+        "0xdeadbeefcafef00dbabe0123456789abcdef0123456789abcdef0123456789ab" as `0x${string}`,
+      pinned: {
+        nonce: 1,
+        maxFeePerGas: "22000000000",
+        maxPriorityFeePerGas: "2000000000",
+        gas: "21000",
+      },
+      previewToken: "tok",
+      clearSignOnly: true,
+    });
+    const out = await previewSendHandler(fakePreview)({ handle: "h" });
+    // The agent-task block still fires (it handles the clearSignOnly
+    // branch internally — tested above), so content is non-empty. What
+    // matters: NONE of the text blocks carry the LEDGER BLIND-SIGN HASH
+    // verbatim-relay label.
+    const texts = out.content.map((c) => c.text);
+    for (const t of texts) {
+      expect(t).not.toMatch(/LEDGER BLIND-SIGN HASH — RELAY VERBATIM TO USER/);
+    }
+  });
+
+  it("DOES emit the LEDGER BLIND-SIGN HASH block when clearSignOnly is absent (regression: swaps / DeFi path unchanged)", async () => {
+    const { previewSendHandler } = await import("../src/index.js");
+    const fakePreview = async () => ({
+      handle: "h",
+      chain: "ethereum" as const,
+      to: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as `0x${string}`,
+      valueWei: "0",
+      preSignHash:
+        "0xdeadbeefcafef00dbabe0123456789abcdef0123456789abcdef0123456789ab" as `0x${string}`,
+      pinned: {
+        nonce: 1,
+        maxFeePerGas: "22000000000",
+        maxPriorityFeePerGas: "2000000000",
+        gas: "100000",
+      },
+      previewToken: "tok",
+      // clearSignOnly omitted — generic contract call (swap, supply, …)
+    });
+    const out = await previewSendHandler(fakePreview)({ handle: "h" });
+    const texts = out.content.map((c) => c.text);
+    const hashBlockCount = texts.filter((t) =>
+      /LEDGER BLIND-SIGN HASH — RELAY VERBATIM TO USER/.test(t),
+    ).length;
+    expect(hashBlockCount).toBe(1);
   });
 });
 

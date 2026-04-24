@@ -300,16 +300,22 @@ export async function verifyEvmCalldata(
   }
 
   const summary = localFunctionName
-    ? `✓ Cross-check passed (MCP-side — same trust boundary as the local decode; NOT an external check). ` +
-      `I pulled the function signature for ${localFunctionName} from 4byte.directory, decoded the calldata ` +
-      `against it, and the result re-encodes to the original bytes exactly — which mathematically implies ` +
-      `every argument below matches what's actually in the transaction. See options below for a check ` +
-      `outside this trust boundary.`
-    : `✓ Cross-check passed (MCP-side — same trust boundary as the preparer; NOT an external check). ` +
-      `The calldata decodes cleanly against a 4byte.directory signature ("${chosen.signature}"), and the ` +
-      `decoded args re-encode to the original bytes exactly — which mathematically implies the values in ` +
-      `independentArgs faithfully reflect the transaction. Your local ABI didn't recognize this destination, ` +
-      `so review those args before approving. See options below for a check outside this trust boundary.`;
+    ? `✓ Cross-check passed via 4byte.directory. 4byte is a public selector registry built from unrelated ` +
+      `on-chain traffic — a DATA SOURCE separate from the server's local ABI and from your model weights, ` +
+      `though the server made the HTTP call to fetch it. I pulled 4byte's signature for ${localFunctionName}, ` +
+      `decoded the calldata against it, and the result re-encodes to the original bytes exactly — which ` +
+      `mathematically implies every argument below matches what's actually in the transaction. Caveat for ` +
+      `the fully-compromised-MCP case: a hostile server could theoretically MITM the 4byte response; the ` +
+      `swiss-knife decoder link (rendered in the VERIFY block above) is the out-of-band browser-side check ` +
+      `for that threat. For all other threat models 4byte's independent data provenance is a legitimate ` +
+      `selector→name anchor — it's specifically WHY this cross-check exists.`
+    : `✓ Cross-check passed via 4byte.directory. 4byte is a public selector registry built from unrelated ` +
+      `on-chain traffic — a DATA SOURCE separate from the server's local ABI (though the server fetched ` +
+      `the registry via HTTP). The calldata decodes cleanly against signature "${chosen.signature}", and ` +
+      `the decoded args re-encode to the original bytes exactly, so the values in independentArgs ` +
+      `faithfully reflect the transaction. Your local ABI didn't recognize this destination, so review ` +
+      `those args before approving — and for the fully-compromised-MCP case, use the browser-side ` +
+      `swiss-knife decoder link in the VERIFY block above.`;
 
   return {
     status: "match",

@@ -1,10 +1,19 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as pjoin } from "node:path";
 import { PublicKey } from "@solana/web3.js";
+import { setConfigDirForTesting } from "../src/config/user-config.js";
 
 /**
  * Tests for Solana USB HID pairing (issue: Phase 2). Mocks the Ledger
  * transport via `vi.mock("../src/signing/solana-usb-loader.js")` so the
  * test never touches real USB.
+ *
+ * Pairing entries are now persisted to ~/.vaultpilot-mcp/config.json, so
+ * each test redirects the config dir to a fresh tmp dir to avoid touching
+ * the developer's real config. Without this isolation an early run of
+ * this suite wrote a bogus pairing entry to the live ~/.vaultpilot-mcp/.
  */
 
 const WALLET = "5rJ3dKM5K8hYkHcH67z3kjRtGkGuGh3aVi9fFpq9ZuDi";
@@ -27,7 +36,11 @@ vi.mock("../src/signing/solana-usb-loader.js", () => ({
   }),
 }));
 
+let tmpHome: string;
+
 beforeEach(async () => {
+  tmpHome = mkdtempSync(pjoin(tmpdir(), "vaultpilot-solana-pair-"));
+  setConfigDirForTesting(tmpHome);
   getAddressMock.mockReset();
   getAppConfigurationMock.mockReset();
   signTransactionMock.mockReset();
@@ -36,6 +49,11 @@ beforeEach(async () => {
     "../src/signing/solana-usb-signer.js"
   );
   clearPairedSolanaAddresses();
+});
+
+afterEach(() => {
+  setConfigDirForTesting(null);
+  rmSync(tmpHome, { recursive: true, force: true });
 });
 
 describe("solanaPathForAccountIndex", () => {

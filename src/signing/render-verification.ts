@@ -9,6 +9,26 @@ import type {
 import { solanaLedgerMessageHash } from "./verification.js";
 
 /**
+ * Solana Explorer Inspector URL prefilled with the message bytes — same
+ * pattern EVM uses for the swiss-knife decoder URL (calldata embedded).
+ * The Inspector route accepts `?message=<base64>` (verified against
+ * github.com/solana-foundation/explorer/app/components/inspector/InspectorPage.tsx,
+ * which reads `decodeParam(params, 'message')` and feeds it to
+ * `VersionedMessage.deserialize`). Standard base64 chars (`+`, `/`, `=`)
+ * need URL-encoding so we always run the input through `encodeURIComponent`.
+ *
+ * The URL is rendered inside the indented CHECKS PERFORMED block as a
+ * Markdown hyperlink — EXACTLY mirroring EVM CHECK 1's swiss-knife render.
+ * Earlier prototypes that surfaced the link OUTSIDE the block + a paste-
+ * fallback code block were called "complete mess" by the user; the EVM
+ * shape (one URL line inside the block, no paste section) is the canonical
+ * pattern.
+ */
+function solanaInspectorUrl(messageBase64: string): string {
+  return `https://explorer.solana.com/tx/inspector?cluster=mainnet&message=${encodeURIComponent(messageBase64)}`;
+}
+
+/**
  * Render the VERIFY-BEFORE-SIGNING text block that every `prepare_*` tool
  * ends with. Returned as a separate MCP content element; the server-level
  * `instructions` field tells orchestrator agents to forward it verbatim.
@@ -454,9 +474,31 @@ export function renderPreviewVerifyAgentTaskBlock(args: {
     "    using your built-in ABI knowledge of the target contract. Do NOT",
     "    re-read the server's humanDecode; the point is a reading from a",
     "    separate trust boundary (model weights, not server code).",
-    "  - If you don't recognize the 4-byte selector or are low-confidence on",
-    "    the arg decoding, mark this check ⚠ DECODE UNAVAILABLE in the",
-    "    CHECKS PERFORMED block below. You MUST render the swiss-knife decoder",
+    "  - SELECTOR-NAME ANCHOR when weights are insufficient: if your model",
+    "    weights don't cover the 4-byte selector (common for LiFi-diamond,",
+    "    1inch-aggregation-router, and other custom DeFi routers), you MAY",
+    "    cite the function name from the `[CROSS-CHECK SUMMARY]` block the",
+    "    server emitted at PREPARE time. That summary is the result of an",
+    "    independent 4byte.directory lookup — a public registry built from",
+    "    unrelated on-chain traffic — and its signature was re-encode-",
+    "    verified byte-for-byte against the calldata. 4byte is a separate",
+    "    DATA SOURCE from the server's ABI and from your model weights: the",
+    "    server fetches it via HTTP but does not author its contents. Treat",
+    "    it as a legitimate selector→name anchor for the honest-server case.",
+    "    (For the compromised-server case, the user's vaultpilot-preflight",
+    "    skill deliberately does NOT rely on 4byte — the skill's model-",
+    "    weights-only stance is the fallback, not a contradiction.)",
+    "  - Upgrade-path: if (a) the prepare-time 4byte cross-check passed its",
+    "    re-encode test (summary marked ✓), AND (b) the static-head args you",
+    "    independently decoded (e.g. `_receiver`, `_minAmountOut`) match the",
+    "    values in the prepare summary, report this check as ✓ ABI DECODE",
+    "    — note the function name comes from 4byte, not your weights.",
+    "    Do NOT drop to ⚠ DECODE UNAVAILABLE just because the selector was",
+    "    outside your training set; that's what the cross-check is for.",
+    "  - Only mark ⚠ DECODE UNAVAILABLE when BOTH your weights and the 4byte",
+    "    cross-check came up empty (summary marked `no-signature` or `error`),",
+    "    OR when your independent static-head decode DISAGREES with the prepare",
+    "    summary. When marking ⚠, you MUST render the swiss-knife decoder",
     "    URL (spliced into the ⚠ render-shape template below) as a Markdown",
     "    hyperlink on its own line directly under the ABI DECODE threat clause",
     "    — a visible, clickable fallback the user can open in their browser",
@@ -807,12 +849,33 @@ export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification:
  */
 export interface RenderableSolanaPrepareResult {
   handle: string;
-  action: "native_send" | "spl_send";
+  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close";
   from: string;
   description: string;
   decoded: { functionName: string; args: Record<string, string> };
   rentLamports?: number;
   estimatedFeeLamports?: number;
+  /** Nonce-account PDA — surfaced for send / close actions (absent for init's own decoded form, but present after init completes). */
+  nonceAccount?: string;
+}
+
+/**
+ * Human label for each Solana action — used in the PREPARED header and as
+ * a lookup in a few other places. Keeping this in one spot avoids four
+ * copies of the "native_send → 'native SOL transfer'" map scattered
+ * through the render code.
+ */
+function solanaActionLabel(action: RenderableSolanaPrepareResult["action"]): string {
+  switch (action) {
+    case "native_send":
+      return "native SOL transfer";
+    case "spl_send":
+      return "SPL token transfer";
+    case "nonce_init":
+      return "durable-nonce init (one-time setup)";
+    case "nonce_close":
+      return "durable-nonce close (reclaim rent-exempt seed)";
+  }
 }
 
 /**
@@ -824,8 +887,11 @@ export interface RenderableSolanaPrepareResult {
 export function renderSolanaPrepareSummaryBlock(
   r: RenderableSolanaPrepareResult,
 ): string {
-  const actionLabel =
-    r.action === "native_send" ? "native SOL transfer" : "SPL token transfer";
+  const actionLabel = solanaActionLabel(r.action);
+  const isInit = r.action === "nonce_init";
+  const rentNote = isInit
+    ? " (one-time rent-exempt seed for the nonce account, reclaimable via prepare_solana_nonce_close)"
+    : " (one-time, creates recipient ATA)";
   return [
     `PREPARED (Solana — ${actionLabel}) — review, then confirm to continue`,
     `  ${r.description}`,
@@ -837,16 +903,21 @@ export function renderSolanaPrepareSummaryBlock(
       ? [`  Est. fee: ${r.estimatedFeeLamports} lamports`]
       : []),
     ...(r.rentLamports !== undefined
-      ? [`  Rent:    ${r.rentLamports} lamports (one-time, creates recipient ATA)`]
+      ? [`  Rent:    ${r.rentLamports} lamports${rentNote}`]
+      : []),
+    ...(r.nonceAccount && !isInit
+      ? [`  Nonce:   ${r.nonceAccount}`]
       : []),
     "",
     "NEXT STEP — NOT YET SIGNABLE",
     "  The Solana message is NOT serialized yet: we intentionally defer the",
-    "  blockhash fetch so the ~60s on-chain validity window isn't burned",
-    "  while the user reviews. When the user says 'send', call",
-    "  `preview_solana_send(handle)` — that tool pins a fresh blockhash,",
-    "  returns the Message Hash to match on-device, and emits the CHECKS",
-    "  PERFORMED agent-task block the agent runs unprompted.",
+    "  blockhash-or-nonce pin so the ~60s on-chain validity window isn't",
+    "  burned while the user reviews (durable-nonce txs don't have that",
+    "  window, but init does, and the same deferral pattern keeps the flow",
+    "  uniform). When the user says 'send', call `preview_solana_send(handle)`",
+    "  — that tool pins the nonce value (or a fresh blockhash for init),",
+    "  returns the Message Hash, and emits the CHECKS PERFORMED agent-task",
+    "  block the agent runs unprompted.",
   ].join("\n");
 }
 
@@ -861,7 +932,18 @@ export function renderSolanaPrepareSummaryBlock(
 export function renderSolanaPrepareAgentTaskBlock(
   r: RenderableSolanaPrepareResult,
 ): string {
-  const actionWord = r.action === "native_send" ? "native SOL send" : "SPL send";
+  const actionWord =
+    r.action === "native_send"
+      ? "native SOL send"
+      : r.action === "spl_send"
+        ? "SPL send"
+        : r.action === "nonce_init"
+          ? "durable-nonce init"
+          : "durable-nonce close";
+  const nonceBullet =
+    r.nonceAccount && r.action !== "nonce_init"
+      ? ["  - Nonce: <short nonce-account addr>"]
+      : [];
   const summaryShape =
     r.action === "spl_send"
       ? [
@@ -870,31 +952,55 @@ export function renderSolanaPrepareAgentTaskBlock(
           "  - To: <to address>",
           "  - Mint: <mint address> (<symbol if known>)",
           "  - Amount: <human amount + symbol>",
+          ...nonceBullet,
           "  - Rent: <rent in SOL if ATA creation, else omit the bullet>",
           "  - Fee: <est. fee in SOL>",
         ]
-      : [
-          "  - Headline: \"Prepared native SOL send — <amount> SOL to <short addr>\"",
-          "  - From: <from address>",
-          "  - To: <to address>",
-          "  - Amount: <human SOL amount>",
-          "  - Fee: <est. fee in SOL>",
-        ];
+      : r.action === "native_send"
+        ? [
+            "  - Headline: \"Prepared native SOL send — <amount> SOL to <short addr>\"",
+            "  - From: <from address>",
+            "  - To: <to address>",
+            "  - Amount: <human SOL amount>",
+            ...nonceBullet,
+            "  - Fee: <est. fee in SOL>",
+          ]
+        : r.action === "nonce_init"
+          ? [
+              "  - Headline: \"Prepared durable-nonce init — <short nonce addr>\"",
+              "  - Wallet: <from address>",
+              "  - Nonce account: <deterministic PDA from createWithSeed(wallet, 'vaultpilot-nonce-v1')>",
+              "  - Rent-exempt seed: <rent in SOL>",
+              "  - Fee: <est. fee in SOL>",
+              "  - Note: one-time setup; reclaimable via prepare_solana_nonce_close",
+            ]
+          : [
+              // nonce_close
+              "  - Headline: \"Prepared durable-nonce close — returning <balance> SOL to main wallet\"",
+              "  - Wallet: <from address>",
+              "  - Nonce account: <will be destroyed after this tx>",
+              "  - Destination: <from address (returns to the same wallet)>",
+              "  - Withdraw amount: <balance in SOL>",
+              ...nonceBullet,
+              "  - Fee: <est. fee in SOL>",
+            ];
+  const closingLine =
+    r.action === "nonce_init"
+      ? '  "Reply \'send\' to continue — I\'ll pin a fresh blockhash (this init tx is the one exception that uses legacy-blockhash mode), run the mandatory integrity checks, and surface the Ledger Message Hash for you to match on-device."'
+      : '  "Reply \'send\' to continue — I\'ll pin the current nonce value, run the mandatory integrity checks, and surface the Ledger Message Hash for you to match on-device."';
   return [
     "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
     `Produce a COMPACT bullet summary of the prepared ${actionWord}. Required shape:`,
     ...summaryShape,
     "",
     "End with ONE line:",
-    '  "Reply \'send\' to continue — I\'ll pin a fresh blockhash, run the',
-    '   mandatory integrity checks, and surface the Ledger Message Hash for',
-    '   you to match on-device."',
+    closingLine,
     "",
     "Do NOT call `preview_solana_send` or `send_transaction` yet — wait for",
     "the user's 'send'. When they reply, call `preview_solana_send(handle)`",
     "with the handle below; that response carries the CHECKS template and",
     "the Message Hash. Do NOT fabricate a hash here — none exists yet; the",
-    "blockhash gets fetched at preview_solana_send time.",
+    "blockhash/nonce gets pinned at preview_solana_send time.",
     "",
     `Handle: ${r.handle}`,
   ].join("\n");
@@ -918,10 +1024,18 @@ export function renderSolanaPrepareAgentTaskBlock(
  *   prompt fires — same UX the EVM blind-sign flow already uses.
  */
 export function renderSolanaVerificationBlock(tx: UnsignedSolanaTx): string {
-  if (tx.action === "native_send") {
-    return renderSolanaNativeVerificationBlock(tx);
+  if (tx.action === "spl_send") {
+    return renderSolanaSplVerificationBlock(tx);
   }
-  return renderSolanaSplVerificationBlock(tx);
+  // native_send: Ledger clear-signs SystemProgram.Transfer.
+  // nonce_init / nonce_close: all-SystemProgram ixs; per source these
+  //   clear-sign (memory: project_solana_durable_nonce_viability.md —
+  //   "Ledger clear-signs AdvanceNonceAccount, source; not device-tested").
+  //   If the device DOES drop to blind-sign for some reason, the pair-
+  //   consistency check + INSTRUCTION DECODE still catch tampering; the
+  //   user just won't have a hash to match. Add the hash to the render in
+  //   a future pass if live testing shows blind-sign behavior.
+  return renderSolanaNativeVerificationBlock(tx);
 }
 
 function formatSolanaDecodedArgs(tx: UnsignedSolanaTx): string[] {
@@ -931,9 +1045,22 @@ function formatSolanaDecodedArgs(tx: UnsignedSolanaTx): string[] {
 }
 
 function renderSolanaNativeVerificationBlock(tx: UnsignedSolanaTx): string {
+  const headerLabel =
+    tx.action === "native_send"
+      ? "native SOL transfer"
+      : tx.action === "nonce_init"
+        ? "durable-nonce init (one-time setup)"
+        : tx.action === "nonce_close"
+          ? "durable-nonce close (reclaim seed)"
+          : "Solana tx"; // spl_send routes through the other branch
+  const explainerLine =
+    tx.action === "native_send"
+      ? "The Ledger Solana app clear-signs SystemProgram.Transfer. The on-device"
+      : "The Ledger Solana app clear-signs SystemProgram instructions. The on-device";
+  const hashLabel = tx.nonce ? "Nonce value" : "Blockhash";
   return [
-    "VERIFY BEFORE SIGNING (Solana — native SOL transfer)",
-    "The Ledger Solana app clear-signs SystemProgram.Transfer. The on-device",
+    `VERIFY BEFORE SIGNING (Solana — ${headerLabel})`,
+    explainerLine,
     "screens will show the amount and recipient — confirm they match the",
     "decoded call below, else REJECT on the device.",
     "",
@@ -941,7 +1068,10 @@ function renderSolanaNativeVerificationBlock(tx: UnsignedSolanaTx): string {
     "  Args:",
     ...formatSolanaDecodedArgs(tx),
     `  From:    ${tx.from}`,
-    `  Blockhash: ${tx.recentBlockhash}`,
+    ...(tx.nonce
+      ? [`  Nonce account: ${tx.nonce.account}`]
+      : []),
+    `  ${hashLabel}: ${tx.recentBlockhash}`,
   ].join("\n");
 }
 
@@ -987,6 +1117,73 @@ function renderSolanaSplVerificationBlock(tx: UnsignedSolanaTx): string {
  */
 export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
   const isSpl = tx.action === "spl_send";
+  const isNativeSend = tx.action === "native_send";
+  const isNonceInit = tx.action === "nonce_init";
+  const isNonceClose = tx.action === "nonce_close";
+
+  // SPECIAL CASE — nonce_init is the one Solana action where ALL the
+  // standard checks are pure ceremony. Why:
+  //   - It's a one-time, deterministic, two-instruction tx
+  //     (createAccountWithSeed + nonceInitialize).
+  //   - The Ledger Solana app clear-signs both ixs on-device — the user
+  //     sees the new account address, seed, authority, and rent values.
+  //   - Those on-device fields ARE the integrity gate. CHECK 1 (browser-
+  //     verify decode) and CHECK 2 (pair-consistency hash) add nothing
+  //     a clear-sign user can't already verify with their eyes.
+  //   - The cost of running the standard verification block is real:
+  //     ~30s of agent prep time on a tx with a ~60s legacy blockhash
+  //     window (nonce_init can't use durable-nonce protection since
+  //     it's the tx CREATING the nonce). Three live attempts blew that
+  //     window before this short-circuit was added.
+  // For every OTHER Solana action (native_send / spl_send / nonce_close)
+  // the standard CHECKS PERFORMED block + Explorer URL still applies.
+  if (isNonceInit) {
+    return [
+      "[AGENT TASK — RUN THIS NOW, DO NOT ASK THE USER]",
+      "",
+      "Produce a COMPACT bullet summary of the prepared durable-nonce init.",
+      "Required shape:",
+      "  - Headline: \"Prepared durable-nonce init — <short nonce addr>\"",
+      "  - Wallet: <from address>",
+      "  - Nonce account: <nonce-account PDA>",
+      "  - Authority: <from address (same as wallet)>",
+      "  - Rent-exempt seed: <rent in SOL (~0.00144 SOL)>",
+      "  - Fee: <fee in SOL>",
+      "",
+      "Then — do NOT emit a CHECKS PERFORMED block, do NOT surface a Solana",
+      "Explorer Inspector link, do NOT compute a Message Hash. nonce_init is",
+      "a deterministic two-ix System Program tx and the Ledger Solana app",
+      "CLEAR-SIGNS both instructions on-device. The on-device fields are the",
+      "integrity gate; an extra browser-verify step adds nothing a clear-sign",
+      "user can't already see, and the legacy ~60s blockhash window makes",
+      "the extra ceremony actively harmful (live regression: three failed",
+      "attempts before this short-circuit was added).",
+      "",
+      "Lead with this on-device instruction so the user knows what to",
+      "expect when they press the button on Ledger:",
+      "",
+      "  Ledger CLEAR-SIGN — your device will display the two System",
+      "  Program instructions in plain text:",
+      "    1. CreateAccountWithSeed: confirm `New Account` matches the",
+      "       Nonce account bullet above, `Base` matches your Wallet,",
+      "       `Seed` is exactly \"vaultpilot-nonce-v1\", and `Lamports`",
+      "       matches the Rent-exempt seed bullet.",
+      "    2. NonceInitialize: confirm `Nonce Authority` equals your",
+      "       Wallet (so YOU stay in control of the nonce).",
+      "  Any field that doesn't match → REJECT on-device.",
+      "",
+      "End with ONE line, no menu, no second-LLM offer:",
+      "  Reply 'send' to broadcast — approve on-device when the Solana app",
+      "  prompts. The legacy ~60s blockhash window starts now.",
+      "",
+      "SEND-CALL CONTRACT — when the user replies \"send\", call",
+      "`send_transaction` with: handle: <from prepare result>, confirmed: true.",
+    ].join("\n");
+  }
+
+  // Send-type txs (native_send / spl_send / nonce_close) all carry
+  // ix[0] = SystemProgram.nonceAdvance for durable-nonce protection.
+  const hasAdvanceNonceIx = isNativeSend || isSpl || isNonceClose;
   const ledgerHash = isSpl ? solanaLedgerMessageHash(tx.messageBase64) : null;
 
   const checksPayload = {
@@ -1011,6 +1208,9 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
     },
   };
 
+  const nonceBullet = hasAdvanceNonceIx
+    ? "  - Nonce: <short nonce-account addr>"
+    : null;
   const summaryShape = isSpl
     ? [
         "  - Headline: \"Prepared SPL send — <amount> <symbol> to <short addr>\"",
@@ -1018,27 +1218,119 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
         "  - To: <to address>",
         "  - Mint: <mint address> (<symbol if known>)",
         "  - Amount: <human amount + symbol>",
+        ...(nonceBullet ? [nonceBullet] : []),
         "  - Rent: <rent in SOL if ATA creation, else omit the bullet>",
         "  - Fee: <fee in SOL>",
       ]
-    : [
-        "  - Headline: \"Prepared native SOL send — <amount> SOL to <short addr>\"",
-        "  - From: <from address>",
-        "  - To: <to address>",
-        "  - Amount: <human SOL amount>",
-        "  - Fee: <fee in SOL>",
-      ];
+    : isNativeSend
+      ? [
+          "  - Headline: \"Prepared native SOL send — <amount> SOL to <short addr>\"",
+          "  - From: <from address>",
+          "  - To: <to address>",
+          "  - Amount: <human SOL amount>",
+          ...(nonceBullet ? [nonceBullet] : []),
+          "  - Fee: <fee in SOL>",
+        ]
+      : isNonceInit
+        ? [
+            "  - Headline: \"Prepared durable-nonce init — <short nonce addr>\"",
+            "  - Wallet: <from address>",
+            "  - Nonce account: <nonce-account PDA>",
+            "  - Authority: <from address (same as wallet)>",
+            "  - Rent-exempt seed: <rent in SOL (~0.00144 SOL)>",
+            "  - Fee: <fee in SOL>",
+          ]
+        : [
+            // nonce_close
+            "  - Headline: \"Prepared durable-nonce close — returning <balance> SOL to <wallet short>\"",
+            "  - Wallet: <from address>",
+            "  - Nonce account: <nonce-account PDA, will be destroyed>",
+            "  - Destination: <from address (returns to main wallet)>",
+            "  - Withdraw amount: <balance in SOL>",
+            ...(nonceBullet ? [nonceBullet] : []),
+            "  - Fee: <fee in SOL>",
+          ];
+
+  const inspectorUrl = solanaInspectorUrl(tx.messageBase64);
+
+  // CHECK 2 only fires for blind-sign actions (Ledger shows just the
+  // Message Hash, no decoded fields). For clear-sign actions (native_send,
+  // nonce_init, nonce_close) the on-device decoded fields ARE the
+  // integrity gate and a server-side hash recompute adds nothing — same
+  // policy EVM uses for clear-sign txs (native sends, ERC20
+  // transfers/approvals).
+  const needsPairConsistency = isSpl;
+  // Combined CHECK 1 + CHECK 2 script — single Bash invocation, single
+  // approval prompt, two verdicts. Mirrors EVM CHECK 2's template shape
+  // (multi-line `node -e "..."` with `<messageBase64 from the prepare_*
+  // result>` as a JS string-literal placeholder the agent splices in).
+  //
+  // What the script computes:
+  //   - ledgerHash = base58(sha256(msg)) — same value the Ledger Solana
+  //     app derives and shows on blind-sign. PublicKey(<32-byte buffer>)
+  //     .toBase58() does base58 encoding.
+  //   - instructions[] = per-ix { programId, accounts, dataHex }
+  //     extracted via @solana/web3.js's `Message.from(buf)`. Account keys
+  //     are base58 pubkeys (PublicKey.toBase58 — recognizable). dataHex
+  //     is decoded from the base58 `ix.data` field via a small inline
+  //     bs58→hex helper (bs58 v6 is ESM-only so `require('bs58')` fails;
+  //     we keep the decoder to one short line — same shape as EVM's inline
+  //     fee-cost math, recognizable arithmetic, no "messy script" surface).
+  //
+  // The agent inspects the JSON output and reports BOTH verdicts:
+  //   - CHECK 1 ✓/✗ on instruction structure (programId + accounts +
+  //     dataHex tag) matching the bullet summary
+  //   - CHECK 2 ✓/✗ on ledgerHash matching the displayed value
+  const combinedCheckScript = [
+    `    node -e "const {Message, PublicKey} = require('@solana/web3.js');`,
+    `    const {createHash} = require('crypto');`,
+    `    const m = '<messageBase64 from the preview_solana_send result>';`,
+    `    const buf = Buffer.from(m, 'base64');`,
+    `    const msg = Message.from(buf);`,
+    `    const A = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';`,
+    `    const b58 = s => { if (!s.length) return ''; let n=0n; for (const c of s) n=n*58n+BigInt(A.indexOf(c)); let z=0; while (z<s.length&&s[z]==='1') z++; const h=n.toString(16); return '00'.repeat(z)+(h.length%2?'0'+h:h); };`,
+    `    console.log(JSON.stringify({`,
+    `      ledgerHash: new PublicKey(createHash('sha256').update(buf).digest()).toBase58(),`,
+    `      instructions: msg.instructions.map(ix => ({`,
+    `        programId: msg.accountKeys[ix.programIdIndex].toBase58(),`,
+    `        accounts: ix.accounts.map(i => msg.accountKeys[i].toBase58()),`,
+    `        dataHex: b58(ix.data),`,
+    `      })),`,
+    `    }, null, 2));"`,
+  ];
 
   const lines = [
     "[AGENT TASK — RUN THESE CHECKS NOW, DO NOT ASK THE USER]",
-    isSpl
+    needsPairConsistency
       ? "You MUST run BOTH of the following integrity checks UNPROMPTED and"
       : "You MUST run the INSTRUCTION-DECODE integrity check UNPROMPTED and",
     "report results in a prominent CHECKS PERFORMED block. The user already",
     "consented to verification by calling `prepare_solana_*` — do NOT surface",
-    isSpl
+    needsPairConsistency
       ? "a yes/no menu for these two. They run every send, no exceptions."
       : "a yes/no menu for this check. It runs every send, no exceptions.",
+    ...(hasAdvanceNonceIx
+      ? [
+          "",
+          "DURABLE-NONCE MODE — this tx's `recentBlockhash` field is NOT a",
+          "network blockhash; it's the current nonce VALUE pulled from the",
+          "wallet's on-chain nonce account. Agave detects durable-nonce txs",
+          "via ix[0] = SystemProgram.nonceAdvance, skips the block-height",
+          "validity window, and instead validates the nonce value against",
+          "the nonce account's state. Side effect: this tx stays valid until",
+          "the nonce advances, not for just ~60s — the Ledger review timer",
+          "is not a correctness concern here.",
+        ]
+      : isNonceInit
+        ? [
+            "",
+            "LEGACY BLOCKHASH MODE — this is the ONE tx type that doesn't",
+            "run under durable-nonce protection (it's the tx that CREATES",
+            "the nonce account, so there's no nonce to use yet). Standard",
+            "~60s blockhash validity window applies. Every other Solana tx",
+            "this server builds is durable-nonce-protected.",
+          ]
+        : []),
     "",
     "Step 1: Produce a COMPACT bullet summary of the prepared tx — do NOT",
     "relay the VERIFY-BEFORE-SIGNING block verbatim. Required shape:",
@@ -1048,79 +1340,62 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
     "(template further down) with your verdicts. Step 4: end with the single-",
     "line prompt specified at the bottom.",
     "",
+    "RUN THE COMBINED CHECK SCRIPT — one Bash invocation covers both",
+    "checks below. Mirrors EVM CHECK 2's template (multi-line `node -e`",
+    "with the message bytes inside a JS string-literal placeholder, NOT",
+    "prepended as an env var). Splice the messageBase64 value from the",
+    "preview_solana_send result in place of the placeholder marker:",
+    "",
+    ...combinedCheckScript,
+    "",
+    "  JSON output shape: { ledgerHash: \"<base58>\", instructions: [{",
+    "    programId: \"<base58>\", accounts: [\"<base58>\", ...], dataHex: \"<hex>\" },",
+    "    ...] }. Both checks below read from this single output — do NOT",
+    "  invoke the script twice.",
+    "",
     "CHECK 1 — AGENT-SIDE INSTRUCTION DECODE",
     "  Protects against: MCP-side Solana message tampering. If the server",
-    "  rewrote the message bytes between the compact summary and the bytes",
-    "  stored under the handle, your independent decode of `messageBase64`",
-    "  disagrees with your own summary.",
+    "  rewrote the bytes between the compact summary and the bytes stored",
+    "  under the handle, the script's `instructions` field disagrees with",
+    "  your bullet summary. (Mirror of EVM CHECK 1 — same pattern, agent",
+    "  decodes via `@solana/web3.js`'s `Message.from` instead of model-",
+    "  weight ABI knowledge.)",
     "",
-    "  Run this one-liner (splice the `messageBase64` value from the prepare",
-    "  result — it's the field of the same name on the JSON response). NOTE:",
-    "  Message.instructions[].data is a base58-encoded string (Solana wire",
-    "  format), NOT base64 — decode with bs58, not Buffer.from(...,'base64'),",
-    "  or the dataHex will be garbage:",
+    "  Inspect the `instructions` array. For each instruction:",
+    "  - `programId`: identify the program. Common ones for sends:",
+    "      - `11111111111111111111111111111111` = System Program",
+    "      - `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA` = SPL Token Program",
+    "      - `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL` = Associated Token Account Program",
+    "      - `ComputeBudget111111111111111111111111111111` = Compute Budget Program",
+    "  - `accounts`: confirm the addresses appear in your bullet summary",
+    "    (from / to / mint / nonce account / authority).",
+    "  - `dataHex`: the first byte is the instruction tag. Cross-check:",
+    "      - System Program `04000000` (u32 LE = 4) = AdvanceNonceAccount",
+    "      - System Program `02000000` followed by u64 LE lamports = Transfer",
+    "      - SPL Token `0c` followed by u64 LE amount + u8 decimals = TransferChecked",
+    "  - For self-sends, source and destination addresses appear in the",
+    "    SAME instruction's `accounts` array — verify they match.",
     "",
-    "    node --input-type=module -e \"import {Message} from '@solana/web3.js';",
-    "    import bs58 from 'bs58';",
-    "    const m=Message.from(Buffer.from('<messageBase64>','base64'));",
-    "    console.log(JSON.stringify({instructions:m.instructions.map(i=>({",
-    "    programId:m.accountKeys[i.programIdIndex].toBase58(),",
-    "    accounts:i.accounts.map(a=>m.accountKeys[a].toBase58()),",
-    "    dataHex:Buffer.from(bs58.decode(i.data)).toString('hex')})),",
-    "    blockhash:m.recentBlockhash}, null, 2))\"",
+    "  Report ✓ MATCH when programIds + account ordering + tag bytes line",
+    "  up with your summary. Report ✗ MISMATCH on any disagreement (and",
+    "  LEAD your reply with a prominent failure line — see below). If a",
+    "  programId is one you don't recognize and you can't sanity-check the",
+    "  data, mark ⚠ DECODE PARTIAL and tell the user the Browser-side",
+    "  decode fallback link below is the gap-closer.",
     "",
-    "  What you should see (compare against your bullet summary above):",
-    isSpl
-      ? [
-          "    - For SPL send: one instruction with programId",
-          "      TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA (SPL Token Program),",
-          "      accounts [source_ata, mint, dest_ata, owner], dataHex starting",
-          "      with `0c` (tag 12 = TransferChecked), followed by u64le(amount)",
-          "      and u8(decimals). If ATA creation is included, there is also an",
-          "      instruction with programId",
-          "      ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL (Associated Token",
-          "      Account Program) — that's the recipient-ATA-creation bullet in",
-          "      your summary.",
-          "    - Priority fee: two ComputeBudget111111111111111111111111111111",
-          "      instructions may appear (setComputeUnitLimit / setComputeUnitPrice)",
-          "      — only present when the network was congested at prepare time.",
-        ].join("\n")
-      : [
-          "    - One instruction with programId 11111111111111111111111111111111",
-          "      (System Program), accounts [from, to], dataHex starting with",
-          "      `02000000` (u32le tag 2 = Transfer), followed by u64le(lamports).",
-          "    - Priority fee: two ComputeBudget111111111111111111111111111111",
-          "      instructions may appear (setComputeUnitLimit / setComputeUnitPrice)",
-          "      — only present when the network was congested at prepare time.",
-        ].join("\n"),
-    "",
-    "  If the decoded programId / accounts / amount disagree with your",
-    "  bullet summary, mark ✗ MISMATCH. If the decode throws or you can't",
-    "  parse it, mark ⚠ DECODE UNAVAILABLE and tell the user the SECOND-LLM",
-    "  check (option 2) is the remaining gap-closer. Report ✓ MATCH only",
-    "  when the decoded instructions line up with your summary.",
-    "",
-    ...(isSpl
+    ...(needsPairConsistency
       ? [
           "CHECK 2 — PAIR-CONSISTENCY LEDGER HASH",
           "  Protects against: the server reporting messageBase64 M with",
           "  ledgerHash=hash(Y) where Y≠M, then forwarding Y to the Ledger. The",
-          "  on-device match alone does NOT catch that (device sees hash(Y),",
-          "  chat sees hash(Y), they agree); only a local recompute of hash(M)",
-          "  from the stated messageBase64 catches the discrepancy.",
+          "  on-device hash match alone does NOT catch that (device sees",
+          "  hash(Y), chat sees hash(Y), they agree); only a local recompute of",
+          "  hash(M) from the stated messageBase64 catches the discrepancy.",
           "",
-          "  Run this one-liner (splice the `messageBase64` from the prepare",
-          "  result):",
-          "",
-          "    node --input-type=module -e \"import bs58 from 'bs58';",
-          "    import {createHash} from 'crypto';",
-          "    console.log(bs58.encode(createHash('sha256').update(",
-          "    Buffer.from('<messageBase64>','base64')).digest()))\"",
-          "",
-          `  Compare the output to ${ledgerHash}. Report ✓ MATCH or ✗ MISMATCH.`,
-          "  If MATCH, the bytes the server plans to sign match the bytes it",
-          "  showed you AND the hash you'll match on-device is the genuine",
-          "  hash of those bytes.",
+          `  Read the script's \`ledgerHash\` field. Compare to ${ledgerHash}.`,
+          "  Report ✓ MATCH or ✗ MISMATCH. If MATCH, the bytes the server plans",
+          "  to sign match the bytes it showed you AND the hash you'll match",
+          "  on-device is the genuine hash of those bytes.",
           "",
         ]
       : []),
@@ -1138,16 +1413,28 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
     "",
     "NOTATION — READ THIS BEFORE COPYING THE BLOCK:",
     "  Placeholders you REPLACE in your output:",
-    "    {✓|✗|⚠}            pick one symbol based on your verdict",
+    "    {✓|✗}              pick one symbol based on your hash verdict (CHECK 2)",
     "    <one-line verdict> your own prose describing the result",
-    "  Literal characters you KEEP EXACTLY (Markdown rendering directives):",
-    "    `…`                base58 hash in single backticks → inline code",
-    "    **`…`**            bold + inline code (highest-contrast emphasis)",
+    "  Literal characters you KEEP EXACTLY in your output (these are",
+    "  Markdown rendering directives, NOT placeholders — stripping them",
+    "  breaks the rendering and produces the live-run bug where the hash",
+    "  appears as plain text and the Explorer link loses its URL):",
+    "    `<hash>`           base58 hash in single backticks → inline-code color",
+    "    **`<hash>`**       bold + inline code (highest-contrast emphasis)",
+    "    [label](url)       Markdown hyperlink → clickable link",
+    "  Do NOT \"clean up\" these Markdown characters for plain-text output.",
+    "  The chat client renders them; leaving them as-is is the whole point.",
     "",
     "    ═══════ CHECKS PERFORMED ═══════",
     "    {✓|✗|⚠} INSTRUCTION DECODE — <one-line verdict>.",
     "        (protects against MCP-side Solana tampering)",
-    ...(isSpl
+    "        (On ⚠ DECODE PARTIAL — add the line below VERBATIM, characters",
+    "         and all. The [ ] ( ) are literal Markdown link syntax, not",
+    "         placeholder notation. Do NOT strip them. Do NOT paste the",
+    "         raw URL — Solana Explorer message URLs embed the full",
+    "         base64 message and wrap the chat unreadably:)",
+    `        Browser-side decode fallback: [Open in Solana Explorer Inspector](${inspectorUrl})`,
+    ...(needsPairConsistency
       ? [
           "    {✓|✗} PAIR-CONSISTENCY LEDGER HASH — <one-line verdict>.",
           "        (protects against MCP signing different bytes than it displayed)",
@@ -1164,12 +1451,28 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
           "          Any difference → REJECT.",
           "          Prerequisite: Allow blind signing must be ON in Solana app Settings.",
         ]
-      : [
-          "      • CLEAR-SIGN (this tx: native SOL send — the Solana app shows",
-          "        amount + recipient on-device). Hash matching does NOT apply.",
-          "        Confirm the on-device values equal your compact summary",
-          "        above. Any difference → REJECT.",
-        ]),
+      : isNonceInit
+        ? [
+            "      • CLEAR-SIGN (durable-nonce init — System Program ixs).",
+            "        The Solana app shows the createAccountWithSeed +",
+            "        nonceInitialize fields. Confirm the new account address,",
+            "        seed (\"vaultpilot-nonce-v1\"), authority, and rent match",
+            "        the bullet summary above. Any difference → REJECT.",
+          ]
+        : isNonceClose
+          ? [
+              "      • CLEAR-SIGN (durable-nonce close — System Program ixs).",
+              "        The Solana app shows nonceAdvance + nonceWithdraw. Confirm",
+              "        the destination is your wallet and the lamports match the",
+              "        nonce account's full balance. Any difference → REJECT.",
+            ]
+          : [
+              // native_send
+              "      • CLEAR-SIGN (this tx: native SOL send — the Solana app shows",
+              "        amount + recipient on-device). Hash matching does NOT apply.",
+              "        Confirm the on-device values equal your compact summary",
+              "        above. Any difference → REJECT.",
+            ]),
     "    ════════════════════════════════",
     "",
     ...(isSpl
@@ -1184,17 +1487,24 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
           "",
         ]
       : [
-          "No hash is rendered for native SOL sends; the Solana app clear-signs",
-          "SystemProgram.Transfer and shows amount + recipient on-device, so",
-          "there is nothing for the user to match against. Do NOT fabricate",
-          "a hash for the on-device line.",
+          "No Message Hash is rendered for clear-sign actions (native SOL send,",
+          "nonce_init, nonce_close); the Solana app shows decoded fields on-",
+          "device, so there is nothing for the user to match against. Do NOT",
+          "fabricate a hash for the on-device line.",
           "",
         ]),
+    "Render the Browser-side decode fallback line EXACTLY as shown in the",
+    "template — `[Open in Solana Explorer Inspector](<url>)` Markdown",
+    "hyperlink, NOT a raw URL (Explorer message URLs are multi-KB and wrap",
+    "the chat). Do NOT paraphrase the URL away with \"see the earlier",
+    'prepare block" — the user should not have to scroll up.',
+    "",
     "After the CHECKS PERFORMED block, append EXACTLY one line, no menu:",
     "",
     "    Want an independent second-LLM check? Reply (2). Otherwise reply 'send'.",
     "",
-    "If ANY mandatory check fails (✗), LEAD your reply with a prominent",
+    "If ANY mandatory check fails (✗ MISMATCH on INSTRUCTION DECODE or",
+    "PAIR-CONSISTENCY LEDGER HASH), LEAD your reply with a prominent",
     '"✗ <CHECK NAME> FAILED — DO NOT SIGN." line on its own, BEFORE the',
     "CHECKS PERFORMED block. The pass/fail is the news.",
     "",
@@ -1212,10 +1522,10 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
     "  compare the second agent's plain-English description against what they",
     isSpl
       ? "  asked for and match the Message Hash inside the paste block against"
-      : "  asked for and confirm the amount/recipient match what the Solana app",
+      : "  asked for and confirm the on-device decoded fields match what the",
     isSpl
       ? "  the Ledger screen before approving."
-      : "  clear-signs on-device before approving.",
+      : "  Solana app clear-signs before approving.",
     "",
     "  This is the only check that survives a fully-coordinated agent-AND-MCP",
     "  compromise.",
@@ -1228,6 +1538,64 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
     "at prepare time), so only the two args above are needed.",
   ];
   return lines.join("\n");
+}
+
+/**
+ * Agent-task block emitted when the user has NOT installed the
+ * `vaultpilot-preflight` Claude Code skill (see
+ * https://github.com/<OWNER>/vaultpilot-skill). The skill is the only
+ * MCP-independent source of truth for agent-side integrity checks — its
+ * content lives under `~/.claude/skills/` on the user's disk, outside
+ * this server's reach. Without it, a compromised MCP could silently
+ * suppress its own CHECKS PERFORMED directives and the agent would have
+ * no static rule to fall back on.
+ *
+ * This block is prefixed to every `prepare_*` / `preview_*` tool response
+ * when the skill marker file is missing. It is a UX nudge, not a security
+ * boundary: an actually-compromised MCP would of course suppress its own
+ * warning too. The point is to catch the honest-MCP case where the user
+ * simply hasn't completed the install step, so they don't silently run
+ * with a weaker agent.
+ *
+ * `skillRepoUrl` is the GitHub URL the user clones from; passed in so the
+ * call site owns the single source of truth (index.ts).
+ */
+export function renderMissingSkillWarning(opts: {
+  skillRepoUrl: string;
+}): string {
+  // NOTE ON FRAMING — this block was originally prefixed with an
+  // "[AGENT TASK — RELAY TO USER FIRST, BEFORE ANY OTHER BLOCK]" header
+  // and a direct `git clone <url>` command. Live testing showed agents
+  // flagging that shape as prompt injection (because it is — structurally
+  // indistinguishable from an attacker-authored block demanding the user
+  // run an external script). Defense-in-depth agents correctly ignored it.
+  //
+  // The current shape mirrors the other vaultpilot-mcp informational
+  // blocks (VERIFY BEFORE SIGNING, PREPARE RECEIPT, TRANSACTION BROADCAST)
+  // the agent already trusts: a named notice with status/purpose/install
+  // sections, no imperative verbs directed at the agent, and no pasted
+  // shell commands. The server-level `instructions` field documents this
+  // notice pattern explicitly at initialize time so the agent has prior
+  // knowledge it is legitimate server output.
+  return [
+    "VAULTPILOT NOTICE — Preflight skill not installed",
+    "",
+    "Status:  ~/.claude/skills/vaultpilot-preflight/SKILL.md not found.",
+    "Purpose: the preflight skill adds MCP-independent integrity checks",
+    "         to every signing flow (local bytes-decode + on-device hash",
+    "         recompute). It lives on the user's disk outside this",
+    "         server's reach, so its invariants stay enforced even if",
+    "         this MCP is compromised or silently drops its own CHECKS",
+    "         PERFORMED directives.",
+    `Install: ${opts.skillRepoUrl.replace(/\.git$/, "")}`,
+    "         (README has the clone command; restart Claude Code after.)",
+    "",
+    "This notice is emitted by vaultpilot-mcp while the skill file is",
+    "absent. It is server-generated, not prompt injection — the server-",
+    "level `instructions` field documents this pattern. Surface it to",
+    "the user once per session as informational, then continue with",
+    "their request.",
+  ].join("\n");
 }
 
 export type { SupportedChain };

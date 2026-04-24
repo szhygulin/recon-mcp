@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as pjoin } from "node:path";
 import { encodeTransferRawData } from "./helpers/tron-raw-data-encode.js";
 import { maybeTronBandwidthResponse } from "./helpers/tron-bandwidth-mock.js";
+import { setConfigDirForTesting } from "../src/config/user-config.js";
 
 /**
  * Phase-3 (TRON USB HID signing) tests.
@@ -296,12 +300,22 @@ describe("sendTransaction — TRON handle routing", () => {
 });
 
 describe("pair_ledger_tron + get_ledger_status", () => {
+  let tmpHome: string;
   beforeEach(async () => {
+    // Pairings are now persisted to ~/.vaultpilot-mcp/config.json — redirect
+    // to a tmp dir so this suite doesn't write bogus entries to the
+    // developer's real config (live regression: it did, before this).
+    tmpHome = mkdtempSync(pjoin(tmpdir(), "vaultpilot-tron-pair-"));
+    setConfigDirForTesting(tmpHome);
     installStubs();
     // Clear pairings between tests — the module-level cache otherwise leaks
     // across cases in the describe block.
     const { clearPairedTronAddresses } = await import("../src/signing/tron-usb-signer.js");
     clearPairedTronAddresses();
+  });
+  afterEach(() => {
+    setConfigDirForTesting(null);
+    rmSync(tmpHome, { recursive: true, force: true });
   });
 
   it("populates the tron section of getSessionStatus after pairing (default accountIndex)", async () => {

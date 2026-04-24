@@ -72,6 +72,23 @@ export const prepareSolanaSplSendInput = z.object({
     ),
 });
 
+export const prepareSolanaNonceInitInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana wallet that will own (and authorize) the durable-nonce account. " +
+      "The nonce account address is derived deterministically via " +
+      "PublicKey.createWithSeed(wallet, 'vaultpilot-nonce-v1', SystemProgram). " +
+      "No separate keypair or backup is needed — the same wallet + seed always " +
+      "produces the same PDA."
+  ),
+});
+
+export const prepareSolanaNonceCloseInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana wallet whose durable-nonce account should be closed. The full balance " +
+      "(~0.00144 SOL rent-exempt seed) is returned to this same wallet."
+  ),
+});
+
 export const getLedgerStatusInput = z.object({});
 
 const baseAaveAction = z.object({
@@ -300,6 +317,8 @@ export type PairLedgerTronArgs = z.infer<typeof pairLedgerTronInput>;
 export type PairLedgerSolanaArgs = z.infer<typeof pairLedgerSolanaInput>;
 export type PrepareSolanaNativeSendArgs = z.infer<typeof prepareSolanaNativeSendInput>;
 export type PrepareSolanaSplSendArgs = z.infer<typeof prepareSolanaSplSendInput>;
+export type PrepareSolanaNonceInitArgs = z.infer<typeof prepareSolanaNonceInitInput>;
+export type PrepareSolanaNonceCloseArgs = z.infer<typeof prepareSolanaNonceCloseInput>;
 export type PrepareAaveSupplyArgs = z.infer<typeof prepareAaveSupplyInput>;
 export type PrepareAaveWithdrawArgs = z.infer<typeof prepareAaveWithdrawInput>;
 export type PrepareAaveBorrowArgs = z.infer<typeof prepareAaveBorrowInput>;

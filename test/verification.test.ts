@@ -737,10 +737,21 @@ describe("verifyEvmCalldata — independent cross-check via 4byte.directory", ()
     expect(result.summary).toMatch(/re-encod/);
     // The phrasing the user specifically asked to keep.
     expect(result.summary).toMatch(/mathematically implies/);
-    // Flag that this check shares a trust boundary with the MCP server itself.
-    expect(result.summary).toMatch(/trust boundary/);
-    // Concise: summary stays well under the old ~900-char wall-of-text.
-    expect(result.summary.length).toBeLessThan(500);
+    // Accurate trust-model framing — 4byte is a DATA SOURCE separate
+    // from the server's ABI and from the agent's model weights; the
+    // server's role is only the HTTP fetch. Earlier wording said
+    // "MCP-side — same trust boundary as the local decode; NOT an
+    // external check" which is too strict and led agents to
+    // downgrade the 4byte anchor to worthless. The current wording
+    // explicitly names 4byte as an independent data source and
+    // acknowledges the narrow compromised-MCP MITM caveat.
+    expect(result.summary).toMatch(/DATA SOURCE separate/);
+    expect(result.summary).toMatch(/compromised[- ]MCP/i);
+    expect(result.summary).toMatch(/swiss-knife/);
+    // Summary is longer now (by design — the trust-model framing is
+    // load-bearing) but still bounded so a future regression that
+    // balloons it to wall-of-text still fails.
+    expect(result.summary.length).toBeLessThan(1000);
     // Args are recovered positionally.
     expect(result.independentArgs).toHaveLength(2);
     expect(result.independentArgs?.[0].type).toBe("address");

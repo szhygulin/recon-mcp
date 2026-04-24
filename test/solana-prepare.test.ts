@@ -9,11 +9,19 @@ import { Keypair, PublicKey } from "@solana/web3.js";
  * because `getAssociatedTokenAddressSync` rejects off-curve owner addresses
  * by default. Hardcoding random base58 strings would trip that check since
  * only points on the ed25519 curve are valid pubkeys.
+ *
+ * Nonce account mocking: every send builder now requires a pre-existing
+ * nonce account for the wallet (durable-nonce-only mode). We mock
+ * `getNonceAccountValue` at the module boundary to avoid having to
+ * serialize a valid NonceAccount data buffer into getAccountInfo
+ * responses. Individual tests that verify the "nonce missing" error
+ * path re-mock with null.
  */
 
 const WALLET = Keypair.generate().publicKey.toBase58();
 const RECIPIENT = Keypair.generate().publicKey.toBase58();
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const NONCE_VALUE = "GfnhkAa2iy8cZV7X5SyyYmCHxFQjEbBuyyUSCBokixB9";
 
 const connectionStub = {
   getBalance: vi.fn(),
@@ -22,6 +30,7 @@ const connectionStub = {
   getTokenSupply: vi.fn(),
   getLatestBlockhash: vi.fn(),
   getRecentPrioritizationFees: vi.fn(),
+  getMinimumBalanceForRentExemption: vi.fn(),
 };
 
 vi.mock("../src/modules/solana/rpc.js", () => ({
@@ -29,13 +38,39 @@ vi.mock("../src/modules/solana/rpc.js", () => ({
   resetSolanaConnection: () => {},
 }));
 
-beforeEach(() => {
+vi.mock("../src/modules/solana/nonce.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/modules/solana/nonce.js")>();
+  return {
+    ...actual,
+    getNonceAccountValue: vi.fn(),
+  };
+});
+
+async function setNoncePresent(): Promise<void> {
+  const { getNonceAccountValue } = await import("../src/modules/solana/nonce.js");
+  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue({
+    nonce: NONCE_VALUE,
+    authority: new PublicKey(WALLET),
+  });
+}
+
+async function setNonceMissing(): Promise<void> {
+  const { getNonceAccountValue } = await import("../src/modules/solana/nonce.js");
+  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+}
+
+beforeEach(async () => {
   connectionStub.getBalance.mockReset();
   connectionStub.getAccountInfo.mockReset();
   connectionStub.getTokenAccountBalance.mockReset();
   connectionStub.getTokenSupply.mockReset();
   connectionStub.getLatestBlockhash.mockReset();
   connectionStub.getRecentPrioritizationFees.mockReset();
+  connectionStub.getMinimumBalanceForRentExemption.mockReset();
+
+  const { getNonceAccountValue } = await import("../src/modules/solana/nonce.js");
+  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockReset();
 
   // Default: no congestion — skip priority fee.
   connectionStub.getRecentPrioritizationFees.mockResolvedValue([]);
@@ -44,6 +79,10 @@ beforeEach(() => {
     blockhash: "HXSG2e3m7nYQL1LkRKksi2r1EH1Sd5sCQqTeyBJVeKkh",
     lastValidBlockHeight: 123_456_789,
   });
+  // Default rent-exempt minimum for nonce-account sizing.
+  connectionStub.getMinimumBalanceForRentExemption.mockResolvedValue(1_500_000);
+  // Default: nonce account exists (send/close flows).
+  await setNoncePresent();
 });
 
 afterEach(() => {
@@ -203,5 +242,77 @@ describe("buildSolanaSplSend", () => {
     await expect(
       buildSolanaSplSend({ wallet: WALLET, mint: USDC_MINT, to: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/Insufficient SOL for fees/);
+  });
+});
+
+describe("durable-nonce preflight", () => {
+  it("buildSolanaNativeSend refuses with structured error when nonce account missing", async () => {
+    await setNonceMissing();
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000);
+    const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
+    await expect(
+      buildSolanaNativeSend({ wallet: WALLET, to: RECIPIENT, amount: "1" }),
+    ).rejects.toThrow(/prepare_solana_nonce_init first/);
+  });
+
+  it("buildSolanaSplSend refuses with the same structured error when nonce account missing", async () => {
+    await setNonceMissing();
+    connectionStub.getBalance.mockResolvedValue(1_000_000_000);
+    const { buildSolanaSplSend } = await import("../src/modules/solana/actions.js");
+    await expect(
+      buildSolanaSplSend({ wallet: WALLET, mint: USDC_MINT, to: RECIPIENT, amount: "1" }),
+    ).rejects.toThrow(/prepare_solana_nonce_init first/);
+  });
+
+  it("buildSolanaNativeSend prepends AdvanceNonceAccount as ix[0] when nonce is present", async () => {
+    // setNoncePresent was called in beforeEach.
+    connectionStub.getBalance.mockResolvedValue(5_000_000_000);
+    const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
+    const tx = await buildSolanaNativeSend({
+      wallet: WALLET,
+      to: RECIPIENT,
+      amount: "0.5",
+    });
+    // Surface the nonce account in the prepared result.
+    expect(tx.nonceAccount).toBeDefined();
+    expect(tx.decoded.args.nonceAccount).toBe(tx.nonceAccount);
+    // Pull the draft and inspect ix[0] = AdvanceNonceAccount.
+    const { getSolanaDraft } = await import("../src/signing/solana-tx-store.js");
+    const draft = getSolanaDraft(tx.handle);
+    expect(draft.draftTx.instructions.length).toBeGreaterThan(0);
+    expect(draft.draftTx.instructions[0].programId.toBase58()).toBe(
+      "11111111111111111111111111111111",
+    );
+    // AdvanceNonceAccount tag = 4, encoded as u32 LE.
+    expect(draft.draftTx.instructions[0].data.readUInt32LE(0)).toBe(4);
+    // meta.nonce is populated so pinSolanaHandle knows to use it.
+    expect(draft.meta.nonce).toBeDefined();
+    expect(draft.meta.nonce!.account).toBe(tx.nonceAccount);
+    expect(draft.meta.nonce!.authority).toBe(WALLET);
+  });
+
+  it("buildSolanaSplSend prepends AdvanceNonceAccount as ix[0] when nonce is present", async () => {
+    connectionStub.getBalance.mockResolvedValue(1_000_000_000);
+    connectionStub.getAccountInfo
+      .mockResolvedValueOnce({ data: Buffer.alloc(165), owner: new PublicKey(WALLET) })
+      .mockResolvedValueOnce({ data: Buffer.alloc(165), owner: new PublicKey(RECIPIENT) });
+    connectionStub.getTokenAccountBalance.mockResolvedValue({
+      value: { amount: "100000000", decimals: 6, uiAmount: 100, uiAmountString: "100" },
+    });
+    const { buildSolanaSplSend } = await import("../src/modules/solana/actions.js");
+    const tx = await buildSolanaSplSend({
+      wallet: WALLET,
+      mint: USDC_MINT,
+      to: RECIPIENT,
+      amount: "10",
+    });
+    expect(tx.nonceAccount).toBeDefined();
+    const { getSolanaDraft } = await import("../src/signing/solana-tx-store.js");
+    const draft = getSolanaDraft(tx.handle);
+    expect(draft.draftTx.instructions[0].programId.toBase58()).toBe(
+      "11111111111111111111111111111111",
+    );
+    expect(draft.draftTx.instructions[0].data.readUInt32LE(0)).toBe(4);
+    expect(draft.meta.nonce).toBeDefined();
   });
 });

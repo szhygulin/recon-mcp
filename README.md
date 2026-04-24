@@ -48,6 +48,17 @@ VaultPilot layers defenses so most single-layer compromises are caught by at lea
 
 **See [SECURITY.md](./SECURITY.md)** for the full defenses table, threat → catches-it mapping, honest limits, the `payloadFingerprint` verification recipe, and the second-agent verification flow.
 
+### Agent-side hardening (strongly recommended)
+
+All of the `CHECKS PERFORMED` / `VERIFY-BEFORE-SIGNING` directives that VaultPilot emits are authored by the MCP server itself. A compromised or out-of-date server can silently omit them, and an honest agent with no static rule to fall back on will drop the checks. To close that self-referential gap, install the companion [`vaultpilot-skill`](https://github.com/szhygulin/vaultpilot-skill) repository as a Claude Code skill — it lives on your local disk under `~/.claude/skills/` and instructs the agent to run the bytes-decode + hash-recompute invariants on every signing flow regardless of what the MCP says.
+
+```bash
+git clone https://github.com/szhygulin/vaultpilot-skill.git \
+  ~/.claude/skills/vaultpilot-preflight
+```
+
+Restart Claude Code after installing. When the MCP detects the skill is missing (no `SKILL.md` at that path), the first vaultpilot-mcp tool response of the session — read-only or signing — carries a `VAULTPILOT NOTICE — Preflight skill not installed` block asking you to install it. The notice is deduped per-session so it doesn't spam follow-up calls. It deliberately uses a non-imperative "notice" framing rather than an "AGENT TASK" directive — earlier iterations framed it as `[AGENT TASK — RELAY TO USER FIRST, BEFORE ANY OTHER BLOCK]` with a pasteable `git clone` command, which stricter-sandboxed agents correctly classified as prompt injection and dropped. The current framing is documented as a legitimate server pattern at the top of the MCP's server-level `instructions` field so sandboxed agents don't need to guess. That notice is still server-authored (a compromised MCP would suppress it), so the install step must not be deferred. Users who only use vaultpilot-mcp for reads and never sign can suppress the notice via `VAULTPILOT_SKILL_MARKER_PATH=<any existing file>` after acknowledging the tradeoff. See the roadmap for a planned `PreToolUse` hook that would enforce the hash recompute as host-side code, removing the agent-prose dependency entirely.
+
 ## Supported chains
 
 EVM: Ethereum, Arbitrum, Polygon, Base.
@@ -61,6 +72,7 @@ Not every protocol is on every chain. Lido and EigenLayer are L1-only (Ethereum)
 - **MetaMask support** (WalletConnect) — alongside the existing Ledger Live integration. Will let users sign through a MetaMask-paired session when a hardware wallet isn't available.
 - **Solana** — coming later. Non-EVM: introduces a separate SDK (`@solana/web3.js`), base58 addresses, and the WalletConnect `solana:` namespace for signing.
 - **Server-integrated second-agent verification** — have the MCP call an independent second-provider LLM directly on every high-value or blind-sign-expected `send_transaction`, relay its verdict to the user, and block the send on disagreement. Structurally closes the coordinated-agent gap that today's copy-paste `get_verification_artifact` flow only narrows (the copy-paste path depends on the first agent not silently suppressing the artifact). Additive, opt-in feature — the self-custody trust model (no private keys on the server, no broadcast without device approval) is unchanged.
+- **PreToolUse hook for mechanical hash enforcement** — the agent-side preflight skill currently instructs the agent to run the bytes-decode + hash-recompute checks, but it does not physically prevent a prompt-injected or coordinated-compromised agent from skipping them. A Claude Code `PreToolUse` hook registered on `mcp__vaultpilot-mcp__send_transaction` would do the hash recompute as host-side code, using its own pinned `viem` / `@solana/web3.js` install, and exit non-zero on divergence — the Claude Code harness blocks the tool call before it reaches the MCP. This makes the check mechanical rather than prose-based; the only way past it is to also compromise the user's local `settings.json` or the hook's own `node_modules`. Ships as a separate `vaultpilot-hook` repo (same independent-trust-root reasoning as [`vaultpilot-skill`](https://github.com/szhygulin/vaultpilot-skill)). Deferred because the transcript-path conventions and failure-mode UX warrant a full iteration of their own.
 
 ## Tools exposed to the agent
 

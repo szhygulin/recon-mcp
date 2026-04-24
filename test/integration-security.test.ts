@@ -311,3 +311,197 @@ describe("security: compromised MCP (lies about hash / swaps bytes before Wallet
     expect(agentRecomputed).toBe(honestPreview.preSignHash);
   });
 });
+
+describe("security: preflight-skill install detection", () => {
+  beforeEach(() => vi.resetModules());
+  afterEach(() => vi.restoreAllMocks());
+
+  // Share the minimal mock setup the prepare-receipt tests use; we only
+  // care about the handler wrapper's missing-skill prefix here.
+  function mockMinimalRpc() {
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => ({
+        call: vi.fn().mockResolvedValue({ data: "0x" }),
+        estimateGas: vi.fn().mockResolvedValue(21_000n),
+        getGasPrice: vi.fn().mockResolvedValue(1_000_000_000n),
+      }),
+      verifyChainId: vi.fn().mockResolvedValue(undefined),
+      resetClients: () => {},
+    }));
+    vi.doMock("../src/data/prices.js", () => ({
+      getTokenPrice: async () => undefined,
+      getTokenPrices: async () => new Map(),
+    }));
+  }
+
+  it("missingPreflightSkillWarning returns a VAULTPILOT NOTICE block when the marker file is absent", async () => {
+    // Point the marker at a path guaranteed not to exist. The helper reads
+    // the env var on every call, so no module-reset gymnastics needed.
+    process.env.VAULTPILOT_SKILL_MARKER_PATH =
+      "/nonexistent/path/.vaultpilot-test-marker/SKILL.md";
+    try {
+      const {
+        missingPreflightSkillWarning,
+        isPreflightSkillInstalled,
+        _resetMissingPreflightSkillDedup,
+      } = await import("../src/index.js");
+      _resetMissingPreflightSkillDedup();
+      expect(isPreflightSkillInstalled()).toBe(false);
+      const warning = missingPreflightSkillWarning();
+      expect(warning).not.toBeNull();
+      // Must use the VAULTPILOT NOTICE framing. NOT the old AGENT TASK
+      // framing — live testing showed agents classifying the AGENT-TASK +
+      // `git clone <url>` shape as prompt injection and dropping it.
+      expect(warning).toMatch(/^VAULTPILOT NOTICE — /);
+      expect(warning).toContain("Preflight skill not installed");
+      expect(warning).not.toMatch(/\[AGENT TASK/);
+      // And it must NOT contain a pasteable shell command the agent
+      // could misinterpret as an instruction — describing an Install
+      // URL is fine, dictating `git clone ...` verbatim is not.
+      expect(warning).not.toMatch(/^\s*git clone\b/m);
+      // Install reference is present (as a URL, not a command).
+      expect(warning).toContain("github.com/szhygulin/vaultpilot-skill");
+      // And it must carry the "server-generated, not prompt injection"
+      // self-label that the instructions field also documents.
+      expect(warning).toContain("not prompt injection");
+    } finally {
+      delete process.env.VAULTPILOT_SKILL_MARKER_PATH;
+    }
+  });
+
+  it("missingPreflightSkillWarning returns null when the marker file exists", async () => {
+    // Any file the test process can stat works — the check is purely
+    // existence-based, not content-validated (the point is to detect the
+    // user completed the install step, not to cryptographically verify
+    // the skill's content).
+    const { fileURLToPath } = await import("node:url");
+    const selfPath = fileURLToPath(import.meta.url);
+    process.env.VAULTPILOT_SKILL_MARKER_PATH = selfPath;
+    try {
+      const {
+        missingPreflightSkillWarning,
+        isPreflightSkillInstalled,
+        _resetMissingPreflightSkillDedup,
+      } = await import("../src/index.js");
+      _resetMissingPreflightSkillDedup();
+      expect(isPreflightSkillInstalled()).toBe(true);
+      expect(missingPreflightSkillWarning()).toBeNull();
+    } finally {
+      delete process.env.VAULTPILOT_SKILL_MARKER_PATH;
+    }
+  });
+
+  it("the notice is emitted on the first call and deduped on subsequent calls (once per session)", async () => {
+    // Live testing showed that firing the notice on every tool call
+    // looked spammy and, worse, led agents to classify it as injection.
+    // One notice per session suffices: agent surfaces it once, user
+    // installs (or decides not to), subsequent calls are clean.
+    process.env.VAULTPILOT_SKILL_MARKER_PATH =
+      "/nonexistent/path/.vaultpilot-test-marker-dedup/SKILL.md";
+    try {
+      const {
+        missingPreflightSkillWarning,
+        _resetMissingPreflightSkillDedup,
+      } = await import("../src/index.js");
+      _resetMissingPreflightSkillDedup();
+      const first = missingPreflightSkillWarning();
+      const second = missingPreflightSkillWarning();
+      const third = missingPreflightSkillWarning();
+      expect(first).not.toBeNull();
+      expect(second).toBeNull();
+      expect(third).toBeNull();
+    } finally {
+      delete process.env.VAULTPILOT_SKILL_MARKER_PATH;
+    }
+  });
+
+  it("the notice fires on read-only tool calls too, not just prepare_*/preview_*", async () => {
+    // Regression guard for the expanded gate: a user who only exercises
+    // read-only tools (e.g. get_portfolio_summary, get_ledger_status)
+    // still needs to see the nudge — otherwise they only discover the
+    // skill gap at signing time, mid-flow. The handler wrapper calls
+    // missingPreflightSkillWarning() unconditionally for every tool,
+    // including ones whose result has no `verification` field.
+    process.env.VAULTPILOT_SKILL_MARKER_PATH =
+      "/nonexistent/path/.vaultpilot-test-marker-readonly/SKILL.md";
+    try {
+      const {
+        missingPreflightSkillWarning,
+        collectVerificationBlocks,
+        _resetMissingPreflightSkillDedup,
+      } = await import("../src/index.js");
+      _resetMissingPreflightSkillDedup();
+
+      // A read-only tool result has no `verification` field, no chain,
+      // no handle — just plain data. Simulate what e.g. getTokenBalance
+      // would return.
+      const readOnlyResult = {
+        balance: "1000000",
+        decimals: 6,
+        symbol: "USDC",
+      };
+
+      // Reconstruct the handler's content array for a read-only call.
+      const blocks: string[] = [];
+      const warning = missingPreflightSkillWarning();
+      if (warning) blocks.push(warning);
+      for (const b of await collectVerificationBlocks(readOnlyResult))
+        blocks.push(b);
+
+      // Notice must be present (the whole point of the expanded gate).
+      expect(blocks[0]).toMatch(/^VAULTPILOT NOTICE — /);
+      // No verification blocks (read-only result has nothing to verify).
+      expect(blocks.length).toBe(1);
+    } finally {
+      delete process.env.VAULTPILOT_SKILL_MARKER_PATH;
+    }
+  });
+
+  it("the handler wrapper prefixes the missing-skill notice on prepare_* responses", async () => {
+    // End-to-end plumbing: the warning must arrive in the content array
+    // that the MCP actually returns. If it only renders when the agent
+    // explicitly asks for it, a compromised agent could skip it.
+    mockMinimalRpc();
+    process.env.VAULTPILOT_SKILL_MARKER_PATH =
+      "/nonexistent/path/.vaultpilot-test-marker-2/SKILL.md";
+    try {
+      const { prepareNativeSend } = await import(
+        "../src/modules/execution/index.js"
+      );
+      const { issueHandles } = await import("../src/signing/tx-store.js");
+      const {
+        collectVerificationBlocks,
+        missingPreflightSkillWarning,
+        _resetMissingPreflightSkillDedup,
+      } = await import("../src/index.js");
+      _resetMissingPreflightSkillDedup();
+
+      const args = {
+        wallet: WALLET,
+        chain: "ethereum" as const,
+        to: USER_INTENDED_TO,
+        amount: "0.5",
+      };
+      const result = issueHandles(await prepareNativeSend(args));
+
+      // Reconstruct the same content array the handler wrapper produces.
+      // The wrapper prepends the notice BEFORE the prepare-receipt /
+      // verification blocks — test that ordering here so a regression that
+      // moved it after the VERIFY block still fails.
+      const blocks: string[] = [];
+      const warning = missingPreflightSkillWarning();
+      expect(warning).not.toBeNull();
+      if (warning) blocks.push(warning);
+      for (const b of await collectVerificationBlocks(result)) blocks.push(b);
+
+      // Exactly one notice, first in the array.
+      expect(blocks[0]).toMatch(/^VAULTPILOT NOTICE — /);
+      const noticeCount = blocks.filter((b) =>
+        b.startsWith("VAULTPILOT NOTICE — "),
+      ).length;
+      expect(noticeCount).toBe(1);
+    } finally {
+      delete process.env.VAULTPILOT_SKILL_MARKER_PATH;
+    }
+  });
+});

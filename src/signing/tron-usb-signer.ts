@@ -1,5 +1,10 @@
 import { isTronAddress } from "../config/tron.js";
 import { openLedger } from "./tron-usb-loader.js";
+import { existsSync } from "node:fs";
+import { getConfigPath, patchUserConfig, readUserConfig } from "../config/user-config.js";
+import type { PairedTronEntry } from "../types/index.js";
+
+export type { PairedTronEntry };
 
 /**
  * TRON signing path. BIP-44 coin type 195 (SLIP-44). The hardened account
@@ -36,15 +41,6 @@ export function parseTronAccountIndex(path: string): number | null {
   return Number.isInteger(n) ? n : null;
 }
 
-export interface PairedTronEntry {
-  address: string;
-  publicKey: string;
-  path: string;
-  appVersion: string;
-  /** Null when the path is not in the standard `44'/195'/<n>'/0/0` layout. */
-  accountIndex: number | null;
-}
-
 /**
  * Ledger TRON pairings. Populated by `pair_ledger_tron` and read back by
  * `get_ledger_status` so the agent can resolve "my TRON wallet" / "my second
@@ -53,11 +49,35 @@ export interface PairedTronEntry {
  * index 1). `send_transaction` does NOT trust this cache — it always
  * re-opens the device and verifies the derived address matches `from`
  * before signing.
+ *
+ * Persisted to `~/.vaultpilot-mcp/config.json` (UserConfig.pairings.tron)
+ * — public addresses + paths only, no secrets — so a server restart
+ * doesn't force a re-pair. Mirror of the Solana persistence in
+ * solana-usb-signer.ts.
  */
 const pairedTronByPath = new Map<string, PairedTronEntry>();
+let pairedTronHydrated = false;
+
+/** Hydrate the in-memory Map from disk on first access. Idempotent. */
+function ensurePairedTronHydrated(): void {
+  if (pairedTronHydrated) return;
+  pairedTronHydrated = true;
+  const persisted = readUserConfig()?.pairings?.tron ?? [];
+  for (const entry of persisted) {
+    pairedTronByPath.set(entry.path, entry);
+  }
+}
+
+/** Snapshot in-memory entries to disk via patchUserConfig (preserves other config slices). */
+function persistPairedTron(): void {
+  patchUserConfig({
+    pairings: { tron: Array.from(pairedTronByPath.values()) },
+  });
+}
 
 /** All paired TRON accounts, sorted by `accountIndex` (standard paths first). */
 export function getPairedTronAddresses(): PairedTronEntry[] {
+  ensurePairedTronHydrated();
   return Array.from(pairedTronByPath.values()).sort((a, b) => {
     if (a.accountIndex === null && b.accountIndex === null) return 0;
     if (a.accountIndex === null) return 1;
@@ -68,6 +88,7 @@ export function getPairedTronAddresses(): PairedTronEntry[] {
 
 /** Look up a paired entry by its derived base58 address. */
 export function getPairedTronByAddress(address: string): PairedTronEntry | null {
+  ensurePairedTronHydrated();
   for (const entry of pairedTronByPath.values()) {
     if (entry.address === address) return entry;
   }
@@ -75,14 +96,26 @@ export function getPairedTronByAddress(address: string): PairedTronEntry | null 
 }
 
 export function setPairedTronAddress(entry: Omit<PairedTronEntry, "accountIndex">): PairedTronEntry {
+  ensurePairedTronHydrated();
   const full: PairedTronEntry = { ...entry, accountIndex: parseTronAccountIndex(entry.path) };
   pairedTronByPath.set(entry.path, full);
+  persistPairedTron();
   return full;
 }
 
-/** Test-only hook — lets us reset state between suites without juggling module caches. */
+/**
+ * Reset both in-memory Map and the on-disk slice. Used by tests and by any
+ * future "forget paired devices" UX. Mirrors `clearPairedSolanaAddresses`.
+ */
 export function clearPairedTronAddresses(): void {
   pairedTronByPath.clear();
+  pairedTronHydrated = false;
+  // See `clearPairedSolanaAddresses` for the rationale: check the active
+  // config path (not the legacy fallback) so a fresh install or a tmp-dir
+  // test doesn't accidentally materialize an empty config file.
+  if (existsSync(getConfigPath())) {
+    patchUserConfig({ pairings: { tron: [] } });
+  }
 }
 
 /**
