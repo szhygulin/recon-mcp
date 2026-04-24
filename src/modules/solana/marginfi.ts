@@ -16,9 +16,7 @@ import {
 } from "./nonce.js";
 import { throwNonceRequired } from "./actions.js";
 import {
-  findMarginfiApproval,
   issueSolanaDraftHandle,
-  type ApprovalKeyFields,
   type SolanaTxDraft,
 } from "../../signing/solana-tx-store.js";
 import { SOLANA_TOKEN_DECIMALS, SOLANA_TOKENS } from "../../config/solana.js";
@@ -816,26 +814,6 @@ export interface PreparedMarginfiTx {
    * the real cost to the user BEFORE they blind-sign (issue #103).
    */
   rentLamports?: number;
-  /**
-   * Fast-retry advisory — present only on `marginfi_borrow` / `marginfi_repay`
-   * when the server found a recent same-op Ledger approval whose prior
-   * attempt failed with a Switchboard transient-oracle error. The server
-   * handler surfaces the fields as a user-facing "this retry is fast-retry
-   * eligible" banner on the `prepare_*` response, so the user sees the
-   * abridged-checks framing before `preview_solana_send` renders.
-   *
-   * Absent means the next preview will emit the full CHECKS block — either
-   * there was no prior approval in cache, the approval expired, or the
-   * prior failure class wasn't oracle-transient.
-   */
-  fastRetry?: {
-    priorLedgerHash: string;
-    approvedAt: number;
-    transientReason:
-      | "NotEnoughSamples"
-      | "InvalidSlotNumber"
-      | "RotatingMegaSlot";
-  };
 }
 
 export interface MarginfiInitParams {
@@ -1155,15 +1133,6 @@ async function wrapWithNonce(
     | "marginfi_repay",
   bankIxs: TransactionInstruction[],
   p: MarginfiActionParams,
-  fastRetry?: {
-    priorLedgerHash: string;
-    approvedAt: number;
-    transientReason:
-      | "NotEnoughSamples"
-      | "InvalidSlotNumber"
-      | "RotatingMegaSlot";
-    priorDecodedArgs: Record<string, string>;
-  },
 ): Promise<PreparedMarginfiTx> {
   const conn = getSolanaConnection();
 
@@ -1293,7 +1262,6 @@ async function wrapWithNonce(
         oracles: crankedOracles,
         instructionCount: crankInstructions.length,
       },
-      ...(fastRetry ? { fastRetry } : {}),
     },
   };
 
@@ -1307,15 +1275,6 @@ async function wrapWithNonce(
     decoded: draft.meta.decoded,
     nonceAccount: nonceAccountStr,
     marginfiAccount: marginfiAccountStr,
-    ...(fastRetry
-      ? {
-          fastRetry: {
-            priorLedgerHash: fastRetry.priorLedgerHash,
-            approvedAt: fastRetry.approvedAt,
-            transientReason: fastRetry.transientReason,
-          },
-        }
-      : {}),
   };
 }
 
@@ -1359,15 +1318,7 @@ export async function buildMarginfiBorrow(
     ctx.amountUi,
     ctx.bank.address,
   );
-  const fastRetry = detectMarginfiFastRetry(p, "marginfi_borrow", ctx);
-  return wrapWithNonce(
-    ctx,
-    "borrow",
-    "marginfi_borrow",
-    instructions,
-    p,
-    fastRetry,
-  );
+  return wrapWithNonce(ctx, "borrow", "marginfi_borrow", instructions, p);
 }
 
 export async function buildMarginfiRepay(
@@ -1379,70 +1330,7 @@ export async function buildMarginfiRepay(
     ctx.bank.address,
     p.repayAll ?? false,
   );
-  const fastRetry = detectMarginfiFastRetry(p, "marginfi_repay", ctx);
-  return wrapWithNonce(
-    ctx,
-    "repay",
-    "marginfi_repay",
-    instructions,
-    p,
-    fastRetry,
-  );
-}
-
-/**
- * Decide whether to stamp the incoming borrow/repay draft with a fast-retry
- * descriptor. Fires only when BOTH eligibility conditions hold:
- *
- *   (A) A same-op `ApprovedMarginfiOp` sits in the approval cache within
- *       its 15-minute TTL. This proves the user recently physically
- *       approved the identical semantic op on their Ledger — we're
- *       retrying, not signing a new intent.
- *   (B) The most recent failure recorded for that descriptor is classified
- *       `oracle-transient` (NotEnoughSamples / InvalidSlotNumber /
- *       RotatingMegaSlot). Any other failure class (hard MarginFi revert,
- *       RPC error, user-rejected-on-device) keeps the full-CHECKS default.
- *
- * The descriptor embeds the prior approval's Ledger hash, its timestamp,
- * the transient-reason tag, and the prior `decoded.args` snapshot so
- * `previewSolanaSend`'s abridged template can show a semantic-args diff.
- * Returns `undefined` when ineligible — `wrapWithNonce` leaves
- * `meta.fastRetry` unset and the draft renders the full CHECKS block.
- */
-function detectMarginfiFastRetry(
-  p: MarginfiActionParams,
-  action: "marginfi_borrow" | "marginfi_repay",
-  ctx: ResolvedActionContext,
-): {
-  priorLedgerHash: string;
-  approvedAt: number;
-  transientReason:
-    | "NotEnoughSamples"
-    | "InvalidSlotNumber"
-    | "RotatingMegaSlot";
-  priorDecodedArgs: Record<string, string>;
-} | undefined {
-  const fields: ApprovalKeyFields = {
-    wallet: p.wallet,
-    action,
-    accountIndex: p.accountIndex ?? 0,
-    bank: ctx.bank.address.toBase58(),
-    mint: ctx.mint,
-    amount: ctx.amountUi.toFixed(),
-  };
-  const hit = findMarginfiApproval(fields);
-  if (!hit) return undefined;
-  if (hit.lastFailure?.kind !== "oracle-transient") return undefined;
-  const reason = hit.lastFailure.reason as
-    | "NotEnoughSamples"
-    | "InvalidSlotNumber"
-    | "RotatingMegaSlot";
-  return {
-    priorLedgerHash: hit.approval.ledgerHash,
-    approvedAt: hit.approval.approvedAt,
-    transientReason: reason,
-    priorDecodedArgs: hit.approval.decodedArgs,
-  };
+  return wrapWithNonce(ctx, "repay", "marginfi_repay", instructions, p);
 }
 
 /**

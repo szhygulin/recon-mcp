@@ -281,11 +281,8 @@ describe("renderSolanaAgentTaskBlock", () => {
     // same script handles legacy (SPL sends, native sends, nonce_close) AND
     // v0 messages with ALT-indexed accounts (Jupiter swaps, Kamino/MarginFi
     // flows that need ALTs).
-    // v1.5: the script opens with a performance.now() t0 checkpoint for
-    // the measurement/instrumentation pass, then the web3.js require.
-    expect(block).toContain("node -e \"const t0 = performance.now();");
     expect(block).toMatch(
-      /const \{Message, VersionedMessage, PublicKey, Connection\} = require\('@solana\/web3\.js'\);/,
+      /node -e "const \{Message, VersionedMessage, PublicKey, Connection\} = require\('@solana\/web3\.js'\);/,
     );
     expect(block).toContain(
       "const m = '<messageBase64 from the preview_solana_send result>';",
@@ -308,13 +305,9 @@ describe("renderSolanaAgentTaskBlock", () => {
     expect(block).toContain(
       "const ledgerHash = new PublicKey(createHash('sha256').update(buf).digest()).toBase58();",
     );
-    // v1.5: output JSON now includes a timingsMs breakdown alongside
-    // ledgerHash + instructions for empirical latency attribution.
     expect(block).toContain(
-      "console.log(JSON.stringify({ledgerHash, instructions, timingsMs}, null, 2));",
+      "console.log(JSON.stringify({ledgerHash, instructions}, null, 2));",
     );
-    expect(block).toContain("importMs");
-    expect(block).toContain("altResolveMs");
     expect(block).toContain("programId: msg.accountKeys[ix.programIdIndex].toBase58()");
     expect(block).toContain("dataHex: b58(ix.data)");
     // CHECK 1 verdict is now {✓|✗|⚠} (agent-determined), NOT permanent ⚠.

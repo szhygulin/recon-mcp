@@ -1,5 +1,4 @@
 import { getSolanaConnection } from "./rpc.js";
-import type { MarginfiFailureRecord } from "../../signing/solana-tx-store.js";
 
 /**
  * Broadcast a signed Solana tx to the network. Input is the full serialized
@@ -93,53 +92,4 @@ export async function broadcastSolanaTx(signedTxBytes: Buffer): Promise<string> 
 
     throw new Error(`Solana broadcast failed: ${base}${logs}`);
   }
-}
-
-/**
- * Classify a broadcast- or preview-time failure against the Switchboard
- * transient-oracle taxonomy. Used by the MarginFi fast-retry approval cache
- * to decide whether a subsequent same-op re-prepare is eligible for the
- * abridged CHECKS template.
- *
- * Inspects the error message text (both the friendly-wrapped forms this
- * module throws AND the raw pre-sign-simulation messages shaped in
- * `previewSolanaSend`), keyed on phrases that uniquely identify each
- * transient mode. Non-transient (MarginFi bad-health, arbitrary RPC
- * errors, user-rejected-on-device) fall into `{ kind: "other", ... }`.
- *
- * Returns a `MarginfiFailureRecord` regardless of err shape; callers can
- * pass it straight into `recordMarginfiFailure`. Never throws.
- */
-export function classifyMarginfiFailure(err: unknown): MarginfiFailureRecord {
-  const message = err instanceof Error ? err.message : String(err ?? "");
-  const now = Date.now();
-
-  // Rotation is the most specific — check first so it doesn't get captured
-  // by the plain NotEnoughSamples branch.
-  if (/Rotating mega slot|ROTATING oracles/i.test(message)) {
-    return { kind: "oracle-transient", reason: "RotatingMegaSlot", failedAt: now };
-  }
-  // Switchboard InvalidSlotNumber — the signed oracle response is past the
-  // ~512-slot SlotHashes window. Either the Anchor code 6039 / 0x1797 or
-  // the error name string may surface depending on where the error was
-  // shaped.
-  if (/InvalidSlotNumber|0x1797\b|\b6039\b/.test(message)) {
-    return { kind: "oracle-transient", reason: "InvalidSlotNumber", failedAt: now };
-  }
-  // NotEnoughSamples — Anchor 6030 / 0x178e — caught by broadcast.ts's
-  // friendly wrapper ("aged out during Ledger review") OR by the pre-sign
-  // simulate gate ("Pre-sign simulation REJECTED ... NotEnoughSamples").
-  if (
-    /NotEnoughSamples|0x178e|aged out during Ledger review/i.test(message)
-  ) {
-    return { kind: "oracle-transient", reason: "NotEnoughSamples", failedAt: now };
-  }
-  // Everything else — MarginFi bad-health, stale non-Switchboard oracle,
-  // arbitrary RPC issues, the user hitting "reject" on-device. Record a
-  // truncated reason for observability but do NOT unlock fast-retry.
-  return {
-    kind: "other",
-    reason: message.slice(0, 200),
-    failedAt: now,
-  };
 }

@@ -20,9 +20,6 @@ import {
   hasSolanaHandle,
   getSolanaDraft,
   pinSolanaHandle,
-  recordMarginfiApproval,
-  recordMarginfiFailure,
-  type ApprovalKeyFields,
 } from "../../signing/solana-tx-store.js";
 import {
   getTronLedgerAddress,
@@ -40,7 +37,7 @@ import {
 } from "../../signing/solana-usb-signer.js";
 import { broadcastTronTx } from "../tron/broadcast.js";
 import { getTronTransactionStatus } from "../tron/status.js";
-import { broadcastSolanaTx, classifyMarginfiFailure } from "../solana/broadcast.js";
+import { broadcastSolanaTx } from "../solana/broadcast.js";
 import { getSolanaTransactionStatus } from "../solana/status.js";
 import {
   buildSolanaNativeSend,
@@ -652,13 +649,6 @@ export async function previewSolanaSend(args: {
         e instanceof Error &&
         /Pre-sign simulation REJECTED/.test(e.message)
       ) {
-        // Record the failure against the approval cache BEFORE re-throwing,
-        // so a subsequent same-op prepare can decide fast-retry eligibility.
-        // Only applies to MarginFi borrow/repay flows.
-        const fields = marginfiApprovalFieldsFromPinned(pinned);
-        if (fields) {
-          recordMarginfiFailure(fields, classifyMarginfiFailure(e));
-        }
         throw e;
       }
       // eslint-disable-next-line no-console
@@ -709,22 +699,6 @@ async function sendSolanaTransaction(args: SendTransactionArgs): Promise<{
     ...(paired ? { path: paired.path } : {}),
   });
 
-  // Ledger returned a signature — the user physically approved these exact
-  // bytes on their device. Record that fact for MarginFi borrow/repay flows
-  // BEFORE we attempt broadcast, so a subsequent broadcast failure still
-  // leaves the approval recorded (user consent is independent of on-chain
-  // outcome). Any same-op re-prepare within 15 min that ALSO records a
-  // Switchboard transient-oracle failure unlocks the abridged-CHECKS path.
-  const approvalFields = marginfiApprovalFieldsFromPinned(tx);
-  if (approvalFields && tx.verification) {
-    recordMarginfiApproval({
-      key: approvalFields,
-      ledgerHash: tx.verification.payloadHashShort,
-      approvedAt: Date.now(),
-      decodedArgs: tx.decoded.args,
-    });
-  }
-
   // Assemble the final serialized tx: one signature count byte (0x01), the
   // 64-byte signature, then the message bytes. Matches what
   // `Transaction.serialize()` produces for a single-signer tx after
@@ -736,16 +710,7 @@ async function sendSolanaTransaction(args: SendTransactionArgs): Promise<{
     messageBytes,
   ]);
 
-  let txSignature: string;
-  try {
-    txSignature = await broadcastSolanaTx(signedTxBytes);
-  } catch (e) {
-    // Classify + record so the next same-op prepare can decide eligibility.
-    if (approvalFields) {
-      recordMarginfiFailure(approvalFields, classifyMarginfiFailure(e));
-    }
-    throw e;
-  }
+  const txSignature = await broadcastSolanaTx(signedTxBytes);
   // Retire the handle only after successful broadcast. A signing or
   // broadcast failure leaves the handle valid for retry within its 15-min
   // TTL (though on-chain validity is bounded by the ~60s blockhash window).
@@ -757,32 +722,6 @@ async function sendSolanaTransaction(args: SendTransactionArgs): Promise<{
       ? { lastValidBlockHeight: tx.lastValidBlockHeight }
       : {}),
   };
-}
-
-/**
- * Derive the approval-cache key fields from a pinned MarginFi borrow/repay
- * tx. Returns null for non-borrow/repay actions (the fast-retry cache only
- * tracks those two) or when the pinned tx is missing any identifying field.
- * The six fields come straight out of `decoded.args` as stamped by
- * `wrapWithNonce` in `src/modules/solana/marginfi.ts`.
- */
-function marginfiApprovalFieldsFromPinned(
-  tx: UnsignedSolanaTx,
-): ApprovalKeyFields | null {
-  if (tx.action !== "marginfi_borrow" && tx.action !== "marginfi_repay") {
-    return null;
-  }
-  const a = tx.decoded.args;
-  const wallet = a.wallet ?? tx.from;
-  const bank = a.bank;
-  const mint = a.mint;
-  const amountRaw = a.amount; // "1.5 USDC" shape
-  const accountIndex = Number(a.accountIndex ?? 0);
-  if (!wallet || !bank || !mint || !amountRaw) return null;
-  // decoded.args.amount is rendered as "<value> <symbol>" by wrapWithNonce.
-  // Strip the trailing symbol to canonicalize.
-  const amount = amountRaw.split(" ")[0] ?? amountRaw;
-  return { wallet, action: tx.action, accountIndex, bank, mint, amount };
 }
 
 /** Attach eth_call simulation result, gas estimate, and USD cost. */
