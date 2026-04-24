@@ -58,7 +58,14 @@ interface MinimalBalance {
 interface MinimalWrapper {
   address: PublicKey;
   activeBalances: MinimalBalance[];
-  computeHealthComponents(req: unknown): {
+  /**
+   * Legacy (recompute-from-raw) health components. `computeHealthComponents`
+   * alone reads `marginfiAccount.healthCache.*`, which is all-zero on
+   * MarginfiAccounts where the program hasn't written a fresh cache yet
+   * (issue #110). We use the Legacy path so the surfaced healthFactor
+   * matches the supplied[] line emitted from the same reader.
+   */
+  computeHealthComponentsLegacy(req: unknown): {
     assets: BigNumber;
     liabilities: BigNumber;
   };
@@ -246,14 +253,22 @@ function buildPositionFromWrapper(
   // MarginRequirementType.Maintenance === 1 in the SDK's enum; we use the numeric
   // literal to avoid importing the enum just for the one call.
   //
-  // Guarded: a fresh account with no active balances has a healthCache the
-  // SDK hasn't written to yet, and `marginfiAccount.healthCache.*Maint` can
-  // be null → `null.toNumber()` throws (issue #102). Fall back to Infinity
-  // (conceptually: no debt, can't be liquidated) so the reader returns a
-  // usable entry instead of failing the whole call.
+  // Use the Legacy (recompute-from-raw) path. `computeHealthComponents`
+  // alone reads `marginfiAccount.healthCache.assetValueMaint` — a field
+  // that lives on-chain and is routinely all-zero on accounts where the
+  // MarginFi program hasn't written a fresh cache (issue #110). With a
+  // zeroed cache, the cache-based compute reports assets=0 liabilities=0
+  // → healthFactor collapses to Infinity even when the account has
+  // $87 actually supplied. Legacy weighs `balance × price × assetWeightMaint`
+  // live from the hydrated bank + oracle state.
+  //
+  // Guarded: a freshly-initialized account with no active balances can
+  // still trip the SDK's internal math (issue #102). Fall back to
+  // Infinity (conceptually: no debt, can't be liquidated) so the reader
+  // returns a usable entry instead of failing the whole call.
   let healthFactor = Number.POSITIVE_INFINITY;
   try {
-    const health = wrapper.computeHealthComponents(1);
+    const health = wrapper.computeHealthComponentsLegacy(1);
     const assetsUsd = health.assets.toNumber();
     const liabsUsd = health.liabilities.toNumber();
     healthFactor =
@@ -261,7 +276,7 @@ function buildPositionFromWrapper(
   } catch {
     healthFactor = Number.POSITIVE_INFINITY;
     warnings.push(
-      "Health factor unavailable — SDK couldn't read healthCache (likely a freshly-initialized account with no balances).",
+      "Health factor unavailable — SDK couldn't recompute health from balances (likely a freshly-initialized account with no balances).",
     );
   }
 

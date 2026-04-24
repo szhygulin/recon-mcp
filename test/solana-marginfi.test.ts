@@ -157,7 +157,17 @@ function dummyIx(label: string): TransactionInstruction {
 }
 
 function installFakeWrapperFor(kind: "healthy" | "noCollateral"): void {
-  const free = kind === "noCollateral" ? new BigNumber(0) : new BigNumber(1000);
+  // Legacy recompute stub — this is the path the pre-flight (issue #110)
+  // reads from. `healthy` = supplied collateral with no debt; `noCollateral`
+  // = debt matches supply exactly (free = 0). The cache-reading
+  // `computeHealthComponents` / `computeFreeCollateral` stubs are kept so
+  // tests that pre-date the #110 fix still have a value to read, but the
+  // pre-flight no longer calls them.
+  const legacyAssets = new BigNumber(1000);
+  const legacyLiabs =
+    kind === "noCollateral" ? new BigNumber(1000) : new BigNumber(0);
+  const cacheFree =
+    kind === "noCollateral" ? new BigNumber(0) : new BigNumber(1000);
   wrapperFetchMock.mockResolvedValue({
     address: new PublicKey(
       // Any valid base58 pubkey works here — the builder just passes it
@@ -180,7 +190,11 @@ function installFakeWrapperFor(kind: "healthy" | "noCollateral"): void {
       assets: new BigNumber(1100),
       liabilities: new BigNumber(100),
     }),
-    computeFreeCollateral: () => free,
+    computeHealthComponentsLegacy: () => ({
+      assets: legacyAssets,
+      liabilities: legacyLiabs,
+    }),
+    computeFreeCollateral: () => cacheFree,
   });
 }
 
@@ -339,6 +353,67 @@ describe("buildMarginfiSupply / Withdraw / Borrow / Repay", () => {
     await expect(
       buildMarginfiWithdraw({ wallet: WALLET, symbol: "USDC", amount: "1" }),
     ).rejects.toThrow(/free collateral/i);
+  });
+
+  /**
+   * Issue #110 — the borrow/withdraw pre-flight used to read the
+   * `healthCache`-backed `computeFreeCollateral()`, which returns 0 on
+   * MarginfiAccounts where the on-chain health cache hasn't been written
+   * (common after a fresh supply in SDK v6.4.1). With the cache-reading
+   * path, a borrow against $87 of live collateral was refused with
+   * "zero free collateral". The fix switches the pre-flight to the
+   * Legacy recompute path. This test reproduces the exact scenario:
+   * cache reports zero, Legacy recomputes positive — pre-flight must
+   * pass and the borrow ix must build.
+   */
+  it("borrow against live collateral succeeds even when healthCache is all-zero", async () => {
+    await setNoncePresent();
+    connectionStub.getAccountInfo.mockResolvedValue({
+      data: Buffer.alloc(0),
+      owner: new PublicKey("11111111111111111111111111111111"),
+      lamports: 1,
+      executable: false,
+    });
+    await installFakeClient((mint) =>
+      mint.toBase58() === USDC_MINT ? buildFakeBank(USDC_MINT) : null,
+    );
+    // Install a wrapper that simulates the #110 scenario exactly:
+    // healthCache-reading APIs return zeroes (as they would on-chain
+    // when the program hasn't refreshed), but the Legacy recompute
+    // reports a real balance. The pre-flight should trust Legacy.
+    wrapperFetchMock.mockResolvedValue({
+      address: new PublicKey("11111111111111111111111111111111"),
+      makeDepositIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("deposit")], keys: [] }),
+      makeWithdrawIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("withdraw")], keys: [] }),
+      makeBorrowIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("borrow")], keys: [] }),
+      makeRepayIx: vi
+        .fn()
+        .mockResolvedValue({ instructions: [dummyIx("repay")], keys: [] }),
+      computeHealthComponents: () => ({
+        assets: new BigNumber(0),
+        liabilities: new BigNumber(0),
+      }),
+      computeHealthComponentsLegacy: () => ({
+        assets: new BigNumber(70.11),
+        liabilities: new BigNumber(0),
+      }),
+      computeFreeCollateral: () => new BigNumber(0),
+    });
+    const { buildMarginfiBorrow } = await import(
+      "../src/modules/solana/marginfi.js"
+    );
+    const res = await buildMarginfiBorrow({
+      wallet: WALLET,
+      symbol: "USDC",
+      amount: "1",
+    });
+    expect(res.action).toBe("marginfi_borrow");
   });
 
   it("borrow: passes the amount through to makeBorrowIx and prepends nonceAdvance", async () => {

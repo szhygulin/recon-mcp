@@ -715,6 +715,18 @@ interface MinimalWrapper {
     assets: BigNumber;
     liabilities: BigNumber;
   };
+  /**
+   * Recompute health from active balances + raw bank state + oracle prices.
+   * Unlike `computeHealthComponents` (which reads the on-chain `healthCache`
+   * field — frequently all-zero on recently-supplied accounts in SDK v6.4.1
+   * — see issue #110), this path weights each balance by `assetWeightInit` /
+   * `assetWeightMaint` live and matches what the on-chain borrow/withdraw
+   * program computes at ix time.
+   */
+  computeHealthComponentsLegacy(req: unknown): {
+    assets: BigNumber;
+    liabilities: BigNumber;
+  };
   computeFreeCollateral(): BigNumber;
 }
 
@@ -1051,17 +1063,28 @@ async function resolveActionContext(
   }
 
   // Action-specific pre-flight beyond the bank pause check that
-  // findBankForMint already enforced. `computeFreeCollateral` internally
-  // reads `marginfiAccount.healthCache.*` which can be null on a freshly-
-  // initialized account; wrap it so the preflight fails SOFT (we skip
-  // the guard instead of blowing up), letting the on-chain program
-  // enforce the real check. For a wallet with no active balances, borrow
-  // will revert on-chain anyway — cost is one tx fee, same as any other
-  // pre-flight we skip.
+  // findBankForMint already enforced.
+  //
+  // Must use the Legacy (recompute-from-raw) compute path, NOT
+  // `computeFreeCollateral()`. The SDK's default `computeFreeCollateral`
+  // reads `marginfiAccount.healthCache.assetValue` — an on-chain field
+  // that is all-zero on MarginfiAccounts where the program hasn't yet
+  // written a fresh health cache. Live-probed a wallet with 1 SOL +
+  // 1 USDC supplied (issue #110, wallet 4FLpsz…): healthCache.assetValue
+  // = 0 across all three margin types, yet computeHealthComponentsLegacy
+  // correctly recomputes to ~$70 weighted collateral at Initial. The
+  // cache-based path was producing a false-negative refusal on every
+  // freshly-supplied account.
+  //
+  // Soft pre-flight: on throw we skip the guard and let the on-chain
+  // program enforce the real check (cost of failure is one tx fee).
   if (kind === "borrow" || kind === "withdraw") {
     let free: BigNumber | null = null;
     try {
-      free = wrapper.computeFreeCollateral();
+      const { assets, liabilities } = wrapper.computeHealthComponentsLegacy(
+        0, // MarginRequirementType.Initial — what the on-chain borrow check uses
+      );
+      free = BigNumber.max(new BigNumber(0), assets.minus(liabilities));
     } catch {
       free = null;
     }
