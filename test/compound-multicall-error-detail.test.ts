@@ -13,8 +13,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const WALLET = "0x8F9dE85C01070D2762d29A6Dd7ffEcC965b34361";
 
 describe("getCompoundPositions — per-call multicall error propagation (#88)", () => {
-  beforeEach(() => vi.resetModules());
-  afterEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.resetModules();
+    // Bypass the exposure probe so these tests directly exercise
+    // readMarketPosition's error-propagation logic. The probe-first flow
+    // is tested separately in compound-probe.test.ts.
+    process.env.VAULTPILOT_COMPOUND_FULL_READ = "1";
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.VAULTPILOT_COMPOUND_FULL_READ;
+  });
 
   it("splices the underlying multicall error message into the thrown error", async () => {
     // Simulate the exact scenario from issue #88's trace: multicall's

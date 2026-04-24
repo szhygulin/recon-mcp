@@ -143,6 +143,73 @@ function multicallErrorMessage(entry: { status: "failure"; error?: unknown }): s
     : raw;
 }
 
+/**
+ * Cheap exposure probe for all Compound V3 markets on a chain in a single
+ * multicall. Asks only `balanceOf` + `borrowBalanceOf` per market (2 calls
+ * per market, all batched into one RPC). For any market where both come
+ * back zero, the full position read is skipped entirely — a ~4x reduction
+ * in RPC work for the common case where a wallet has no exposure on most
+ * chains (issue #88 follow-up: Compound L2 markets were 429ing because
+ * every market got a full read regardless of whether the wallet had ever
+ * touched it).
+ *
+ * Trade-off: a wallet with ONLY collateral (baseSupplied == baseBorrowed ==
+ * 0, nonzero collateral balance) is undetectable by base-balance probing
+ * alone. This is rare — Compound V3 collateral is only useful when
+ * there's an active borrow, and repaying the borrow without withdrawing
+ * collateral is an unusual state. Users hitting this case can set
+ * `VAULTPILOT_COMPOUND_FULL_READ=1` to bypass the probe and always do
+ * full reads (the pre-#88 behavior).
+ *
+ * Returns `active` (markets worth reading fully) plus `errored` (markets
+ * whose probe multicall entry failed — same per-call-error propagation
+ * as `readMarketPosition` for consistency with the coverage note).
+ */
+async function probeCompoundMarkets(
+  wallet: `0x${string}`,
+  chain: SupportedChain,
+): Promise<{
+  active: { name: string; address: `0x${string}` }[];
+  errored: { name: string; error: string }[];
+}> {
+  const markets = listMarkets(chain);
+  if (markets.length === 0) return { active: [], errored: [] };
+  const client = getClient(chain);
+  const results = await client.multicall({
+    contracts: markets.flatMap((m) => [
+      { address: m.address, abi: cometAbi, functionName: "balanceOf" as const, args: [wallet] as const },
+      { address: m.address, abi: cometAbi, functionName: "borrowBalanceOf" as const, args: [wallet] as const },
+    ]),
+    allowFailure: true,
+  });
+  const active: { name: string; address: `0x${string}` }[] = [];
+  const errored: { name: string; error: string }[] = [];
+  markets.forEach((m, i) => {
+    const supply = results[i * 2];
+    const borrow = results[i * 2 + 1];
+    if (supply.status !== "success") {
+      errored.push({
+        name: m.name,
+        error: `probe balanceOf(${multicallErrorMessage(supply)}) — RPC issue, full position read skipped`,
+      });
+      return;
+    }
+    if (borrow.status !== "success") {
+      errored.push({
+        name: m.name,
+        error: `probe borrowBalanceOf(${multicallErrorMessage(borrow)}) — RPC issue, full position read skipped`,
+      });
+      return;
+    }
+    const supplied = supply.result as bigint;
+    const borrowed = borrow.result as bigint;
+    if (supplied > 0n || borrowed > 0n) {
+      active.push({ name: m.name, address: m.address });
+    }
+  });
+  return { active, errored };
+}
+
 function listMarkets(chain: SupportedChain): { name: string; address: `0x${string}` }[] {
   const comp = (CONTRACTS as Record<string, Record<string, Record<string, string>>>)[chain]
     ?.compound;
@@ -352,25 +419,81 @@ export async function getCompoundPositions(
 }> {
   const wallet = args.wallet as `0x${string}`;
   const chains = (args.chains as SupportedChain[] | undefined) ?? [...SUPPORTED_CHAINS];
-  // Use allSettled so an unhealthy chain (Multicall3 returning 0x, rate-limit, etc.)
-  // doesn't nuke the other chain's results. Rejections are counted and surfaced via
-  // the `errored` flag — the previous silent `.catch(() => null)` swallow meant a
-  // flaky cUSDCv3 read would drop a live six-figure supply without any warning.
-  const tagged = chains.flatMap((chain) =>
-    listMarkets(chain).map((m) => ({ chain, market: m })),
-  );
-  const settled = await Promise.allSettled(
-    tagged.map(({ chain, market }) => readMarketPosition(wallet, chain, market)),
-  );
   const positions: CompoundPosition[] = [];
   const erroredMarkets: { chain: SupportedChain; market: string; error: string }[] = [];
+
+  // Escape hatch: if the user has a pure-collateral position (rare — Comet
+  // collateral without an active borrow), the probe-first flow would miss
+  // it because the probe only checks base balance. Setting
+  // VAULTPILOT_COMPOUND_FULL_READ=1 reverts to the pre-#88 behavior of
+  // doing a full read against every market regardless.
+  const fullReadOverride =
+    process.env.VAULTPILOT_COMPOUND_FULL_READ === "1";
+
+  let marketsToRead: { chain: SupportedChain; market: { name: string; address: `0x${string}` } }[];
+
+  if (fullReadOverride) {
+    marketsToRead = chains.flatMap((chain) =>
+      listMarkets(chain).map((market) => ({ chain, market })),
+    );
+  } else {
+    // Probe-first: one multicall per chain asks balanceOf +
+    // borrowBalanceOf across every market on that chain. Markets where
+    // both come back zero are skipped — no full read fired. Dramatic
+    // savings for wallets with no Compound exposure on most chains
+    // (~4x fewer RPC multicalls for the empty-wallet common case, and
+    // peaks drop further because the burst of parallel reads is gated
+    // on the probe completing first). Rate-limit pressure drops
+    // proportionally; the #88 trace showed L2 Compound multicalls
+    // being collateral-damaged by Morpho's now-off event-log scans,
+    // and with both hotspots gone the residual 429s should vanish.
+    const probeResults = await Promise.allSettled(
+      chains.map((chain) =>
+        probeCompoundMarkets(wallet, chain).then((r) => ({ chain, ...r })),
+      ),
+    );
+    const active: { chain: SupportedChain; market: { name: string; address: `0x${string}` } }[] = [];
+    probeResults.forEach((r, i) => {
+      const chain = chains[i];
+      if (r.status === "fulfilled") {
+        for (const m of r.value.active) {
+          active.push({ chain, market: { name: m.name, address: m.address } });
+        }
+        for (const e of r.value.errored) {
+          erroredMarkets.push({ chain, market: e.name, error: e.error });
+        }
+      } else {
+        // Whole probe multicall rejected for this chain (e.g. network
+        // error, endpoint down). Mark every market on the chain as
+        // errored — we have no signal about the wallet's exposure
+        // there, so coverage must report it.
+        const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
+        for (const m of listMarkets(chain)) {
+          erroredMarkets.push({
+            chain,
+            market: m.name,
+            error: `probe multicall rejected (${reason}) — no exposure signal available`,
+          });
+        }
+      }
+    });
+    marketsToRead = active;
+  }
+
+  // Use allSettled so one unhealthy market read doesn't nuke the others
+  // (e.g. Multicall3 returning 0x, rate-limit, …). Rejections are counted
+  // and surfaced via the `errored` flag — #34 traced a flaky cUSDCv3 read
+  // dropping a live six-figure supply to silent `.catch(() => null)`.
+  const settled = await Promise.allSettled(
+    marketsToRead.map(({ chain, market }) => readMarketPosition(wallet, chain, market)),
+  );
   settled.forEach((r, i) => {
     if (r.status === "fulfilled") {
       if (r.value !== null) positions.push(r.value);
     } else {
       erroredMarkets.push({
-        chain: tagged[i].chain,
-        market: tagged[i].market.name,
+        chain: marketsToRead[i].chain,
+        market: marketsToRead[i].market.name,
         error: r.reason instanceof Error ? r.reason.message : String(r.reason),
       });
     }
