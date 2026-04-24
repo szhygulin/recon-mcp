@@ -29,6 +29,8 @@ vi.mock("../src/signing/solana-usb-loader.js", () => ({
   }),
 }));
 
+const NONCE_VALUE = "GfnhkAa2iy8cZV7X5SyyYmCHxFQjEbBuyyUSCBokixB9";
+
 const connectionStub = {
   getBalance: vi.fn(),
   getAccountInfo: vi.fn(),
@@ -42,7 +44,16 @@ vi.mock("../src/modules/solana/rpc.js", () => ({
   resetSolanaConnection: () => {},
 }));
 
-beforeEach(() => {
+vi.mock("../src/modules/solana/nonce.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/modules/solana/nonce.js")>();
+  return {
+    ...actual,
+    getNonceAccountValue: vi.fn(),
+  };
+});
+
+beforeEach(async () => {
   getAddressMock.mockReset();
   getAppConfigurationMock.mockReset();
   signTransactionMock.mockReset();
@@ -55,6 +66,16 @@ beforeEach(() => {
   });
   connectionStub.getRecentPrioritizationFees.mockResolvedValue([]);
   getAppConfigurationMock.mockResolvedValue({ version: "1.10.0" });
+
+  // Durable-nonce protection is required for every send. Mock a present
+  // nonce account for the test wallet; individual tests exercising the
+  // nonce-missing path can override with null.
+  const { getNonceAccountValue } = await import("../src/modules/solana/nonce.js");
+  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockReset();
+  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue({
+    nonce: NONCE_VALUE,
+    authority: new PublicKey(WALLET),
+  });
 });
 
 afterEach(() => {
@@ -159,13 +180,16 @@ describe("sendTransaction dispatch — Solana", () => {
     expect(hasSolanaHandle(draft.handle)).toBe(true);
   });
 
-  it("surfaces lastValidBlockHeight on the send_transaction result so the status poller can detect dropped txs", async () => {
+  it("durable-nonce sends OMIT lastValidBlockHeight — nonce txs don't expire by block-height, so the existing dropped-tx poller needs a different signal", async () => {
+    // This is a deliberate behavior change from the legacy blockhash flow:
+    // pre-nonce, every pinned tx carried lastValidBlockHeight so the status
+    // poller could detect "stuck" via `current slot > lastValidBlockHeight`.
+    // For durable-nonce txs that heuristic is meaningless (they stay valid
+    // until the nonce advances, not until a block height), so we explicitly
+    // drop the field. MVP accepts that "dropped" detection is less precise
+    // for nonce txs — the follow-up ticket swaps the poller to watch the
+    // nonce value via getNonceAccountValue.
     connectionStub.getBalance.mockResolvedValue(5_000_000_000);
-    connectionStub.getLatestBlockhash.mockResolvedValueOnce({
-      blockhash: "HXSG2e3m7nYQL1LkRKksi2r1EH1Sd5sCQqTeyBJVeKkh",
-      lastValidBlockHeight: 1_234_567,
-    });
-
     const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
     const draft = await buildSolanaNativeSend({
       wallet: WALLET,
@@ -174,7 +198,13 @@ describe("sendTransaction dispatch — Solana", () => {
     });
     const { previewSolanaSend } = await import("../src/modules/execution/index.js");
     const pinned = await previewSolanaSend({ handle: draft.handle });
-    expect(pinned.lastValidBlockHeight).toBe(1_234_567);
+    expect(pinned.lastValidBlockHeight).toBeUndefined();
+    // recentBlockhash field carries the nonce VALUE, not a network blockhash.
+    expect(pinned.recentBlockhash).toBe(NONCE_VALUE);
+    // Nonce observability is stamped on the pinned tx.
+    expect(pinned.nonce).toBeDefined();
+    expect(pinned.nonce!.value).toBe(NONCE_VALUE);
+    expect(pinned.nonce!.authority).toBe(WALLET);
 
     getAddressMock.mockResolvedValue({
       address: WALLET_KEYPAIR.publicKey.toBuffer(),
@@ -188,10 +218,10 @@ describe("sendTransaction dispatch — Solana", () => {
       confirmed: true,
     });
     expect(result.chain).toBe("solana");
-    expect(result.lastValidBlockHeight).toBe(1_234_567);
+    expect(result.lastValidBlockHeight).toBeUndefined();
   });
 
-  it("re-calling preview_solana_send on the same handle re-pins with a newer blockhash", async () => {
+  it("re-calling preview_solana_send on the same handle re-pins with a refreshed nonce value", async () => {
     connectionStub.getBalance.mockResolvedValue(5_000_000_000);
     const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
     const draft = await buildSolanaNativeSend({
@@ -201,23 +231,23 @@ describe("sendTransaction dispatch — Solana", () => {
     });
 
     const { previewSolanaSend } = await import("../src/modules/execution/index.js");
-    const firstPinBlockhash = "HXSG2e3m7nYQL1LkRKksi2r1EH1Sd5sCQqTeyBJVeKkh";
-    connectionStub.getLatestBlockhash.mockResolvedValueOnce({
-      blockhash: firstPinBlockhash,
-      lastValidBlockHeight: 1_000,
-    });
+    const { getNonceAccountValue } = await import("../src/modules/solana/nonce.js");
+    // First preview: nonce value is whatever beforeEach set (NONCE_VALUE).
     const first = await previewSolanaSend({ handle: draft.handle });
-    expect(first.recentBlockhash).toBe(firstPinBlockhash);
+    expect(first.recentBlockhash).toBe(NONCE_VALUE);
 
-    // User pauses; caller re-previews. Returns a different blockhash + hash.
-    const secondPinBlockhash = "5a7PR3n1eTKCTgLkbkjNWTBvFu8kv1RYD9QgEQD8CAzB";
-    connectionStub.getLatestBlockhash.mockResolvedValueOnce({
-      blockhash: secondPinBlockhash,
-      lastValidBlockHeight: 1_200,
+    // User pauses; someone else advances the nonce. Second preview picks
+    // up the new value.
+    const secondNonceValue = "5a7PR3n1eTKCTgLkbkjNWTBvFu8kv1RYD9QgEQD8CAzB";
+    (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      nonce: secondNonceValue,
+      authority: new PublicKey(WALLET),
     });
     const second = await previewSolanaSend({ handle: draft.handle });
-    expect(second.recentBlockhash).toBe(secondPinBlockhash);
+    expect(second.recentBlockhash).toBe(secondNonceValue);
     expect(second.messageBase64).not.toBe(first.messageBase64);
     expect(second.verification!.payloadHash).not.toBe(first.verification!.payloadHash);
+    // The nonce observability field also reflects the refresh.
+    expect(second.nonce!.value).toBe(secondNonceValue);
   });
 });

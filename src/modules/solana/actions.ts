@@ -18,6 +18,14 @@ import {
   issueSolanaDraftHandle,
   type SolanaTxDraft,
 } from "../../signing/solana-tx-store.js";
+import {
+  buildAdvanceNonceIx,
+  buildCloseNonceIxs,
+  buildInitNonceIxs,
+  deriveNonceAccountAddress,
+  getNonceAccountValue,
+  NONCE_ACCOUNT_LENGTH,
+} from "./nonce.js";
 
 /** Minimum SOL balance we leave on the wallet after a `max` send — protects against accidentally emptying below the rent-exempt floor. */
 const SOL_SAFETY_BUFFER_LAMPORTS = 10_000;
@@ -101,7 +109,7 @@ export interface SolanaNativeSendParams {
  */
 export interface PreparedSolanaTx {
   handle: string;
-  action: "native_send" | "spl_send";
+  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close";
   chain: "solana";
   from: string;
   description: string;
@@ -110,13 +118,33 @@ export interface PreparedSolanaTx {
   priorityFeeMicroLamports?: number;
   computeUnitLimit?: number;
   estimatedFeeLamports?: number;
+  /** Surfaced on native_send / spl_send / nonce_close so the summary can show "Nonce: <addr>". */
+  nonceAccount?: string;
+}
+
+/**
+ * Structured error thrown by `buildSolanaNativeSend` / `buildSolanaSplSend`
+ * when the wallet hasn't initialized a durable-nonce account yet. The agent
+ * relays the message verbatim to the user, who then runs
+ * `prepare_solana_nonce_init` before retrying the send.
+ */
+function throwNonceRequired(wallet: string): never {
+  throw new Error(
+    `Solana nonce account not initialized for ${wallet}. Durable-nonce protection is required ` +
+      `for all Solana sends in this server — the ~90s recentBlockhash window was eating into the ` +
+      `Ledger blind-sign review time and causing intermittent failures. ` +
+      `Run prepare_solana_nonce_init first (one-time setup, ~0.00144 SOL rent-exempt seed, fully ` +
+      `reclaimable via prepare_solana_nonce_close) and then retry this send.`,
+  );
 }
 
 /**
  * Build a native SOL transfer. One `SystemProgram.transfer` instruction,
- * optionally preceded by a `ComputeBudget` pair when the network is
- * congested. Pre-flight: refuses if the wallet is short. Returns a DRAFT
- * (handle + metadata) — the blockhash is pinned later by
+ * preceded by `SystemProgram.nonceAdvance` (ix[0], required — Agave
+ * detects durable-nonce txs via ix[0] only) and optionally a `ComputeBudget`
+ * pair when the network is congested. Pre-flight: refuses if the wallet is
+ * short OR if the nonce account doesn't exist yet. Returns a DRAFT
+ * (handle + metadata) — the nonce value is pinned later by
  * `preview_solana_send`.
  */
 export async function buildSolanaNativeSend(
@@ -125,6 +153,13 @@ export async function buildSolanaNativeSend(
   const fromPubkey = assertSolanaAddress(p.wallet);
   const toPubkey = assertSolanaAddress(p.to);
   const conn = getSolanaConnection();
+
+  // Durable-nonce preflight: refuse if the user hasn't initialized yet.
+  // The nonce PDA is deterministic — same seed + base → same pubkey — so
+  // no lookup table is needed, just derive and check on-chain presence.
+  const noncePubkey = await deriveNonceAccountAddress(fromPubkey);
+  const nonceState = await getNonceAccountValue(conn, noncePubkey);
+  if (!nonceState) throwNonceRequired(p.wallet);
 
   // Priority-fee decision BEFORE resolving "max" — the fee is baked into
   // the amount we're willing to hand back to the user on "max".
@@ -162,9 +197,12 @@ export async function buildSolanaNativeSend(
     displayAmount = p.amount;
   }
 
-  // Build the draft tx. No recentBlockhash — that gets set at preview time.
+  // Build the draft tx. ix[0] MUST be nonceAdvance — that's the signal
+  // Agave uses to detect durable-nonce txs and skip the blockhash validity
+  // window check. Everything else (compute-budget, payload) stacks after.
   const draftTx = new Transaction();
   draftTx.feePayer = fromPubkey;
+  draftTx.add(buildAdvanceNonceIx(noncePubkey, fromPubkey));
   if (pfee) {
     draftTx.add(
       ComputeBudgetProgram.setComputeUnitLimit({ units: pfee.computeUnitLimit }),
@@ -181,6 +219,7 @@ export async function buildSolanaNativeSend(
     }),
   );
 
+  const nonceAccountStr = noncePubkey.toBase58();
   const draft: SolanaTxDraft = {
     draftTx,
     meta: {
@@ -194,6 +233,7 @@ export async function buildSolanaNativeSend(
           to: p.to,
           amount: `${displayAmount} SOL`,
           lamports: lamports.toString(),
+          nonceAccount: nonceAccountStr,
         },
       },
       ...(pfee
@@ -203,6 +243,11 @@ export async function buildSolanaNativeSend(
           }
         : {}),
       estimatedFeeLamports: totalFee,
+      nonce: {
+        account: nonceAccountStr,
+        authority: fromPubkey.toBase58(),
+        value: nonceState.nonce,
+      },
     },
   };
   const { handle } = issueSolanaDraftHandle(draft);
@@ -222,6 +267,7 @@ export async function buildSolanaNativeSend(
     ...(draft.meta.estimatedFeeLamports !== undefined
       ? { estimatedFeeLamports: draft.meta.estimatedFeeLamports }
       : {}),
+    nonceAccount: nonceAccountStr,
   };
 }
 
@@ -235,11 +281,11 @@ export interface SolanaSplSendParams {
 }
 
 /**
- * Build an SPL token transfer. Uses `Token.TransferChecked` so the Ledger
- * Solana app clear-signs the mint + decimals + amount. If the recipient's
- * ATA doesn't exist yet, prepends `createAssociatedTokenAccount` — the
- * sender pays ~0.00204 SOL rent, surfaced in the preview via
- * `rentLamports`.
+ * Build an SPL token transfer. ix[0] is `SystemProgram.nonceAdvance` (required
+ * for durable-nonce protection — see the module docs in `nonce.ts`), followed
+ * by optional ComputeBudget ixs, optional createAssociatedTokenAccount, and
+ * finally `Token.TransferChecked`. TransferChecked makes the Ledger Solana
+ * app clear-sign the mint + decimals + amount.
  */
 export async function buildSolanaSplSend(
   p: SolanaSplSendParams,
@@ -248,6 +294,11 @@ export async function buildSolanaSplSend(
   const toPubkey = assertSolanaAddress(p.to);
   const mintPubkey = assertSolanaAddress(p.mint);
   const conn = getSolanaConnection();
+
+  // Durable-nonce preflight — same gate as buildSolanaNativeSend.
+  const noncePubkey = await deriveNonceAccountAddress(fromPubkey);
+  const nonceState = await getNonceAccountValue(conn, noncePubkey);
+  if (!nonceState) throwNonceRequired(p.wallet);
 
   // Resolve decimals + symbol. Canonical mints (USDC/USDT/JUP/...) use the
   // static table; unknown mints hit the chain via getTokenSupply.
@@ -309,9 +360,11 @@ export async function buildSolanaSplSend(
     );
   }
 
-  // Build the draft tx. No recentBlockhash — that gets set at preview time.
+  // Build the draft tx. ix[0] = nonceAdvance (required); then compute-budget,
+  // then optional ATA-create, then the SPL transfer.
   const draftTx = new Transaction();
   draftTx.feePayer = fromPubkey;
+  draftTx.add(buildAdvanceNonceIx(noncePubkey, fromPubkey));
   if (pfee) {
     draftTx.add(
       ComputeBudgetProgram.setComputeUnitLimit({ units: pfee.computeUnitLimit }),
@@ -346,6 +399,7 @@ export async function buildSolanaSplSend(
     : "";
   const estimatedFeeLamports =
     totalFee + (recipient.needsCreation ? SPL_TOKEN_ACCOUNT_RENT_LAMPORTS : 0);
+  const nonceAccountStr = noncePubkey.toBase58();
   const draft: SolanaTxDraft = {
     draftTx,
     meta: {
@@ -362,6 +416,7 @@ export async function buildSolanaSplSend(
           amount: `${p.amount} ${symbol}`,
           amountBase: amountBase.toString(),
           decimals: decimals.toString(),
+          nonceAccount: nonceAccountStr,
           ...(recipient.needsCreation
             ? { createsRecipientAta: "true", rentSol: formatSol(BigInt(SPL_TOKEN_ACCOUNT_RENT_LAMPORTS)) }
             : {}),
@@ -375,6 +430,11 @@ export async function buildSolanaSplSend(
           }
         : {}),
       estimatedFeeLamports,
+      nonce: {
+        account: nonceAccountStr,
+        authority: fromPubkey.toBase58(),
+        value: nonceState.nonce,
+      },
     },
   };
   const { handle } = issueSolanaDraftHandle(draft);
@@ -395,5 +455,192 @@ export async function buildSolanaSplSend(
       ? { computeUnitLimit: draft.meta.computeUnitLimit }
       : {}),
     estimatedFeeLamports: draft.meta.estimatedFeeLamports,
+    nonceAccount: nonceAccountStr,
+  };
+}
+
+export interface SolanaNonceInitParams {
+  wallet: string;
+}
+
+/**
+ * Build the one-time durable-nonce account init tx for a wallet:
+ *
+ *   ix[0] = SystemProgram.createAccountWithSeed — creates the deterministic
+ *           PDA at `deriveNonceAccountAddress(wallet)` and funds it with
+ *           the rent-exempt minimum (~0.00144 SOL).
+ *   ix[1] = SystemProgram.nonceInitialize — writes the initial nonce value
+ *           and sets the authority to the same wallet.
+ *
+ * Refuses if the account already exists (re-running init would overwrite
+ * a nonce value mid-use by another tx and brick it). Also refuses if the
+ * wallet doesn't have enough SOL for rent + base fee.
+ *
+ * This tx uses a regular recent blockhash at preview time — it's the only
+ * send without durable-nonce protection, because it's creating the account
+ * that durable-nonce protection depends on.
+ */
+export async function buildSolanaNonceInit(
+  p: SolanaNonceInitParams,
+): Promise<PreparedSolanaTx> {
+  const fromPubkey = assertSolanaAddress(p.wallet);
+  const conn = getSolanaConnection();
+
+  const noncePubkey = await deriveNonceAccountAddress(fromPubkey);
+  const existing = await conn.getAccountInfo(noncePubkey, "confirmed");
+  if (existing) {
+    throw new Error(
+      `Nonce account already exists for ${p.wallet} at ${noncePubkey.toBase58()}. ` +
+        `Refusing to re-init — that would overwrite the current nonce value and break any in-flight ` +
+        `txs using it. If you want to start fresh, run prepare_solana_nonce_close first.`,
+    );
+  }
+
+  const rentLamports = await conn.getMinimumBalanceForRentExemption(
+    NONCE_ACCOUNT_LENGTH,
+  );
+  const totalNeeded = rentLamports + SOLANA_BASE_FEE_LAMPORTS;
+  const balance = BigInt(await conn.getBalance(fromPubkey, "confirmed"));
+  if (balance < BigInt(totalNeeded)) {
+    throw new Error(
+      `Insufficient SOL to init nonce: wallet ${p.wallet} has ${formatSol(balance)} SOL, ` +
+        `needs ${formatSol(BigInt(totalNeeded))} SOL ` +
+        `(${formatSol(BigInt(rentLamports))} rent-exempt seed + ${formatSol(BigInt(SOLANA_BASE_FEE_LAMPORTS))} tx fee). ` +
+        `Top up and retry.`,
+    );
+  }
+
+  const draftTx = new Transaction();
+  draftTx.feePayer = fromPubkey;
+  for (const ix of buildInitNonceIxs(fromPubkey, noncePubkey, rentLamports)) {
+    draftTx.add(ix);
+  }
+
+  const nonceAccountStr = noncePubkey.toBase58();
+  const draft: SolanaTxDraft = {
+    draftTx,
+    meta: {
+      action: "nonce_init",
+      from: p.wallet,
+      description:
+        `Initialize durable-nonce account ${nonceAccountStr} for ${p.wallet} ` +
+        `(${formatSol(BigInt(rentLamports))} SOL rent-exempt seed, reclaimable via prepare_solana_nonce_close)`,
+      decoded: {
+        functionName: "solana.system.createNonceAccount",
+        args: {
+          from: p.wallet,
+          nonceAccount: nonceAccountStr,
+          authority: p.wallet,
+          rentLamports: rentLamports.toString(),
+          rentSol: formatSol(BigInt(rentLamports)),
+        },
+      },
+      rentLamports,
+      estimatedFeeLamports: SOLANA_BASE_FEE_LAMPORTS,
+    },
+  };
+  const { handle } = issueSolanaDraftHandle(draft);
+  return {
+    handle,
+    action: "nonce_init",
+    chain: "solana",
+    from: p.wallet,
+    description: draft.meta.description,
+    decoded: draft.meta.decoded,
+    rentLamports,
+    estimatedFeeLamports: SOLANA_BASE_FEE_LAMPORTS,
+    nonceAccount: nonceAccountStr,
+  };
+}
+
+export interface SolanaNonceCloseParams {
+  wallet: string;
+}
+
+/**
+ * Build the durable-nonce teardown tx:
+ *
+ *   ix[0] = SystemProgram.nonceAdvance — same self-protecting pattern as
+ *           any other send against this nonce. The close tx itself stays
+ *           valid indefinitely so the user can take their time reviewing.
+ *   ix[1] = SystemProgram.nonceWithdraw — transfers the FULL balance back
+ *           to the user's main wallet, implicitly closing the account.
+ *
+ * Refuses if the nonce account doesn't exist (nothing to close).
+ */
+export async function buildSolanaNonceClose(
+  p: SolanaNonceCloseParams,
+): Promise<PreparedSolanaTx> {
+  const fromPubkey = assertSolanaAddress(p.wallet);
+  const conn = getSolanaConnection();
+
+  const noncePubkey = await deriveNonceAccountAddress(fromPubkey);
+  const nonceState = await getNonceAccountValue(conn, noncePubkey);
+  if (!nonceState) {
+    throw new Error(
+      `No nonce account to close — ${p.wallet} has not run prepare_solana_nonce_init yet ` +
+        `(or it's already been closed). Nothing to do.`,
+    );
+  }
+
+  const info = await conn.getAccountInfo(noncePubkey, "confirmed");
+  if (!info) {
+    // Shouldn't happen — getNonceAccountValue just confirmed existence.
+    throw new Error(
+      `Nonce account ${noncePubkey.toBase58()} vanished between getNonceAccountValue and getAccountInfo. ` +
+        `Retry after a few seconds.`,
+    );
+  }
+  const balanceLamports = info.lamports;
+
+  const draftTx = new Transaction();
+  draftTx.feePayer = fromPubkey;
+  for (const ix of buildCloseNonceIxs(
+    noncePubkey,
+    fromPubkey,
+    fromPubkey,
+    balanceLamports,
+  )) {
+    draftTx.add(ix);
+  }
+
+  const nonceAccountStr = noncePubkey.toBase58();
+  const draft: SolanaTxDraft = {
+    draftTx,
+    meta: {
+      action: "nonce_close",
+      from: p.wallet,
+      description:
+        `Close durable-nonce account ${nonceAccountStr} for ${p.wallet}, ` +
+        `returning ${formatSol(BigInt(balanceLamports))} SOL to the main wallet`,
+      decoded: {
+        functionName: "solana.system.nonceWithdraw",
+        args: {
+          from: p.wallet,
+          nonceAccount: nonceAccountStr,
+          authority: p.wallet,
+          destination: p.wallet,
+          withdrawLamports: balanceLamports.toString(),
+          withdrawSol: formatSol(BigInt(balanceLamports)),
+        },
+      },
+      estimatedFeeLamports: SOLANA_BASE_FEE_LAMPORTS,
+      nonce: {
+        account: nonceAccountStr,
+        authority: fromPubkey.toBase58(),
+        value: nonceState.nonce,
+      },
+    },
+  };
+  const { handle } = issueSolanaDraftHandle(draft);
+  return {
+    handle,
+    action: "nonce_close",
+    chain: "solana",
+    from: p.wallet,
+    description: draft.meta.description,
+    decoded: draft.meta.decoded,
+    estimatedFeeLamports: SOLANA_BASE_FEE_LAMPORTS,
+    nonceAccount: nonceAccountStr,
   };
 }

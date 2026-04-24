@@ -634,8 +634,18 @@ export interface UnsignedTronTx {
  */
 export interface UnsignedSolanaTx {
   chain: "solana";
-  /** Discriminator for the preview + future signer branching. */
-  action: "native_send" | "spl_send";
+  /**
+   * Discriminator for the preview + future signer branching.
+   *
+   * - `native_send` / `spl_send` — user-facing transfers. Durable-nonce-
+   *   protected (ix[0] = nonceAdvance); every send refuses to build until
+   *   the wallet has an initialized nonce account.
+   * - `nonce_init` — one-time setup: createAccountWithSeed + nonceInitialize.
+   *   Runs in legacy recent-blockhash mode (no nonce to use yet).
+   * - `nonce_close` — teardown: nonceAdvance + nonceWithdraw. Drains the
+   *   rent-exempt balance back to the user's main wallet.
+   */
+  action: "native_send" | "spl_send" | "nonce_init" | "nonce_close";
   /** Base58 owner address (44-char ed25519 pubkey). */
   from: string;
   /**
@@ -697,6 +707,19 @@ export interface UnsignedSolanaTx {
    * prepared Solana tx. Mirrors the TRON / EVM verification shape.
    */
   verification?: TxVerification;
+  /**
+   * Durable-nonce metadata — present when ix[0] = SystemProgram.nonceAdvance.
+   * For `native_send` / `spl_send` / `nonce_close` this is always set; for
+   * `nonce_init` it's absent (that's the tx that CREATES the nonce account;
+   * it has no nonce to consume yet). Surfaced for the summary renderer
+   * (`Nonce: <short addr>` bullet) and for future nonce-aware dropped-tx
+   * polling (`getNonceAccountValue` to detect advance vs. stuck).
+   */
+  nonce?: {
+    account: string;
+    authority: string;
+    value: string;
+  };
 }
 
 /**
@@ -801,6 +824,33 @@ export interface UnsignedTx {
 }
 
 /** Shape of ~/.vaultpilot-mcp/config.json. */
+/**
+ * Cached Ledger pairing entry — what `pair_ledger_solana` populates and
+ * `get_ledger_status` reads back. Persisted to ~/.vaultpilot-mcp/config.json
+ * so a server restart doesn't force a re-pair (the address is deterministic
+ * for a given device + path; the cache is just a hint, not a trust
+ * boundary — `send_transaction` always re-derives from the live device
+ * before signing).
+ */
+export interface PairedSolanaEntry {
+  address: string;
+  publicKey: string;
+  path: string;
+  appVersion: string;
+  /** Null when the path is not in the standard `44'/501'/<n>'` layout. */
+  accountIndex: number | null;
+}
+
+/** TRON pairing entry — same shape, different BIP-44 layout (`44'/195'/<n>'/0/0`). */
+export interface PairedTronEntry {
+  address: string;
+  publicKey: string;
+  path: string;
+  appVersion: string;
+  /** Null when the path is not in the standard `44'/195'/<n>'/0/0` layout. */
+  accountIndex: number | null;
+}
+
 export interface UserConfig {
   rpc: {
     provider: RpcProvider;
@@ -832,5 +882,17 @@ export interface UserConfig {
     /** Topic of the active WC session (so we can resume after restart). */
     sessionTopic?: string;
     pairingTopic?: string;
+  };
+  /**
+   * Cached Ledger pairings, persisted across server restarts. Public fields
+   * only (addresses, BIP-44 paths, app versions) — no private keys, no
+   * secrets. The signing path always re-derives from the live device and
+   * verifies the address before signing, so a planted/stale entry can at
+   * worst surface a wrong address in `get_ledger_status` (which the user
+   * notices when their balances don't match).
+   */
+  pairings?: {
+    solana?: PairedSolanaEntry[];
+    tron?: PairedTronEntry[];
   };
 }

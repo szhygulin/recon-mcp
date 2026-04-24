@@ -1,5 +1,10 @@
 import { PublicKey } from "@solana/web3.js";
 import { openLedger } from "./solana-usb-loader.js";
+import { existsSync } from "node:fs";
+import { getConfigPath, patchUserConfig, readUserConfig } from "../config/user-config.js";
+import type { PairedSolanaEntry } from "../types/index.js";
+
+export type { PairedSolanaEntry };
 
 /**
  * Solana signing path. BIP-44 coin type 501 (SLIP-44). Unlike TRON
@@ -40,24 +45,43 @@ export function parseSolanaAccountIndex(path: string): number | null {
   return Number.isInteger(n) ? n : null;
 }
 
-export interface PairedSolanaEntry {
-  address: string;
-  publicKey: string;
-  path: string;
-  appVersion: string;
-  /** Null when the path is not in the standard `44'/501'/<n>'` layout. */
-  accountIndex: number | null;
-}
-
 /**
  * Ledger Solana pairings. Same role as `pairedTronByPath` — populated by
  * `pair_ledger_solana`, read back by `get_ledger_status`. `send_transaction`
  * does NOT trust this cache: it always re-opens the device and verifies
  * the derived address matches `tx.from` before signing.
+ *
+ * Persisted to `~/.vaultpilot-mcp/config.json` (UserConfig.pairings.solana)
+ * — public addresses + paths only, no secrets — so a server restart
+ * doesn't force a re-pair. The persistence is write-through on
+ * `setPairedSolanaAddress` and lazy-load on first read.
  */
 const pairedSolanaByPath = new Map<string, PairedSolanaEntry>();
+let pairedSolanaHydrated = false;
+
+/**
+ * Hydrate the in-memory Map from disk on first access. Idempotent — sets a
+ * sticky flag so subsequent reads are O(1). Tests can reset by calling
+ * `clearPairedSolanaAddresses` (which also clears the on-disk slice).
+ */
+function ensurePairedSolanaHydrated(): void {
+  if (pairedSolanaHydrated) return;
+  pairedSolanaHydrated = true;
+  const persisted = readUserConfig()?.pairings?.solana ?? [];
+  for (const entry of persisted) {
+    pairedSolanaByPath.set(entry.path, entry);
+  }
+}
+
+/** Snapshot in-memory entries to disk via patchUserConfig (preserves other config slices). */
+function persistPairedSolana(): void {
+  patchUserConfig({
+    pairings: { solana: Array.from(pairedSolanaByPath.values()) },
+  });
+}
 
 export function getPairedSolanaAddresses(): PairedSolanaEntry[] {
+  ensurePairedSolanaHydrated();
   return Array.from(pairedSolanaByPath.values()).sort((a, b) => {
     if (a.accountIndex === null && b.accountIndex === null) return 0;
     if (a.accountIndex === null) return 1;
@@ -67,6 +91,7 @@ export function getPairedSolanaAddresses(): PairedSolanaEntry[] {
 }
 
 export function getPairedSolanaByAddress(address: string): PairedSolanaEntry | null {
+  ensurePairedSolanaHydrated();
   for (const entry of pairedSolanaByPath.values()) {
     if (entry.address === address) return entry;
   }
@@ -76,17 +101,34 @@ export function getPairedSolanaByAddress(address: string): PairedSolanaEntry | n
 export function setPairedSolanaAddress(
   entry: Omit<PairedSolanaEntry, "accountIndex">,
 ): PairedSolanaEntry {
+  ensurePairedSolanaHydrated();
   const full: PairedSolanaEntry = {
     ...entry,
     accountIndex: parseSolanaAccountIndex(entry.path),
   };
   pairedSolanaByPath.set(entry.path, full);
+  persistPairedSolana();
   return full;
 }
 
-/** Test-only hook — reset the cache between test suites. */
+/**
+ * Reset both the in-memory Map and the on-disk slice. Used by tests to
+ * isolate suites and by future "forget paired devices" UX. Clears the
+ * `pairedSolanaHydrated` flag so the NEXT read re-hydrates from disk
+ * (in tests with HOME swapped to a tmp dir, the new dir starts empty,
+ * which is what we want).
+ */
 export function clearPairedSolanaAddresses(): void {
   pairedSolanaByPath.clear();
+  pairedSolanaHydrated = false;
+  // Only write the empty slice if the ACTIVE config file exists — avoids
+  // creating `~/.vaultpilot-mcp/` on a fresh install just to record "no
+  // pairings", and avoids triggering the legacy-dir migration if only the
+  // pre-rename `~/.recon-crypto-mcp/config.json` is present (`readUserConfig`
+  // falls through to the legacy path; we want the active path here).
+  if (existsSync(getConfigPath())) {
+    patchUserConfig({ pairings: { solana: [] } });
+  }
 }
 
 /**

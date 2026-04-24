@@ -72,7 +72,16 @@ describe("get_verification_artifact — second-agent copy-paste artifact", () =>
     expect(artifact.pasteableBlock.length).toBeGreaterThan(200);
     expect(artifact.pasteableBlock).toMatch(/COPY FROM THIS LINE/);
     expect(artifact.pasteableBlock).toMatch(/END — STOP COPYING HERE/);
-    expect(artifact.pasteableBlock).toMatch(/DO NOT trust any description text/);
+    // The "decode bytes independently, do NOT trust the description" rule
+    // is the core of this cross-check. Wording was tightened in the round
+    // that added payload.description as an explicit comparison target — the
+    // second LLM is told to decode bytes FIRST, then COMPARE to description
+    // (step 3), but never to lift the description verbatim as the decode.
+    expect(artifact.pasteableBlock).toMatch(
+      /DO NOT trust the description \/ decoded fields in the payload/,
+    );
+    // Step 3 is the comparison gate — bytes-decode vs description outcomes.
+    expect(artifact.pasteableBlock).toMatch(/MATCH:|MISMATCH:|PARTIAL:/);
     expect(artifact.pasteableBlock).toMatch(/REJECT/);
     // The on-device reminder must honestly cover both Ledger modes — blind-
     // sign (hash-match against preSignHash) and clear-sign (verify decoded
