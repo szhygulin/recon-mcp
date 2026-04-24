@@ -21,23 +21,24 @@ import {
 //   uses it for guardian-set signatures.
 //
 // Data layout (per Agave `sdk/secp256k1-program/src/lib.rs`):
-//   [0]        num_signatures             (u8)       — patch assumes ==1
-//   [1..=2]    signature_offset           (u16 LE)
-//   [3]        signature_instruction_index (u8)      ← position-ABSOLUTE
-//   [4..=5]    eth_address_offset         (u16 LE)
-//   [6]        eth_address_instruction_index (u8)    ← position-ABSOLUTE
-//   [7..=8]    message_data_offset        (u16 LE)
-//   [9..=10]   message_data_size          (u16 LE)
-//   [11]       message_instruction_index  (u8)       ← position-ABSOLUTE
-//   [12..]     the actual signature / eth-address / message bytes
+//   [0]                           num_signatures  (u8, call it N)
+//   [1 + 11·k ..= 2 + 11·k]       signature_offset            (u16 LE)  k in [0..N)
+//   [3 + 11·k]                    signature_instruction_index (u8)      ← position-ABSOLUTE
+//   [4 + 11·k ..= 5 + 11·k]       eth_address_offset          (u16 LE)
+//   [6 + 11·k]                    eth_address_instruction_index (u8)    ← position-ABSOLUTE
+//   [7 + 11·k ..= 8 + 11·k]       message_data_offset         (u16 LE)
+//   [9 + 11·k ..= 10 + 11·k]      message_data_size           (u16 LE)
+//   [11 + 11·k]                   message_instruction_index   (u8)      ← position-ABSOLUTE
+//   [1 + 11·N ..]                 N × (signature || recoveryId || ethAddress) blocks
+//   [trailing]                    common message bytes (shared across all N sigs)
 //
 // The subtle bit:
-//   The three `_instruction_index` fields are ABSOLUTE tx-relative indices,
-//   NOT self-relative. `0` does NOT mean "this instruction" — it means
-//   literally ix[0] of the outer tx. SDKs that build these ixs (Switchboard
-//   `PullFeed.fetchUpdateManyIx`, Wormhole's guardian verifier) hardcode all
-//   three to `0` because they expect to own the whole tx and sit at position
-//   0 themselves.
+//   The three `_instruction_index` fields (three per signature) are ABSOLUTE
+//   tx-relative indices, NOT self-relative. `0` does NOT mean "this instruction"
+//   — it means literally ix[0] of the outer tx. SDKs that build these ixs
+//   (Switchboard `PullFeed.fetchUpdateManyIx`, Wormhole's guardian verifier)
+//   hardcode all three to `0` because they expect to own the whole tx and sit
+//   at position 0 themselves.
 //
 // The 0xff sentinel is NOT valid here:
 //   Some Solana pre-compiles interpret 0xff as "same instruction". Secp256k1
@@ -53,15 +54,17 @@ import {
 //   offsets.
 //
 // The fix:
-//   Rewrite bytes 3, 6, and 11 to the ix's final tx-relative position before
-//   including it. `patchSecp256k1CrankIxPosition` below does exactly that.
-//   Single-signature payloads only — multi-sig would need additional writes
-//   at +11-byte strides, and we guard against that case.
+//   Rewrite the three instruction-index bytes in every offset block to the
+//   ix's final tx-relative position before including it. For k in [0..N):
+//   bytes (3 + 11·k), (6 + 11·k), (11 + 11·k).
+//   `patchSecp256k1CrankIxPosition` below does exactly that.
 //
 // Provenance:
-//   Issue #116 ask C; live-probed against Switchboard's Crossbar gateway
-//   2026-04-24 via `createUpdateFeedIx` from @mrgnlabs/marginfi-client-v2
-//   v6.4.1. The specific Agave runtime version: mainnet slot 2026-04-24.
+//   Issue #116 ask C (single-sig implementation, 2026-04-24) and issue #120
+//   (multi-sig — the NUM_SIGNATURES=3 default tunes for 5–15s Ledger review
+//   windows, and the patch loop handles N offset blocks). Live-probed against
+//   Switchboard's Crossbar gateway + Agave mainnet 2026-04-24 via
+//   `@switchboard-xyz/on-demand`'s `PullFeed.fetchUpdateManyIx`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** `KeccakSecp256k11111111111111111111111111111` — the pre-compile program. */
@@ -123,6 +126,38 @@ export interface SwbCrankResult {
 const EMPTY: SwbCrankResult = { instructions: [], luts: [], oracles: [] };
 
 /**
+ * Number of Switchboard oracle samples to request per crank.
+ *
+ * Why not 1 (MarginFi's `createUpdateFeedIx` hardcodes that): each sample
+ * has a `max_staleness` window measured in slots, and the on-chain SWB
+ * program rejects any sample older than that at the slot the tx lands at.
+ * With 1 sample, a Ledger blind-sign review of 5–15s (12–40 slots at
+ * ~400ms) can age the sample past `max_staleness` and yield
+ * `NotEnoughSamples` (Anchor 6030 / 0x178e) even though the crank
+ * simulated fine at preview time — issue #120.
+ *
+ * Three samples give ~3× the staleness headroom with minimal tx-size
+ * cost (each extra sample adds 96 bytes to the secp256k1 ix: 11 offset
+ * bytes + 85 signature/eth-address bytes). Single-oracle crank at N=3
+ * is ~650 bytes, leaving ~580 bytes inside the 1232-byte wire ceiling
+ * for the MarginFi borrow ixs.
+ *
+ * Matches Switchboard's own default for `fetchUpdateManyIx` when
+ * `numSignatures` is omitted (`minSampleSize + 33%`, typically 2–3).
+ */
+const NUM_SIGNATURES = 3;
+
+/**
+ * Switchboard uses this sentinel oracle pubkey to mark an "empty" slot
+ * in a bank's 5-slot oracle-key array (most banks only use slot 0).
+ * MarginFi's own `createUpdateFeedIx` filters this same address; we
+ * iterate the raw config so mirror the filter.
+ */
+const SWB_EMPTY_SLOT_SENTINEL = new PublicKey(
+  "DMhGWtLAKE5d56WdyHQxqeFncwUeqMEnuC2RvvZfbuur",
+);
+
+/**
  * Minimum bank shape we need: oracle setup + primary oracle key.
  * `oracleSetup` comes back as the enum variant string (e.g. "SwitchboardPull")
  * — matches `OracleSetup.SwitchboardPull` in the SDK.
@@ -145,10 +180,26 @@ interface ClientLike {
 }
 
 /**
- * Rewrite a Secp256k1 verify ix's three `_instruction_index` fields so they
- * point to the ix's actual position in the final tx. Required whenever the
- * crank isn't the first instruction (which is always, in our flow — see the
- * file-header reference block for why and what breaks if you skip this).
+ * Size of one Secp256k1 offset block. See the file-header reference for the
+ * exact layout. There are N of these starting at byte 1 (after the u8
+ * num_signatures count).
+ */
+const SIGNATURE_OFFSETS_SERIALIZED_SIZE = 11;
+
+/**
+ * Rewrite a Secp256k1 verify ix's `_instruction_index` fields (three per
+ * signature) so they point to the ix's actual position in the final tx.
+ * Required whenever the crank isn't the first instruction (which is always,
+ * in our flow — see the file-header reference block for why and what breaks
+ * if you skip this).
+ *
+ * Handles N signatures: Switchboard requests `numSignatures` oracle samples
+ * per crank (default 3, issue #120 NUM_SIGNATURES) and packs them into a
+ * single Secp256k1 ix. For each signature k in [0..N), the three
+ * `instruction_index` bytes sit at absolute positions (3 + 11·k,
+ * 6 + 11·k, 11 + 11·k) — one `num_signatures` count byte at offset 0
+ * plus k complete 11-byte offset blocks before the k-th block's internal
+ * triplet at relative positions 2/5/10.
  *
  * Returns a NEW `TransactionInstruction` with a patched data buffer; the
  * input is left untouched so callers can still hold references to the
@@ -165,23 +216,29 @@ export function patchSecp256k1CrankIxPosition(
         `That would mean more than 255 instructions in the tx — nowhere near reachable.`,
     );
   }
-  // Only the single-signature layout is supported (num_signatures === 1).
-  // The Switchboard crank emits exactly one signature per feed and
-  // `createUpdateFeedIx` batches multi-oracle cranks into a single SWB
-  // submit ix, keeping the signature count at 1. Bail loudly if a future
-  // SDK release changes that assumption so the silent-bad-offsets failure
-  // mode can't regress.
   const numSigs = ix.data.readUInt8(0);
-  if (numSigs !== 1) {
+  if (numSigs === 0) {
     throw new Error(
-      `patchSecp256k1CrankIxPosition: expected 1 signature, got ${numSigs}. ` +
-        `The pre-compile data layout assumes single-sig; multi-sig needs a different patch loop.`,
+      `patchSecp256k1CrankIxPosition: num_signatures=0; no offset blocks to patch.`,
+    );
+  }
+  // Sanity-check the buffer carries the declared number of offset blocks.
+  // A short buffer means the SDK emitted malformed data OR a new format —
+  // better to fail loudly than to write past the intended offsets.
+  const requiredLen = 1 + numSigs * SIGNATURE_OFFSETS_SERIALIZED_SIZE;
+  if (ix.data.length < requiredLen) {
+    throw new Error(
+      `patchSecp256k1CrankIxPosition: ix.data too short for declared ` +
+        `num_signatures=${numSigs} (need ≥${requiredLen} bytes, got ${ix.data.length}).`,
     );
   }
   const patched = Buffer.from(ix.data);
-  patched.writeUInt8(position, 3);
-  patched.writeUInt8(position, 6);
-  patched.writeUInt8(position, 11);
+  for (let k = 0; k < numSigs; k++) {
+    const blockStart = 1 + k * SIGNATURE_OFFSETS_SERIALIZED_SIZE;
+    patched.writeUInt8(position, blockStart + 2); // signature_instruction_index
+    patched.writeUInt8(position, blockStart + 5); // eth_address_instruction_index
+    patched.writeUInt8(position, blockStart + 10); // message_instruction_index
+  }
   return new TransactionInstruction({
     programId: ix.programId,
     keys: ix.keys,
@@ -223,6 +280,7 @@ export async function buildSwitchboardCrankIxs(
       (bank.config.oracleKeys && bank.config.oracleKeys[0]) ??
       undefined;
     if (!oracleKey) continue;
+    if (oracleKey.equals(SWB_EMPTY_SLOT_SENTINEL)) continue;
     const b58 = oracleKey.toBase58();
     if (swbOracleBase58.includes(b58)) continue; // dedupe shared feeds
     swbOracles.push(oracleKey);
@@ -230,15 +288,23 @@ export async function buildSwitchboardCrankIxs(
   }
   if (swbOracles.length === 0) return EMPTY;
 
-  // Dynamic import so the Anchor + Switchboard + CrossbarClient footprint
-  // stays off the cold-start path for wallets that never touch a
-  // SwitchboardPull bank.
+  // Dynamic import so the Switchboard + CrossbarClient footprint stays off
+  // the cold-start path for wallets that never touch a SwitchboardPull bank.
+  //
+  // Call `PullFeed.fetchUpdateManyIx` DIRECTLY rather than going through
+  // MarginFi's `createUpdateFeedIx` wrapper — that wrapper hardcodes
+  // `numSignatures: 1`, which is exactly the root cause of issue #120's
+  // `NotEnoughSamples` race. The setup mirrors what the wrapper does
+  // internally: load the Switchboard program, wrap each oracle key in a
+  // PullFeed, get a CrossbarClient + gateway URL. Just with our own
+  // tuned sample count.
   const { AnchorProvider } = await import("@coral-xyz/anchor");
-  const { createUpdateFeedIx } = await import(
-    "@mrgnlabs/marginfi-client-v2"
+  const { PullFeed, AnchorUtils } = await import(
+    "@switchboard-xyz/on-demand"
   );
+  const { CrossbarClient } = await import("@switchboard-xyz/common");
 
-  // Stub wallet — `createUpdateFeedIx` only reads `provider.publicKey` as
+  // Stub wallet — `fetchUpdateManyIx` only reads `provider.publicKey` as
   // the payer; it never calls `signTransaction` / `signAllTransactions`.
   // The fail-throwing stubs double as a tripwire: if the SDK ever starts
   // invoking them in this path, the stale-tx-assembly bug will surface
@@ -250,7 +316,7 @@ export async function buildSwitchboardCrankIxs(
     signTransaction: async () => {
       throw new Error(
         "SWB crank stub wallet: unexpected signTransaction call. " +
-          "createUpdateFeedIx should only read publicKey; signing happens later via Ledger.",
+          "fetchUpdateManyIx should only read publicKey; signing happens later via Ledger.",
       );
     },
     signAllTransactions: async () => {
@@ -263,9 +329,21 @@ export async function buildSwitchboardCrankIxs(
     commitment: "confirmed",
   });
 
-  const { instructions, luts } = await createUpdateFeedIx({
-    swbPullOracles: swbOracles,
-    provider,
+  const swbProgram = await AnchorUtils.loadProgramFromConnection(
+    provider.connection,
+  );
+  const pullFeeds = swbOracles.map(
+    (pubkey) => new PullFeed(swbProgram, pubkey),
+  );
+  const crossbarClient = CrossbarClient.default();
+  const gateway = await pullFeeds[0]!.fetchGatewayUrl(crossbarClient);
+
+  const [instructions, luts] = await PullFeed.fetchUpdateManyIx(swbProgram, {
+    feeds: pullFeeds,
+    gateway,
+    numSignatures: NUM_SIGNATURES,
+    payer,
+    crossbarClient,
   });
   return { instructions, luts, oracles: swbOracleBase58 };
 }

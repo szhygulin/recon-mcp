@@ -60,7 +60,41 @@ vi.mock("../src/modules/solana/nonce.js", async (importOriginal) => {
 // suite without the 147MB transitive footprint on each test.
 const wrapperFetchMock = vi.fn();
 const makeInitIxMock = vi.fn();
-const createUpdateFeedIxMock = vi.fn();
+// Switchboard crank mocks (issue #116 ask C / #120). The production path
+// reaches @switchboard-xyz/on-demand directly (bypassing MarginFi's
+// createUpdateFeedIx wrapper so it can pass numSignatures=3 instead of
+// the wrapper's hardcoded 1). Tests intercept at the Switchboard module
+// boundary to exercise wrapWithNonce's branching without pulling in the
+// real Crossbar HTTP client.
+const fetchUpdateManyIxMock = vi.fn();
+vi.mock("@switchboard-xyz/on-demand", () => {
+  class PullFeedStub {
+    public program: unknown;
+    public pubkey: PublicKey;
+    constructor(program: unknown, pubkey: PublicKey) {
+      this.program = program;
+      this.pubkey = pubkey;
+    }
+    async fetchGatewayUrl(): Promise<string> {
+      return "https://gateway.test";
+    }
+    static fetchUpdateManyIx(...args: unknown[]): unknown {
+      return fetchUpdateManyIxMock(...args);
+    }
+  }
+  return {
+    PullFeed: PullFeedStub,
+    AnchorUtils: {
+      loadProgramFromConnection: vi.fn().mockResolvedValue({}),
+    },
+  };
+});
+vi.mock("@switchboard-xyz/common", () => ({
+  CrossbarClient: {
+    default: () => ({}),
+  },
+}));
+
 vi.mock("@mrgnlabs/marginfi-client-v2", () => ({
   MarginfiClient: {
     fetch: vi.fn(),
@@ -71,10 +105,6 @@ vi.mock("@mrgnlabs/marginfi-client-v2", () => ({
   instructions: {
     makeInitMarginfiAccountPdaIx: (...args: unknown[]) => makeInitIxMock(...args),
   },
-  // Switchboard crank prepend (issue #116 ask C) — mocked out so tests
-  // can exercise the wrapWithNonce branching without pulling in the
-  // real Switchboard Crossbar HTTP client.
-  createUpdateFeedIx: (...args: unknown[]) => createUpdateFeedIxMock(...args),
   getConfig: () => ({
     programId: new PublicKey("MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA"),
     groupPk: new PublicKey("4qp6Fx6tnZkY5Wropq9wUYgtFxXKwE6viZxFHg3rdAG8"),
@@ -220,11 +250,12 @@ beforeEach(async () => {
   wrapperFetchMock.mockReset();
   makeInitIxMock.mockReset();
   makeInitIxMock.mockResolvedValue(dummyIx("init"));
-  createUpdateFeedIxMock.mockReset();
-  // Default: no SwitchboardPull oracle touched → crank helper returns
-  // empty ixs. Individual tests exercising the crank path override
-  // to return real-ish secp+submit ixs.
-  createUpdateFeedIxMock.mockResolvedValue({ instructions: [], luts: [] });
+  fetchUpdateManyIxMock.mockReset();
+  // Default: empty ixs + empty LUTs + empty report tuple. Matches
+  // PullFeed.fetchUpdateManyIx's `[ixns, luts, report]` return shape.
+  // Tests that exercise the crank path override with real-ish
+  // secp256k1 + submit ixs.
+  fetchUpdateManyIxMock.mockResolvedValue([[], [], {}]);
 
   const mfn = await import("../src/modules/solana/marginfi.js");
   mfn.__clearMarginfiClientCache();
@@ -1280,11 +1311,13 @@ describe("Switchboard crank prepend (issue #116 ask C)", () => {
   it("prepends secp256k1 + submit ixs, patches instruction_index to the new position", async () => {
     await setupWithActiveSolBalance();
     // Crank helper returns 2 ixs: fake secp256k1 (indices hardcoded to 0)
-    // + a fake submit ix.
-    createUpdateFeedIxMock.mockResolvedValue({
-      instructions: [fakeSecp256k1Ix(), fakeSwbSubmitIx()],
-      luts: [],
-    });
+    // + a fake submit ix. PullFeed.fetchUpdateManyIx's tuple return:
+    // [instructions, luts, report].
+    fetchUpdateManyIxMock.mockResolvedValue([
+      [fakeSecp256k1Ix(), fakeSwbSubmitIx()],
+      [],
+      {},
+    ]);
     const { buildMarginfiBorrow } = await import(
       "../src/modules/solana/marginfi.js"
     );
@@ -1402,16 +1435,17 @@ describe("Switchboard crank prepend (issue #116 ask C)", () => {
     // Bare: nonceAdvance + borrow, nothing else. No ComputeBudget bloat.
     expect(draft.instructions).toHaveLength(2);
     expect(draft.instructions[0]!.programId.toBase58()).toBe(SYSTEM_PROGRAM);
-    // Ensure createUpdateFeedIx was never called — not just that nothing
-    // came back. (Calls an HTTP gateway; must skip for Pyth-only flows.)
-    expect(createUpdateFeedIxMock).not.toHaveBeenCalled();
+    // Ensure PullFeed.fetchUpdateManyIx was never called — not just that
+    // nothing came back. (Calls an HTTP gateway; must skip for Pyth-only
+    // flows.)
+    expect(fetchUpdateManyIxMock).not.toHaveBeenCalled();
     expect(draft.meta.marginfiOracleCranks!.oracles).toEqual([]);
     expect(draft.meta.marginfiOracleCranks!.instructionCount).toBe(0);
   });
 
-  it("falls through without crank when createUpdateFeedIx throws (gateway failure)", async () => {
+  it("falls through without crank when the Switchboard gateway throws (gateway failure)", async () => {
     await setupWithActiveSolBalance();
-    createUpdateFeedIxMock.mockRejectedValue(
+    fetchUpdateManyIxMock.mockRejectedValue(
       new Error("crossbar gateway unreachable"),
     );
     const { buildMarginfiBorrow } = await import(
@@ -1473,14 +1507,65 @@ describe("Switchboard crank prepend (issue #116 ask C)", () => {
     expect(result.data.readUInt8(3)).toBe(0xaa);
   });
 
-  it("patchSecp256k1CrankIxPosition: throws if multi-signature payload shows up", async () => {
+  it("patchSecp256k1CrankIxPosition: patches ALL N offset blocks for multi-sig payloads (issue #120)", async () => {
     const { patchSecp256k1CrankIxPosition } = await import(
       "../src/modules/solana/swb-crank.js"
     );
-    const multi = fakeSecp256k1Ix();
-    multi.data.writeUInt8(2, 0); // num_sigs = 2
-    expect(() => patchSecp256k1CrankIxPosition(multi, 2)).toThrow(
-      /expected 1 signature.*got 2/,
+    // Build a plausible 3-signature payload. Count byte = 3, followed by
+    // 3 × 11-byte offset blocks (all instruction_index bytes initialized
+    // to 0, mirroring what the SDK emits), then a fake signatures area
+    // + common message. The patch function doesn't touch anything past
+    // the offset section, so the tail can stay zeroed.
+    const N = 3;
+    const offsetsAreaSize = 1 + N * 11;
+    const signatureBlockSize = 64 + 1 + 20; // sig + recoveryId + ethAddress
+    const messageSize = 32;
+    const data = Buffer.alloc(offsetsAreaSize + N * signatureBlockSize + messageSize, 0);
+    data.writeUInt8(N, 0);
+    // Populate the three index bytes in each offset block with SDK's
+    // default (0). The patch should rewrite every one of them.
+    for (let k = 0; k < N; k++) {
+      const base = 1 + k * 11;
+      data.writeUInt8(0, base + 2);
+      data.writeUInt8(0, base + 5);
+      data.writeUInt8(0, base + 10);
+    }
+    const multi = new TransactionInstruction({
+      programId: new PublicKey(SECP256K1_PROGRAM),
+      keys: [],
+      data,
+    });
+    const patched = patchSecp256k1CrankIxPosition(multi, 7);
+    for (let k = 0; k < N; k++) {
+      const base = 1 + k * 11;
+      expect(patched.data.readUInt8(base + 2)).toBe(7);
+      expect(patched.data.readUInt8(base + 5)).toBe(7);
+      expect(patched.data.readUInt8(base + 10)).toBe(7);
+    }
+    // Original is untouched.
+    for (let k = 0; k < N; k++) {
+      const base = 1 + k * 11;
+      expect(multi.data.readUInt8(base + 2)).toBe(0);
+    }
+  });
+
+  it("patchSecp256k1CrankIxPosition: throws on truncated buffer (declared N > actual size)", async () => {
+    const { patchSecp256k1CrankIxPosition } = await import(
+      "../src/modules/solana/swb-crank.js"
+    );
+    // Claim 3 signatures but only carry enough bytes for 1 offset block.
+    // A silently-wrong patch would stop at the buffer end and leave
+    // blocks 1..2 with the SDK default (0) — the exact regression we
+    // want this guard to catch.
+    const data = Buffer.alloc(12, 0);
+    data.writeUInt8(3, 0); // num_sigs=3 (needs 1 + 3*11 = 34 bytes)
+    const truncated = new TransactionInstruction({
+      programId: new PublicKey(SECP256K1_PROGRAM),
+      keys: [],
+      data,
+    });
+    expect(() => patchSecp256k1CrankIxPosition(truncated, 2)).toThrow(
+      /too short.*num_signatures=3/,
     );
   });
 });

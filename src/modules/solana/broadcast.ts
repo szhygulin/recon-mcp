@@ -44,7 +44,32 @@ export async function broadcastSolanaTx(signedTxBytes: Buffer): Promise<string> 
       name?: string;
     };
     const base = err?.message ?? String(e);
-    const logs = Array.isArray(err?.logs) ? `\nProgram logs:\n  ${err.logs.join("\n  ")}` : "";
+    const logsArr = Array.isArray(err?.logs) ? err.logs : [];
+    const logs = logsArr.length ? `\nProgram logs:\n  ${logsArr.join("\n  ")}` : "";
+
+    // Switchboard `NotEnoughSamples` (Anchor 6030 / 0x178e) on the crank ix
+    // means the oracle samples we fetched at preview time aged past their
+    // `max_staleness` window during Ledger review (issue #120). With
+    // numSignatures=3 the headroom is ~3× but not unbounded; a slow
+    // review (>20s) or a feed with a tight max_staleness can still trip
+    // this. Reframe so the user gets an actionable message instead of
+    // a raw program error — the remediation is always "re-prepare" and
+    // the pre-sign simulation will re-fetch fresh samples.
+    const notEnoughSamples =
+      /custom program error: 0x178e/i.test(base) ||
+      /custom program error: 0x178e/i.test(logs) ||
+      /NotEnoughSamples/.test(logs);
+    if (notEnoughSamples) {
+      throw new Error(
+        `Switchboard oracle samples aged out during Ledger review — the tx's ` +
+          `embedded oracle attestations were fresh at preview time but too old ` +
+          `by the time broadcast tried to land (issue #120). Re-prepare the ` +
+          `action (call prepare_marginfi_* again) to fetch a fresh crank and ` +
+          `retry. No on-chain effect — the durable nonce was not advanced. ` +
+          `Raw: ${base}${logs}`,
+      );
+    }
+
     throw new Error(`Solana broadcast failed: ${base}${logs}`);
   }
 }
