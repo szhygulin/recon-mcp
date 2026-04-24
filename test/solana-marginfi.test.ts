@@ -82,6 +82,16 @@ vi.mock("@mrgnlabs/marginfi-client-v2", () => ({
     ],
   },
   MARGINFI_IDL: { address: "MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA" },
+  // Stubs the hardened fetchGroupData destructures from the SDK. Only used
+  // by the issue-#106 fetch-path test; every other test mocks the whole
+  // MarginfiClient and never reaches hardenedFetchGroupData.
+  MarginfiGroup: { fromBuffer: vi.fn() },
+  Bank: { fromAccountParsed: vi.fn() },
+  BankConfig: { fromAccountParsed: vi.fn() },
+  AssetTag: { KAMINO: 3 },
+  parseOracleSetup: vi.fn(),
+  parsePriceInfo: vi.fn(),
+  findOracleKey: vi.fn(),
 }));
 
 // Minimal mock of @coral-xyz/anchor — only `buildMarginfiProgram` uses it,
@@ -480,6 +490,55 @@ describe("hardened MarginfiClient.fetch (issue #105)", () => {
     // position reader, and sending read-only mode to the SDK disables a
     // handful of sign-related checks upstream).
     expect(captured.clientOptions?.readOnly).toBe(true);
+  });
+});
+
+/**
+ * Issue #106 — the hardened `fetchGroupData` must fetch account infos via
+ * plain `connection.getMultipleAccountsInfo` (one non-batched JSON-RPC
+ * call per ≤100-key chunk), NOT via mrgn-common's
+ * `chunkedGetRawMultipleAccountInfoOrdered` which internally calls
+ * `connection._rpcBatchRequest`. JSON-RPC 2.0 batch requests are rejected
+ * by many Solana RPC providers; the SDK's retry loop swallows the real
+ * error and surfaces the opaque `"Failed to fetch account infos after 3
+ * retries"`. Regression guard: the stub Connection deliberately does NOT
+ * define `_rpcBatchRequest`, so any reach for it throws with a clear
+ * message instead of silently regressing.
+ */
+describe("hardenedFetchGroupData fetch path (issue #106)", () => {
+  it("uses plain getMultipleAccountsInfo, does NOT reach for _rpcBatchRequest", async () => {
+    const getMultipleAccountsInfo = vi.fn().mockResolvedValue([null]);
+    // _rpcBatchRequest deliberately absent — if the code reaches for it, the
+    // stub throws "not a function" and the test fails with a clear signal.
+    const conn = { getMultipleAccountsInfo };
+
+    const program = {
+      provider: { connection: conn },
+      coder: { decode: () => ({}) },
+      programId: new PublicKey(SYSTEM_PROGRAM),
+      idl: {},
+    };
+
+    const { __hardenedFetchGroupDataForTest } = await import(
+      "../src/modules/solana/marginfi.js"
+    );
+
+    const groupAddress = new PublicKey(SYSTEM_PROGRAM);
+    const bankAddresses = [new PublicKey(SYSTEM_PROGRAM)];
+
+    // With no bank data (null) and no group data (null on the 2nd fetch),
+    // the function throws on the MarginfiGroup fetch check. Fine — the
+    // assertion is about fetch-method selection, not end-to-end success.
+    await expect(
+      __hardenedFetchGroupDataForTest(
+        program as never,
+        groupAddress,
+        undefined,
+        bankAddresses,
+        undefined,
+      ),
+    ).rejects.toThrow(/MarginfiGroup/i);
+    expect(getMultipleAccountsInfo).toHaveBeenCalled();
   });
 });
 

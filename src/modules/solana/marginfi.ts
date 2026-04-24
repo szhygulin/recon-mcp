@@ -2,6 +2,7 @@ import {
   AddressLookupTableAccount,
   PublicKey,
   TransactionInstruction,
+  type AccountInfo,
   type Connection,
 } from "@solana/web3.js";
 import BigNumber from "bignumber.js";
@@ -222,15 +223,17 @@ async function getMarginfiClient(
  *
  * This version:
  *   1. Lists bank addresses via `getProgramAccounts` (same memcmp filter).
- *   2. Batch-fetches raw account data via
- *      `chunkedGetRawMultipleAccountInfoOrdered`.
+ *   2. Fetches raw account data via chunked plain `getMultipleAccountsInfo`
+ *      (one HTTP call per ≤100-key chunk). NOT the SDK's batch-RPC path
+ *      (`_rpcBatchRequest`), which rejects on many Solana RPC providers
+ *      and surfaces as `"Failed to fetch account infos after 3 retries"`
+ *      (issue #106).
  *   3. Decodes each bank in its own try/catch. Failures are skipped (with
  *      a console.warn tallying the count) — the client comes up with the
  *      set of banks it CAN understand.
  *   4. Skips integrator banks (KAMINO/DRIFT/SOLEND — AssetTag ≥ 3) same
  *      as the SDK does.
- *   5. Batch-fetches oracles + mints + emission mints in one call
- *      (identical to the SDK's batching).
+ *   5. Fetches oracles + mints + emission mints in one call (plain RPC).
  *   6. Per-bank wraps the price-info parse so a single unsupported oracle
  *      setup doesn't kill the whole client load either.
  *
@@ -239,6 +242,32 @@ async function getMarginfiClient(
  * `prepare_marginfi_*`. The user sees a clear warning count, not a
  * broken client. Bump the SDK whenever a new release ships.
  */
+/**
+ * Fetch account infos for a list of pubkeys via plain
+ * `connection.getMultipleAccountsInfo` (one HTTP call per ≤100-key chunk),
+ * preserving input order + nulls.
+ *
+ * Replaces mrgn-common's `chunkedGetRawMultipleAccountInfoOrdered`, which
+ * uses `connection._rpcBatchRequest` — JSON-RPC 2.0 batch requests are not
+ * universally supported by Solana RPC providers. Rejecting providers make
+ * the SDK's retry loop swallow the real error and surface a generic
+ * `"Failed to fetch account infos after 3 retries"` (issue #106). The
+ * plain `getMultipleAccounts` RPC is supported everywhere.
+ */
+async function chunkedGetAccountInfosWithNulls(
+  conn: Connection,
+  pubkeys: PublicKey[],
+): Promise<Array<AccountInfo<Buffer> | null>> {
+  const CHUNK_SIZE = 100;
+  const out: Array<AccountInfo<Buffer> | null> = [];
+  for (let i = 0; i < pubkeys.length; i += CHUNK_SIZE) {
+    const chunk = pubkeys.slice(i, i + CHUNK_SIZE);
+    const infos = await conn.getMultipleAccountsInfo(chunk, "confirmed");
+    out.push(...infos);
+  }
+  return out;
+}
+
 async function hardenedFetchGroupData(
   program: unknown,
   groupAddress: PublicKey,
@@ -278,14 +307,7 @@ async function hardenedFetchGroupData(
     ) => unknown;
     findOracleKey: (cfg: unknown) => { oracleKey: PublicKey };
   };
-  const {
-    chunkedGetRawMultipleAccountInfoOrdered,
-    wrappedI80F48toBigNumber,
-  } = common as unknown as {
-    chunkedGetRawMultipleAccountInfoOrdered: (
-      conn: Connection,
-      addrs: string[],
-    ) => Promise<Array<{ data: Buffer; owner: PublicKey } | null>>;
+  const { wrappedI80F48toBigNumber } = common as unknown as {
     wrappedI80F48toBigNumber: (w: unknown) => unknown;
   };
 
@@ -318,11 +340,9 @@ async function hardenedFetchGroupData(
     addresses = raw.map((r) => r.pubkey);
   }
 
-  // Step 2: batch-fetch bank raw data + decode with per-bank try/catch.
-  const bankAis = await chunkedGetRawMultipleAccountInfoOrdered(
-    conn,
-    addresses.map((a) => a.toBase58()),
-  );
+  // Step 2: fetch bank raw data (plain RPC, no batch) + decode with
+  // per-bank try/catch.
+  const bankAis = await chunkedGetAccountInfosWithNulls(conn, addresses);
   type BankDatum = { address: PublicKey; data: BankDecodedLike };
   interface BankDecodedLike {
     config: {
@@ -368,7 +388,8 @@ async function hardenedFetchGroupData(
     );
   }
 
-  // Step 3: batch-fetch group account + oracles + mints + emission mints.
+  // Step 3: fetch group account + oracles + mints + emission mints (plain
+  // RPC, no batch).
   const oracleKeys = bankDatasKeyed.map(
     (b) => findOracleKey(BankConfig.fromAccountParsed(b.data.config)).oracleKey,
   );
@@ -376,11 +397,11 @@ async function hardenedFetchGroupData(
   const emissionMintKeys = bankDatasKeyed
     .map((b) => b.data.emissionsMint)
     .filter((pk) => !pk.equals(PublicKey.default));
-  const allAis = await chunkedGetRawMultipleAccountInfoOrdered(conn, [
-    groupAddress.toBase58(),
-    ...oracleKeys.map((pk) => pk.toBase58()),
-    ...mintKeys.map((pk) => pk.toBase58()),
-    ...emissionMintKeys.map((pk) => pk.toBase58()),
+  const allAis = await chunkedGetAccountInfosWithNulls(conn, [
+    groupAddress,
+    ...oracleKeys,
+    ...mintKeys,
+    ...emissionMintKeys,
   ]);
   const groupAi = allAis.shift();
   const oracleAis = allAis.splice(0, oracleKeys.length);
