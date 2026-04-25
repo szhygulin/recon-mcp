@@ -142,7 +142,19 @@ npm run setup
 
 Environment variables always override the config file.
 
-## Use with Claude Desktop
+## Use with Claude Desktop / Claude Code / Cursor
+
+`vaultpilot-mcp-setup` detects which agent clients you have installed and offers to add a `vaultpilot-mcp` entry to each one's MCP-server config automatically. Each existing config is backed up to `<file>.vaultpilot.bak` before any change. Detected client paths:
+
+- Claude Desktop (macOS): `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Claude Desktop (Windows): `%APPDATA%\Claude\claude_desktop_config.json`
+- Claude Desktop (Linux): `~/.config/Claude/claude_desktop_config.json`
+- Claude Code (user-level): `~/.claude.json`
+- Cursor (user-level): `~/.cursor/mcp.json`
+
+Per-project (`<project>/.claude/settings.json`) and per-workspace (`<workspace>/.cursor/mcp.json`) configs are deliberately skipped — the wizard runs from an arbitrary CWD and patching the wrong project is worse than skipping.
+
+If you'd rather edit configs by hand, the entry is:
 
 ```json
 {

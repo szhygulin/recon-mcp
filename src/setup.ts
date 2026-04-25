@@ -23,6 +23,12 @@ import {
   getConfigPath,
 } from "./config/user-config.js";
 import { reportLedgerUdevStatus } from "./setup/linux-udev.js";
+import {
+  detectClient,
+  getClientConfigPaths,
+  registerVaultPilotWithClients,
+  summarizePatchResults,
+} from "./setup/register-clients.js";
 import type { RpcProvider, SupportedChain, UserConfig } from "./types/index.js";
 
 /** Thin readline wrapper so each prompt is a single awaited call. */
@@ -569,6 +575,47 @@ async function runFullWizard(p: Prompt): Promise<void> {
   // macOS / Windows. If rules are missing on Linux, prints the install
   // one-liner for the user to run separately (no sudo during the wizard).
   reportLedgerUdevStatus();
+
+  // Auto-register the MCP entry into installed agent-client configs so
+  // the user doesn't have to find + edit the JSON file by hand. Asks
+  // permission first — even with backups, touching another app's config
+  // file should be opt-in.
+  await offerClientAutoRegister(p);
+}
+
+/**
+ * Detect which agent clients are installed on the host and offer to add
+ * the `vaultpilot-mcp` entry to each of their MCP-server configs. Only
+ * touches user-level configs (Claude Desktop's per-OS path, Claude Code's
+ * `~/.claude.json`, Cursor's `~/.cursor/mcp.json`) — per-project / per-
+ * workspace configs are skipped because the wizard runs from an arbitrary
+ * CWD and patching the wrong project's config is worse than skipping.
+ */
+async function offerClientAutoRegister(p: Prompt): Promise<void> {
+  console.log("\n--- Agent client registration ---");
+  const targets = getClientConfigPaths();
+  const detected = targets.filter(
+    ({ configPath }) => detectClient(configPath) !== "absent",
+  );
+  if (detected.length === 0) {
+    console.log("  No agent clients detected (Claude Desktop / Claude Code / Cursor).");
+    console.log("  Skipping auto-registration. If you install one later, re-run this");
+    console.log("  setup or add the snippet from the README manually.");
+    return;
+  }
+  console.log("  Detected: " + detected.map((d) => d.client).join(", "));
+  console.log("  We can add a `vaultpilot-mcp` entry to each detected client's");
+  console.log("  MCP-server config so the server starts automatically when you");
+  console.log("  open the client. Each existing config is backed up to");
+  console.log("  `<file>.vaultpilot.bak` before any change.");
+  const ans = (await p.ask("  Auto-register now? [Y/n]: ")).trim().toLowerCase();
+  if (ans === "n" || ans === "no") {
+    console.log("  Skipped. Re-run the wizard to register later.");
+    return;
+  }
+  const results = registerVaultPilotWithClients();
+  console.log("\n  Result:");
+  console.log(summarizePatchResults(results));
 }
 
 async function main() {
