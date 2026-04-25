@@ -127,6 +127,7 @@ import type {
   GetBitcoinFeeEstimatesArgs,
   GetBitcoinBlockTipArgs,
   GetBitcoinAccountBalanceArgs,
+  RescanBitcoinAccountArgs,
   GetBitcoinTxHistoryArgs,
   PrepareBitcoinNativeSendArgs,
   SignBtcMessageArgs,
@@ -725,6 +726,149 @@ export async function getBitcoinBlockTip(_args: GetBitcoinBlockTipArgs) {
 }
 
 /**
+ * Refresh the indexer-side `txCount` for every cached BTC address
+ * under one Ledger account, without touching the device. Distinct from
+ * `pair_ledger_btc` (which DOES touch the device, deriving fresh leaf
+ * paths) — this tool only re-probes the indexer for already-derived
+ * addresses and updates the persisted cache.
+ *
+ * Use case: the user received funds AFTER the original gap-limit scan
+ * (so the cached entry's `txCount === 0` is stale), or the indexer
+ * was cold/lagging at scan time. Either way the addresses themselves
+ * are correct; only the on-chain history snapshot needs refreshing.
+ *
+ * If the LAST cached address on a chain (the trailing buffer empty)
+ * now has on-chain history, the response flags `needsExtend: true` —
+ * funds may exist past the originally-walked gap window, and the
+ * caller should run `pair_ledger_btc` again (which DOES use the
+ * device) to extend the scan.
+ *
+ * Issue #191.
+ */
+export async function rescanBitcoinAccount(args: RescanBitcoinAccountArgs) {
+  const { getPairedBtcAddresses, setPairedBtcAddress } = await import(
+    "../../signing/btc-usb-signer.js"
+  );
+  const all = getPairedBtcAddresses();
+  const forAccount = all.filter(
+    (e) => e.accountIndex === args.accountIndex,
+  );
+  if (forAccount.length === 0) {
+    throw new Error(
+      `No paired Bitcoin entries cached for accountIndex=${args.accountIndex}. ` +
+        `Run \`pair_ledger_btc({ accountIndex: ${args.accountIndex} })\` first ` +
+        `to populate the cache. \`rescan_btc_account\` only refreshes existing ` +
+        `entries — it cannot derive new addresses (that needs the Ledger device).`,
+    );
+  }
+  const { getBitcoinIndexer } = await import("../btc/indexer.js");
+  const indexer = getBitcoinIndexer();
+  // Indexer fan-out is purely HTTP — parallelize for speed. Per-address
+  // failures degrade gracefully (the entry's txCount stays at its prior
+  // value rather than getting wiped to 0).
+  const probes = await Promise.allSettled(
+    forAccount.map((e) => indexer.getBalance(e.address)),
+  );
+
+  type BTCEntry = (typeof forAccount)[number];
+  type ChainKey = `${BTCEntry["addressType"]}:${0 | 1}`;
+  const chainBuckets = new Map<ChainKey, BTCEntry[]>();
+  const refreshed: Array<{
+    address: string;
+    addressType: BTCEntry["addressType"];
+    chain: 0 | 1 | null;
+    addressIndex: number | null;
+    path: string;
+    previousTxCount: number;
+    txCount: number;
+    delta: number;
+    fetchOk: boolean;
+  }> = [];
+  for (let i = 0; i < forAccount.length; i++) {
+    const entry = forAccount[i];
+    const probe = probes[i];
+    const previousTxCount = entry.txCount ?? 0;
+    let liveTxCount = previousTxCount;
+    let fetchOk = false;
+    if (probe.status === "fulfilled") {
+      liveTxCount = probe.value.txCount;
+      fetchOk = true;
+      // Persist the refresh so subsequent get_btc_account_balance
+      // calls reflect the updated state without re-rescanning.
+      if (liveTxCount !== previousTxCount) {
+        setPairedBtcAddress({ ...entry, txCount: liveTxCount });
+      }
+    }
+    refreshed.push({
+      address: entry.address,
+      addressType: entry.addressType,
+      chain: entry.chain ?? null,
+      addressIndex: entry.addressIndex ?? null,
+      path: entry.path,
+      previousTxCount,
+      txCount: liveTxCount,
+      delta: liveTxCount - previousTxCount,
+      fetchOk,
+    });
+    if (entry.chain === 0 || entry.chain === 1) {
+      const key: ChainKey = `${entry.addressType}:${entry.chain}`;
+      const bucket = chainBuckets.get(key);
+      if (bucket) bucket.push(entry);
+      else chainBuckets.set(key, [entry]);
+    }
+  }
+
+  // needsExtend: for any (type, chain), if the entry with the LARGEST
+  // addressIndex (the trailing buffer empty from the original walk)
+  // now has txCount > 0, the gap window may no longer cover all funds.
+  // The user should re-pair to extend.
+  let needsExtend = false;
+  const extendChains: Array<{
+    addressType: BTCEntry["addressType"];
+    chain: 0 | 1;
+    lastAddressIndex: number;
+  }> = [];
+  for (const [key, bucket] of chainBuckets) {
+    const tail = bucket.reduce((max, e) =>
+      (e.addressIndex ?? -1) > (max.addressIndex ?? -1) ? e : max,
+    );
+    const i = forAccount.indexOf(tail);
+    const probe = probes[i];
+    if (probe.status === "fulfilled" && probe.value.txCount > 0) {
+      needsExtend = true;
+      const [addressTypeStr, chainStr] = key.split(":");
+      extendChains.push({
+        addressType: addressTypeStr as BTCEntry["addressType"],
+        chain: Number(chainStr) as 0 | 1,
+        lastAddressIndex: tail.addressIndex ?? -1,
+      });
+    }
+  }
+
+  const fetchFailures = refreshed.filter((r) => !r.fetchOk).length;
+  const txCountChanges = refreshed.filter((r) => r.delta !== 0).length;
+  return {
+    accountIndex: args.accountIndex,
+    addressesScanned: refreshed.length,
+    txCountChanges,
+    fetchFailures,
+    needsExtend,
+    ...(needsExtend ? { extendChains } : {}),
+    refreshed,
+    ...(needsExtend
+      ? {
+          note:
+            "The trailing empty address on at least one cached chain now has " +
+            "on-chain history. The original gap-limit window may miss funds " +
+            "past it. Run `pair_ledger_btc({ accountIndex: " +
+            args.accountIndex +
+            " })` to extend the scan with fresh on-device derivations.",
+        }
+      : {}),
+  };
+}
+
+/**
  * Aggregate the on-chain balance across every CACHED used-address for
  * one Ledger BTC account index. Walks the in-memory + persisted
  * pairing cache (populated by `pair_ledger_btc`'s gap-limit scan),
@@ -776,8 +920,10 @@ export async function getBitcoinAccountBalance(
       }>,
       note:
         "All cached addresses for this account had zero on-chain history at " +
-        "scan time. If you've recently received funds, re-run pair_ledger_btc " +
-        "to refresh the gap-limit scan.",
+        "scan time. If you've recently received funds, call " +
+        "`rescan_btc_account` to refresh the cached txCount via the indexer " +
+        "(no Ledger device needed). If funds may have landed past the original " +
+        "gap-limit window, re-run `pair_ledger_btc` to extend the scan.",
     };
   }
   const { getBitcoinBalance } = await import("../btc/balances.js");
