@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
+import { makeConnectionStub } from "./fixtures/solana-rpc-mock.js";
+import {
+  setNoncePresent as setNoncePresentFor,
+  setNonceMissing,
+} from "./fixtures/solana-nonce-mock.js";
 
 /**
  * Kamino write-builder tests. The builders themselves orchestrate:
@@ -27,9 +32,7 @@ const FAKE_USER_LUT_ADDR = Keypair.generate().publicKey.toBase58();
 const FAKE_OBLIGATION_ADDR = Keypair.generate().publicKey.toBase58();
 const FAKE_KAMINO_PROGRAM = Keypair.generate().publicKey;
 
-const connectionStub = {
-  getAccountInfo: vi.fn(),
-};
+const connectionStub = makeConnectionStub();
 
 vi.mock("../src/modules/solana/rpc.js", () => ({
   getSolanaConnection: () => connectionStub,
@@ -125,20 +128,7 @@ vi.mock("@solana-program/system", () => ({
 }));
 
 async function setNoncePresent(): Promise<void> {
-  const { getNonceAccountValue } = await import(
-    "../src/modules/solana/nonce.js"
-  );
-  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue({
-    nonce: FAKE_BLOCKHASH,
-    authority: WALLET_KP.publicKey,
-  });
-}
-
-async function setNonceMissing(): Promise<void> {
-  const { getNonceAccountValue } = await import(
-    "../src/modules/solana/nonce.js"
-  );
-  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+  await setNoncePresentFor(WALLET_KP.publicKey, FAKE_BLOCKHASH);
 }
 
 function fakeKitInstruction(label: string) {

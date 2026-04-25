@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Keypair, PublicKey, StakeProgram } from "@solana/web3.js";
+import { makeConnectionStub } from "./fixtures/solana-rpc-mock.js";
+import {
+  setNoncePresent as setNoncePresentFor,
+  setNonceMissing,
+} from "./fixtures/solana-nonce-mock.js";
 
 /**
  * Native stake-program write builders. Mocks the RPC at the Connection
@@ -27,11 +32,7 @@ const VALIDATOR = VALIDATOR_KEYPAIR.publicKey.toBase58();
 const SYSTEM_PROGRAM = "11111111111111111111111111111111";
 const STAKE_PROGRAM = StakeProgram.programId.toBase58();
 
-const connectionStub = {
-  getAccountInfo: vi.fn(),
-  getMinimumBalanceForRentExemption: vi.fn(),
-  getLatestBlockhash: vi.fn(),
-};
+const connectionStub = makeConnectionStub();
 
 vi.mock("../src/modules/solana/rpc.js", () => ({
   getSolanaConnection: () => connectionStub,
@@ -48,20 +49,7 @@ vi.mock("../src/modules/solana/nonce.js", async (importOriginal) => {
 });
 
 async function setNoncePresent(): Promise<void> {
-  const { getNonceAccountValue } = await import(
-    "../src/modules/solana/nonce.js"
-  );
-  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue({
-    nonce: "GfnhkAa2iy8cZV7X5SyyYmCHxFQjEbBuyyUSCBokixB9",
-    authority: WALLET_KEYPAIR.publicKey,
-  });
-}
-
-async function setNonceMissing(): Promise<void> {
-  const { getNonceAccountValue } = await import(
-    "../src/modules/solana/nonce.js"
-  );
-  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+  await setNoncePresentFor(WALLET_KEYPAIR.publicKey);
 }
 
 beforeEach(async () => {

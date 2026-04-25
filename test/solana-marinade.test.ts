@@ -5,6 +5,11 @@ import {
   Transaction,
   TransactionInstruction,
 } from "@solana/web3.js";
+import { makeConnectionStub } from "./fixtures/solana-rpc-mock.js";
+import {
+  setNoncePresent as setNoncePresentFor,
+  setNonceMissing,
+} from "./fixtures/solana-nonce-mock.js";
 
 /**
  * Marinade write-builder tests. Mocks the Marinade SDK so we never touch
@@ -28,10 +33,7 @@ const FAKE_MSOL_ATA = new PublicKey(
   "8JUjWjAyXTMB4ZXcV7nk3p6Gg1fWAAoSCHEPugYzj22h",
 );
 
-const connectionStub = {
-  getAccountInfo: vi.fn(),
-  getLatestBlockhash: vi.fn(),
-};
+const connectionStub = makeConnectionStub();
 
 vi.mock("../src/modules/solana/rpc.js", () => ({
   getSolanaConnection: () => connectionStub,
@@ -80,20 +82,7 @@ vi.mock("@coral-xyz/anchor", () => ({
 }));
 
 async function setNoncePresent(): Promise<void> {
-  const { getNonceAccountValue } = await import(
-    "../src/modules/solana/nonce.js"
-  );
-  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue({
-    nonce: "GfnhkAa2iy8cZV7X5SyyYmCHxFQjEbBuyyUSCBokixB9",
-    authority: WALLET_KEYPAIR.publicKey,
-  });
-}
-
-async function setNonceMissing(): Promise<void> {
-  const { getNonceAccountValue } = await import(
-    "../src/modules/solana/nonce.js"
-  );
-  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+  await setNoncePresentFor(WALLET_KEYPAIR.publicKey);
 }
 
 function fakeMarinadeIx(label: string): TransactionInstruction {

@@ -6,6 +6,11 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
+import { makeConnectionStub } from "./fixtures/solana-rpc-mock.js";
+import {
+  setNoncePresent as setNoncePresentFor,
+  setNonceMissing,
+} from "./fixtures/solana-nonce-mock.js";
 
 /**
  * LiFi-on-Solana write-builder tests. Mocks the LiFi SDK's `getQuote` to
@@ -27,10 +32,7 @@ const SYSTEM_PROGRAM = "11111111111111111111111111111111";
 const FAKE_BRIDGE_PROGRAM = Keypair.generate().publicKey;
 const FAKE_BLOCKHASH = "GfnhkAa2iy8cZV7X5SyyYmCHxFQjEbBuyyUSCBokixB9";
 
-const connectionStub = {
-  getAccountInfo: vi.fn(),
-  getAddressLookupTable: vi.fn(),
-};
+const connectionStub = makeConnectionStub();
 
 vi.mock("../src/modules/solana/rpc.js", () => ({
   getSolanaConnection: () => connectionStub,
@@ -63,20 +65,7 @@ vi.mock("../src/modules/swap/lifi.js", () => ({
 }));
 
 async function setNoncePresent(): Promise<void> {
-  const { getNonceAccountValue } = await import(
-    "../src/modules/solana/nonce.js"
-  );
-  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue({
-    nonce: FAKE_BLOCKHASH,
-    authority: WALLET_KEYPAIR.publicKey,
-  });
-}
-
-async function setNonceMissing(): Promise<void> {
-  const { getNonceAccountValue } = await import(
-    "../src/modules/solana/nonce.js"
-  );
-  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+  await setNoncePresentFor(WALLET_KEYPAIR.publicKey, FAKE_BLOCKHASH);
 }
 
 /**

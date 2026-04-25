@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
 import BigNumber from "bignumber.js";
+import { makeConnectionStub } from "./fixtures/solana-rpc-mock.js";
+import {
+  setNoncePresent as setNoncePresentFor,
+  setNonceMissing,
+} from "./fixtures/solana-nonce-mock.js";
 
 /**
  * MarginFi builder tests. Strategy mirrors solana-jupiter.test.ts: mock the
@@ -22,14 +27,10 @@ const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const BANK_USDC = new PublicKey("2s37akK2eyBbp8DZgCm7RtsaEz8eJP3Nxd4urLHQv7yB");
 const SYSTEM_PROGRAM = "11111111111111111111111111111111";
 
-// Single shared connectionStub object — `getAccountInfo` is the main method
-// both the nonce preflight AND the marginfi-account existence check call.
-const connectionStub = {
-  getAccountInfo: vi.fn(),
-  getMinimumBalanceForRentExemption: vi.fn(),
-  getLatestBlockhash: vi.fn(),
-  getBalance: vi.fn(),
-};
+// Shared Solana connection stub from fixtures/. `getAccountInfo` is the
+// main method both the nonce preflight AND the marginfi-account existence
+// check call.
+const connectionStub = makeConnectionStub();
 
 vi.mock("../src/modules/solana/rpc.js", () => ({
   getSolanaConnection: () => connectionStub,
@@ -49,10 +50,7 @@ vi.mock("../src/modules/solana/alt.js", () => ({
 vi.mock("../src/modules/solana/nonce.js", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../src/modules/solana/nonce.js")>();
-  return {
-    ...actual,
-    getNonceAccountValue: vi.fn(),
-  };
+  return { ...actual, getNonceAccountValue: vi.fn() };
 });
 
 // Fake MarginfiAccountWrapper + SDK surface. The real SDK module is heavy
@@ -137,21 +135,9 @@ vi.mock("@coral-xyz/anchor", () => ({
   Program: class {},
 }));
 
+// Bind the wallet pubkey so callers don't have to repeat it.
 async function setNoncePresent(): Promise<void> {
-  const { getNonceAccountValue } = await import(
-    "../src/modules/solana/nonce.js"
-  );
-  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue({
-    nonce: "GfnhkAa2iy8cZV7X5SyyYmCHxFQjEbBuyyUSCBokixB9",
-    authority: WALLET_KEYPAIR.publicKey,
-  });
-}
-
-async function setNonceMissing(): Promise<void> {
-  const { getNonceAccountValue } = await import(
-    "../src/modules/solana/nonce.js"
-  );
-  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+  await setNoncePresentFor(WALLET_KEYPAIR.publicKey);
 }
 
 function buildFakeBank(mint: string, address = BANK_USDC): unknown {

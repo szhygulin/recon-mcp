@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Keypair, PublicKey } from "@solana/web3.js";
+import {
+  makeConnectionStub,
+  resetConnectionStub,
+} from "./fixtures/solana-rpc-mock.js";
+import {
+  setNoncePresent as setNoncePresentFor,
+  setNonceMissing,
+  resetNonceMock,
+  DEFAULT_TEST_NONCE_VALUE,
+} from "./fixtures/solana-nonce-mock.js";
 
 /**
  * Builder tests for `prepare_solana_native_send` / `prepare_solana_spl_send`.
@@ -21,56 +31,30 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 const WALLET = Keypair.generate().publicKey.toBase58();
 const RECIPIENT = Keypair.generate().publicKey.toBase58();
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const NONCE_VALUE = "GfnhkAa2iy8cZV7X5SyyYmCHxFQjEbBuyyUSCBokixB9";
+const NONCE_VALUE = DEFAULT_TEST_NONCE_VALUE;
 
-const connectionStub = {
-  getBalance: vi.fn(),
-  getAccountInfo: vi.fn(),
-  getTokenAccountBalance: vi.fn(),
-  getTokenSupply: vi.fn(),
-  getLatestBlockhash: vi.fn(),
-  getRecentPrioritizationFees: vi.fn(),
-  getMinimumBalanceForRentExemption: vi.fn(),
-};
+const connectionStub = makeConnectionStub();
 
 vi.mock("../src/modules/solana/rpc.js", () => ({
   getSolanaConnection: () => connectionStub,
   resetSolanaConnection: () => {},
 }));
 
+// vi.mock body stays inline — vitest hoists this above all imports, so the
+// fixture's exported factory can't be referenced here.
 vi.mock("../src/modules/solana/nonce.js", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../src/modules/solana/nonce.js")>();
-  return {
-    ...actual,
-    getNonceAccountValue: vi.fn(),
-  };
+  return { ...actual, getNonceAccountValue: vi.fn() };
 });
 
 async function setNoncePresent(): Promise<void> {
-  const { getNonceAccountValue } = await import("../src/modules/solana/nonce.js");
-  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue({
-    nonce: NONCE_VALUE,
-    authority: new PublicKey(WALLET),
-  });
-}
-
-async function setNonceMissing(): Promise<void> {
-  const { getNonceAccountValue } = await import("../src/modules/solana/nonce.js");
-  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+  await setNoncePresentFor(new PublicKey(WALLET), NONCE_VALUE);
 }
 
 beforeEach(async () => {
-  connectionStub.getBalance.mockReset();
-  connectionStub.getAccountInfo.mockReset();
-  connectionStub.getTokenAccountBalance.mockReset();
-  connectionStub.getTokenSupply.mockReset();
-  connectionStub.getLatestBlockhash.mockReset();
-  connectionStub.getRecentPrioritizationFees.mockReset();
-  connectionStub.getMinimumBalanceForRentExemption.mockReset();
-
-  const { getNonceAccountValue } = await import("../src/modules/solana/nonce.js");
-  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockReset();
+  resetConnectionStub(connectionStub);
+  await resetNonceMock();
 
   // Default: no congestion — skip priority fee.
   connectionStub.getRecentPrioritizationFees.mockResolvedValue([]);

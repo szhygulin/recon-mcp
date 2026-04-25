@@ -4,6 +4,11 @@ import {
   PublicKey,
   TransactionInstruction,
 } from "@solana/web3.js";
+import { makeConnectionStub } from "./fixtures/solana-rpc-mock.js";
+import {
+  setNoncePresent as setNoncePresentFor,
+  setNonceMissing,
+} from "./fixtures/solana-nonce-mock.js";
 
 /**
  * Jito stake write-builder tests. Mocks the SPL stake-pool SDK so we
@@ -32,10 +37,7 @@ const FAKE_POOL_MINT = new PublicKey(
 const FAKE_RESERVE_STAKE = Keypair.generate().publicKey;
 const FAKE_MANAGER_FEE = Keypair.generate().publicKey;
 
-const connectionStub = {
-  getAccountInfo: vi.fn(),
-  getLatestBlockhash: vi.fn(),
-};
+const connectionStub = makeConnectionStub();
 
 vi.mock("../src/modules/solana/rpc.js", () => ({
   getSolanaConnection: () => connectionStub,
@@ -76,16 +78,7 @@ afterEach(() => {
 });
 
 async function setNoncePresent(): Promise<void> {
-  const { getNonceAccountValue } = await import("../src/modules/solana/nonce.js");
-  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue({
-    nonce: "GfnhkAa2iy8cZV7X5SyyYmCHxFQjEbBuyyUSCBokixB9",
-    authority: WALLET_KEYPAIR.publicKey,
-  });
-}
-
-async function setNonceMissing(): Promise<void> {
-  const { getNonceAccountValue } = await import("../src/modules/solana/nonce.js");
-  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+  await setNoncePresentFor(WALLET_KEYPAIR.publicKey);
 }
 
 function setStakePoolAccount(): void {
