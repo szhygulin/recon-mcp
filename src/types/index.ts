@@ -131,6 +131,12 @@ export interface PortfolioCoverage {
    */
   marginfi?: CoverageStatus;
   /**
+   * Kamino position fetch coverage. Same separation rationale as `marginfi` —
+   * a Kamino-reader failure shouldn't mask a successful balance read. Absent
+   * when no Solana address was queried.
+   */
+  kamino?: CoverageStatus;
+  /**
    * Solana staking position fetch coverage (Marinade mSOL, Jito jitoSOL,
    * native stake accounts). Mirrors the `marginfi` split so a staking-
    * reader failure doesn't mask a successful balance read. Absent when no
@@ -364,6 +370,15 @@ export interface SolanaPortfolioSlice {
   /** MarginFi aggregate net USD (sum of netValueUsd across positions). */
   marginfiNetUsd?: number;
   /**
+   * Kamino lending positions on the main market. Present when the wallet
+   * has Kamino userMetadata + obligation with non-zero deposits or borrows.
+   * Empty/missing means no position; errored case surfaces through
+   * PortfolioCoverage.kamino.
+   */
+  kamino?: SolanaKaminoPositionSlice[];
+  /** Kamino aggregate net USD (sum of netValueUsd across positions). */
+  kaminoNetUsd?: number;
+  /**
    * Solana staking positions — Marinade mSOL, Jito jitoSOL, native stake
    * accounts. Present when any of the three sections is non-empty for
    * this wallet. Missing means nothing found (errored case surfaces
@@ -419,6 +434,25 @@ export interface SolanaMarginfiPositionSlice {
   protocol: "marginfi";
   chain: "solana";
   marginfiAccount: string;
+  supplied: Array<{ symbol: string; amount: string; valueUsd: number }>;
+  borrowed: Array<{ symbol: string; amount: string; valueUsd: number }>;
+  totalSuppliedUsd: number;
+  totalBorrowedUsd: number;
+  netValueUsd: number;
+  healthFactor: number;
+  warnings: string[];
+}
+
+/**
+ * Thin projection of the full `KaminoPosition` type exposed by
+ * `src/modules/positions/kamino.ts`. Same shape as MarginFi's slice; the
+ * `obligation` field is Kamino's per-(wallet, market, kind) state account
+ * (analogous to `marginfiAccount`).
+ */
+export interface SolanaKaminoPositionSlice {
+  protocol: "kamino";
+  chain: "solana";
+  obligation: string;
   supplied: Array<{ symbol: string; amount: string; valueUsd: number }>;
   borrowed: Array<{ symbol: string; amount: string; valueUsd: number }>;
   totalSuppliedUsd: number;
@@ -794,7 +828,10 @@ export interface UnsignedSolanaTx {
     | "native_stake_withdraw"
     | "lifi_solana_swap"
     | "kamino_init_user"
-    | "kamino_supply";
+    | "kamino_supply"
+    | "kamino_borrow"
+    | "kamino_withdraw"
+    | "kamino_repay";
   /** Base58 owner address (44-char ed25519 pubkey). */
   from: string;
   /**

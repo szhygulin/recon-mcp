@@ -1,0 +1,541 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { Keypair } from "@solana/web3.js";
+
+/**
+ * Kamino PR3 + PR4 — borrow/withdraw/repay write builders, the
+ * `getKaminoPositions` reader, and portfolio integration. Mocks the SDK +
+ * KaminoMarket at module boundary; the Solana RPC connection isn't reached
+ * by any of these paths under the mocks.
+ */
+
+const SYSTEM_PROGRAM = "11111111111111111111111111111111";
+const FAKE_BLOCKHASH = "GfnhkAa2iy8cZV7X5SyyYmCHxFQjEbBuyyUSCBokixB9";
+const WALLET_KP = Keypair.generate();
+const WALLET = WALLET_KP.publicKey.toBase58();
+const FAKE_MARKET_ADDR = Keypair.generate().publicKey.toBase58();
+const FAKE_PROGRAM_ID = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD";
+const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const SOL_MINT = "So11111111111111111111111111111111111111112";
+const FAKE_USDC_RESERVE = Keypair.generate().publicKey.toBase58();
+const FAKE_SOL_RESERVE = Keypair.generate().publicKey.toBase58();
+const FAKE_USER_METADATA_ADDR = Keypair.generate().publicKey.toBase58();
+const FAKE_USER_LUT_ADDR = Keypair.generate().publicKey.toBase58();
+const FAKE_OBLIGATION_ADDR = Keypair.generate().publicKey.toBase58();
+const FAKE_KAMINO_PROGRAM = Keypair.generate().publicKey;
+
+const connectionStub = {
+  getAccountInfo: vi.fn(),
+};
+
+vi.mock("../src/modules/solana/rpc.js", () => ({
+  getSolanaConnection: () => connectionStub,
+  resetSolanaConnection: () => {},
+  getSolanaRpcUrl: () => "https://test",
+}));
+
+vi.mock("../src/modules/solana/nonce.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/modules/solana/nonce.js")>();
+  return {
+    ...actual,
+    getNonceAccountValue: vi.fn(),
+  };
+});
+
+const fakeUsdcReserve = {
+  address: FAKE_USDC_RESERVE,
+  state: {
+    liquidity: { mintDecimals: 6n },
+    config: { status: 0 },
+  },
+  getTokenSymbol: () => "USDC",
+};
+const fakeSolReserve = {
+  address: FAKE_SOL_RESERVE,
+  state: {
+    liquidity: { mintDecimals: 9n },
+    config: { status: 0 },
+  },
+  getTokenSymbol: () => "SOL",
+};
+
+const fakeMarket = {
+  programId: FAKE_PROGRAM_ID,
+  getAddress: () => FAKE_MARKET_ADDR,
+  getUserMetadata: vi.fn(),
+  getReserveByMint: vi.fn(),
+  getReserveByAddress: vi.fn(),
+};
+
+vi.mock("../src/modules/solana/kamino.js", () => ({
+  loadKaminoMainMarket: async () => fakeMarket,
+  KAMINO_MAIN_MARKET: FAKE_MARKET_ADDR,
+  RECENT_SLOT_DURATION_MS: 410,
+  createKaminoRpc: () => ({}),
+}));
+
+const KaminoActionBuildBorrowTxnsMock = vi.fn();
+const KaminoActionBuildWithdrawTxnsMock = vi.fn();
+const KaminoActionBuildRepayTxnsMock = vi.fn();
+const KaminoActionActionToIxsMock = vi.fn();
+const KaminoObligationLoadMock = vi.fn();
+const VanillaObligationToPdaMock = vi.fn();
+
+vi.mock("@kamino-finance/klend-sdk", () => {
+  class VanillaObligation {
+    constructor(public programId: unknown) {}
+    toArgs() {
+      return {
+        tag: 0,
+        id: 0,
+        seed1: SYSTEM_PROGRAM,
+        seed2: SYSTEM_PROGRAM,
+      };
+    }
+    toPda(market: unknown, user: unknown) {
+      return VanillaObligationToPdaMock(market, user);
+    }
+  }
+  class KaminoObligation {
+    static load(...args: unknown[]) {
+      return KaminoObligationLoadMock(...args);
+    }
+  }
+  class KaminoAction {
+    static buildBorrowTxns(...args: unknown[]) {
+      return KaminoActionBuildBorrowTxnsMock(...args);
+    }
+    static buildWithdrawTxns(...args: unknown[]) {
+      return KaminoActionBuildWithdrawTxnsMock(...args);
+    }
+    static buildRepayTxns(...args: unknown[]) {
+      return KaminoActionBuildRepayTxnsMock(...args);
+    }
+    static actionToIxs(...args: unknown[]) {
+      return KaminoActionActionToIxsMock(...args);
+    }
+    static buildDepositTxns() {
+      return null; // PR2 path; not exercised here
+    }
+  }
+  return {
+    KaminoMarket: class {},
+    KaminoAction,
+    KaminoObligation,
+    VanillaObligation,
+    initObligation: () => ({ programAddress: FAKE_KAMINO_PROGRAM.toBase58() }),
+    getUserLutAddressAndSetupIxs: () => Promise.resolve([FAKE_USER_LUT_ADDR, []]),
+  };
+});
+
+vi.mock("@solana/kit", () => ({
+  createNoopSigner: (addr: unknown) => ({ address: addr }),
+  address: (s: unknown) => s,
+  none: () => ({ __option: "none" }),
+  some: (v: unknown) => ({ __option: "some", value: v }),
+  isSome: (v: { __option?: string }) => v.__option === "some",
+  AccountRole: { READONLY: 0, WRITABLE: 1, READONLY_SIGNER: 2, WRITABLE_SIGNER: 3 },
+}));
+
+vi.mock("@solana/sysvars", () => ({
+  SYSVAR_RENT_ADDRESS: "SysvarRent111111111111111111111111111111111",
+}));
+
+vi.mock("@solana-program/system", () => ({
+  SYSTEM_PROGRAM_ADDRESS: "11111111111111111111111111111111",
+}));
+
+async function setNoncePresent(): Promise<void> {
+  const { getNonceAccountValue } = await import(
+    "../src/modules/solana/nonce.js"
+  );
+  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockResolvedValue({
+    nonce: FAKE_BLOCKHASH,
+    authority: WALLET_KP.publicKey,
+  });
+}
+
+function fakeKitInstruction(label: string) {
+  return {
+    programAddress: FAKE_KAMINO_PROGRAM.toBase58(),
+    accounts: [
+      { address: WALLET_KP.publicKey.toBase58(), role: 3 },
+    ],
+    data: new Uint8Array([0xab, 0xcd, label.charCodeAt(0)]),
+  };
+}
+
+function makeFakeObligation(opts: {
+  deposits?: { reserveAddress: string; mintAddress: string; amount: string; valueUsd: string }[];
+  borrows?: { reserveAddress: string; mintAddress: string; amount: string; valueUsd: string }[];
+  totalDepositUsd?: string;
+  totalBorrowAdjustedUsd?: string;
+  liquidationLimitUsd?: string;
+}) {
+  const depositsMap = new Map();
+  const borrowsMap = new Map();
+  const decimal = (s: string) => ({ toString: () => s });
+  for (const d of opts.deposits ?? []) {
+    depositsMap.set(d.reserveAddress, {
+      reserveAddress: d.reserveAddress,
+      mintAddress: d.mintAddress,
+      amount: decimal(d.amount),
+      marketValueRefreshed: decimal(d.valueUsd),
+    });
+  }
+  for (const b of opts.borrows ?? []) {
+    borrowsMap.set(b.reserveAddress, {
+      reserveAddress: b.reserveAddress,
+      mintAddress: b.mintAddress,
+      amount: decimal(b.amount),
+      marketValueRefreshed: decimal(b.valueUsd),
+    });
+  }
+  return {
+    obligationAddress: FAKE_OBLIGATION_ADDR,
+    deposits: depositsMap,
+    borrows: borrowsMap,
+    refreshedStats: {
+      userTotalBorrowBorrowFactorAdjusted: decimal(opts.totalBorrowAdjustedUsd ?? "0"),
+      borrowLiquidationLimit: decimal(opts.liquidationLimitUsd ?? "0"),
+    },
+  };
+}
+
+beforeEach(async () => {
+  fakeMarket.getUserMetadata.mockReset();
+  fakeMarket.getReserveByMint.mockReset();
+  fakeMarket.getReserveByAddress.mockReset();
+  KaminoActionBuildBorrowTxnsMock.mockReset();
+  KaminoActionBuildWithdrawTxnsMock.mockReset();
+  KaminoActionBuildRepayTxnsMock.mockReset();
+  KaminoActionActionToIxsMock.mockReset();
+  KaminoObligationLoadMock.mockReset();
+  VanillaObligationToPdaMock.mockReset();
+  VanillaObligationToPdaMock.mockResolvedValue(FAKE_OBLIGATION_ADDR);
+
+  const { getNonceAccountValue } = await import(
+    "../src/modules/solana/nonce.js"
+  );
+  (getNonceAccountValue as ReturnType<typeof vi.fn>).mockReset();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("buildKaminoBorrow", () => {
+  it("builds a borrow tx with nonceAdvance + the SDK's ix list", async () => {
+    await setNoncePresent();
+    fakeMarket.getUserMetadata.mockResolvedValue([
+      FAKE_USER_METADATA_ADDR,
+      { userLookupTable: FAKE_USER_LUT_ADDR },
+    ]);
+    fakeMarket.getReserveByMint.mockReturnValue(fakeUsdcReserve);
+    KaminoObligationLoadMock.mockResolvedValue(makeFakeObligation({
+      deposits: [{ reserveAddress: FAKE_SOL_RESERVE, mintAddress: SOL_MINT, amount: "100000000000", valueUsd: "1500" }],
+    }));
+    KaminoActionBuildBorrowTxnsMock.mockResolvedValue({});
+    KaminoActionActionToIxsMock.mockReturnValue([fakeKitInstruction("B")]);
+
+    const { buildKaminoBorrow } = await import(
+      "../src/modules/solana/kamino-actions.js"
+    );
+    const tx = await buildKaminoBorrow({
+      wallet: WALLET,
+      mint: USDC_MINT,
+      amount: "50",
+    });
+
+    expect(tx.action).toBe("kamino_borrow");
+    expect(tx.description).toContain("50 USDC");
+    expect(tx.decoded.functionName).toBe("kamino.borrow");
+    expect(tx.decoded.args.amount).toBe("50");
+    expect(tx.decoded.args.amountBaseUnits).toBe("50000000");
+    expect(tx.decoded.args.symbol).toBe("USDC");
+
+    const { getSolanaDraft } = await import("../src/signing/solana-tx-store.js");
+    const draft = getSolanaDraft(tx.handle);
+    if (draft.kind !== "v0") throw new Error("unreachable");
+    expect(draft.instructions[0].programId.toBase58()).toBe(SYSTEM_PROGRAM);
+    expect(draft.instructions[0].data.toString("hex")).toBe("04000000");
+    expect(draft.instructions.length).toBe(2);
+  });
+
+  it("refuses when userMetadata is missing", async () => {
+    await setNoncePresent();
+    fakeMarket.getUserMetadata.mockResolvedValue([FAKE_USER_METADATA_ADDR, null]);
+    fakeMarket.getReserveByMint.mockReturnValue(fakeUsdcReserve);
+
+    const { buildKaminoBorrow } = await import(
+      "../src/modules/solana/kamino-actions.js"
+    );
+    await expect(
+      buildKaminoBorrow({ wallet: WALLET, mint: USDC_MINT, amount: "10" }),
+    ).rejects.toThrow(/no Kamino userMetadata.*prepare_kamino_init_user/);
+  });
+});
+
+describe("buildKaminoWithdraw", () => {
+  it("builds a withdraw tx when the wallet has a deposit in the reserve", async () => {
+    await setNoncePresent();
+    fakeMarket.getUserMetadata.mockResolvedValue([
+      FAKE_USER_METADATA_ADDR,
+      { userLookupTable: FAKE_USER_LUT_ADDR },
+    ]);
+    fakeMarket.getReserveByMint.mockReturnValue(fakeUsdcReserve);
+    KaminoObligationLoadMock.mockResolvedValue(makeFakeObligation({
+      deposits: [{ reserveAddress: FAKE_USDC_RESERVE, mintAddress: USDC_MINT, amount: "100000000", valueUsd: "100" }],
+    }));
+    KaminoActionBuildWithdrawTxnsMock.mockResolvedValue({});
+    KaminoActionActionToIxsMock.mockReturnValue([fakeKitInstruction("W")]);
+
+    const { buildKaminoWithdraw } = await import(
+      "../src/modules/solana/kamino-actions.js"
+    );
+    const tx = await buildKaminoWithdraw({
+      wallet: WALLET,
+      mint: USDC_MINT,
+      amount: "30",
+    });
+    expect(tx.action).toBe("kamino_withdraw");
+    expect(tx.decoded.functionName).toBe("kamino.withdraw");
+  });
+
+  it("refuses when the wallet has no deposit in the named reserve", async () => {
+    await setNoncePresent();
+    fakeMarket.getUserMetadata.mockResolvedValue([
+      FAKE_USER_METADATA_ADDR,
+      { userLookupTable: FAKE_USER_LUT_ADDR },
+    ]);
+    fakeMarket.getReserveByMint.mockReturnValue(fakeUsdcReserve);
+    KaminoObligationLoadMock.mockResolvedValue(makeFakeObligation({
+      // No USDC deposit; only SOL.
+      deposits: [{ reserveAddress: FAKE_SOL_RESERVE, mintAddress: SOL_MINT, amount: "1000000000", valueUsd: "150" }],
+    }));
+
+    const { buildKaminoWithdraw } = await import(
+      "../src/modules/solana/kamino-actions.js"
+    );
+    await expect(
+      buildKaminoWithdraw({ wallet: WALLET, mint: USDC_MINT, amount: "10" }),
+    ).rejects.toThrow(/no Kamino deposit in reserve.*Nothing to withdraw/);
+  });
+});
+
+describe("buildKaminoRepay", () => {
+  it("builds a repay tx when the wallet has debt in the reserve", async () => {
+    await setNoncePresent();
+    fakeMarket.getUserMetadata.mockResolvedValue([
+      FAKE_USER_METADATA_ADDR,
+      { userLookupTable: FAKE_USER_LUT_ADDR },
+    ]);
+    fakeMarket.getReserveByMint.mockReturnValue(fakeUsdcReserve);
+    KaminoObligationLoadMock.mockResolvedValue(makeFakeObligation({
+      borrows: [{ reserveAddress: FAKE_USDC_RESERVE, mintAddress: USDC_MINT, amount: "50000000", valueUsd: "50" }],
+    }));
+    KaminoActionBuildRepayTxnsMock.mockResolvedValue({});
+    KaminoActionActionToIxsMock.mockReturnValue([fakeKitInstruction("R")]);
+
+    const { buildKaminoRepay } = await import(
+      "../src/modules/solana/kamino-actions.js"
+    );
+    const tx = await buildKaminoRepay({
+      wallet: WALLET,
+      mint: USDC_MINT,
+      amount: "20",
+    });
+    expect(tx.action).toBe("kamino_repay");
+    expect(tx.decoded.functionName).toBe("kamino.repay");
+
+    // Sanity: repay's positional signature differs from supply
+    // (currentSlot before payer). Verify our handler passes them correctly.
+    const args = KaminoActionBuildRepayTxnsMock.mock.calls[0];
+    expect(args[7]).toBe(0n); // currentSlot
+    // payer (slot 8) should equal owner (slot 3) — same noopSigner.
+    expect(args[8]).toBe(args[3]);
+  });
+
+  it("refuses when the wallet has no debt in the reserve", async () => {
+    await setNoncePresent();
+    fakeMarket.getUserMetadata.mockResolvedValue([
+      FAKE_USER_METADATA_ADDR,
+      { userLookupTable: FAKE_USER_LUT_ADDR },
+    ]);
+    fakeMarket.getReserveByMint.mockReturnValue(fakeUsdcReserve);
+    KaminoObligationLoadMock.mockResolvedValue(makeFakeObligation({}));
+
+    const { buildKaminoRepay } = await import(
+      "../src/modules/solana/kamino-actions.js"
+    );
+    await expect(
+      buildKaminoRepay({ wallet: WALLET, mint: USDC_MINT, amount: "10" }),
+    ).rejects.toThrow(/no Kamino debt in reserve.*Nothing to repay/);
+  });
+});
+
+describe("getKaminoPositions reader", () => {
+  it("returns empty list when wallet has no userMetadata", async () => {
+    fakeMarket.getUserMetadata.mockResolvedValue([FAKE_USER_METADATA_ADDR, null]);
+    const { getKaminoPositions } = await import(
+      "../src/modules/positions/kamino.js"
+    );
+    const positions = await getKaminoPositions(connectionStub as never, WALLET);
+    expect(positions).toEqual([]);
+  });
+
+  it("returns empty list when userMetadata exists but obligation doesn't (partial init)", async () => {
+    fakeMarket.getUserMetadata.mockResolvedValue([
+      FAKE_USER_METADATA_ADDR,
+      { userLookupTable: FAKE_USER_LUT_ADDR },
+    ]);
+    KaminoObligationLoadMock.mockResolvedValue(null);
+    const { getKaminoPositions } = await import(
+      "../src/modules/positions/kamino.js"
+    );
+    const positions = await getKaminoPositions(connectionStub as never, WALLET);
+    expect(positions).toEqual([]);
+  });
+
+  it("projects deposits + borrows + healthFactor for an active obligation", async () => {
+    fakeMarket.getUserMetadata.mockResolvedValue([
+      FAKE_USER_METADATA_ADDR,
+      { userLookupTable: FAKE_USER_LUT_ADDR },
+    ]);
+    KaminoObligationLoadMock.mockResolvedValue(makeFakeObligation({
+      deposits: [
+        { reserveAddress: FAKE_SOL_RESERVE, mintAddress: SOL_MINT, amount: "10000000000", valueUsd: "1500" }, // 10 SOL @ $150
+      ],
+      borrows: [
+        { reserveAddress: FAKE_USDC_RESERVE, mintAddress: USDC_MINT, amount: "300000000", valueUsd: "300" }, // 300 USDC
+      ],
+      totalBorrowAdjustedUsd: "300",
+      liquidationLimitUsd: "1200", // 80% LTV → HF = 1200/300 = 4
+    }));
+    fakeMarket.getReserveByAddress.mockImplementation((addr: unknown) => {
+      if (addr === FAKE_SOL_RESERVE) return fakeSolReserve;
+      if (addr === FAKE_USDC_RESERVE) return fakeUsdcReserve;
+      return undefined;
+    });
+
+    const { getKaminoPositions } = await import(
+      "../src/modules/positions/kamino.js"
+    );
+    const positions = await getKaminoPositions(connectionStub as never, WALLET);
+    expect(positions).toHaveLength(1);
+    const p = positions[0];
+    expect(p.protocol).toBe("kamino");
+    expect(p.obligation).toBe(FAKE_OBLIGATION_ADDR);
+    expect(p.supplied).toHaveLength(1);
+    expect(p.supplied[0].symbol).toBe("SOL");
+    expect(p.supplied[0].amount).toBe("10"); // 10000000000 / 10^9
+    expect(p.supplied[0].valueUsd).toBe(1500);
+    expect(p.borrowed).toHaveLength(1);
+    expect(p.borrowed[0].symbol).toBe("USDC");
+    expect(p.borrowed[0].amount).toBe("300"); // 300000000 / 10^6
+    expect(p.totalSuppliedUsd).toBe(1500);
+    expect(p.totalBorrowedUsd).toBe(300);
+    expect(p.netValueUsd).toBe(1200);
+    expect(p.healthFactor).toBe(4); // 1200 / 300
+    expect(p.warnings).toEqual([]);
+  });
+
+  it("returns Infinity health factor when there's no debt", async () => {
+    fakeMarket.getUserMetadata.mockResolvedValue([
+      FAKE_USER_METADATA_ADDR,
+      { userLookupTable: FAKE_USER_LUT_ADDR },
+    ]);
+    KaminoObligationLoadMock.mockResolvedValue(makeFakeObligation({
+      deposits: [{ reserveAddress: FAKE_SOL_RESERVE, mintAddress: SOL_MINT, amount: "1000000000", valueUsd: "150" }],
+      totalBorrowAdjustedUsd: "0",
+      liquidationLimitUsd: "120",
+    }));
+    fakeMarket.getReserveByAddress.mockReturnValue(fakeSolReserve);
+
+    const { getKaminoPositions } = await import(
+      "../src/modules/positions/kamino.js"
+    );
+    const positions = await getKaminoPositions(connectionStub as never, WALLET);
+    expect(positions[0].healthFactor).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it("flags reserves with non-active config status", async () => {
+    fakeMarket.getUserMetadata.mockResolvedValue([
+      FAKE_USER_METADATA_ADDR,
+      { userLookupTable: FAKE_USER_LUT_ADDR },
+    ]);
+    KaminoObligationLoadMock.mockResolvedValue(makeFakeObligation({
+      deposits: [{ reserveAddress: FAKE_SOL_RESERVE, mintAddress: SOL_MINT, amount: "1000000000", valueUsd: "150" }],
+    }));
+    fakeMarket.getReserveByAddress.mockReturnValue({
+      ...fakeSolReserve,
+      state: { ...fakeSolReserve.state, config: { status: 2 } }, // hidden
+    });
+
+    const { getKaminoPositions } = await import(
+      "../src/modules/positions/kamino.js"
+    );
+    const positions = await getKaminoPositions(connectionStub as never, WALLET);
+    expect(positions[0].warnings.length).toBe(1);
+    expect(positions[0].warnings[0]).toMatch(/non-active status \(2\)/);
+  });
+});
+
+describe("renderSolanaAgentTaskBlock — borrow / withdraw / repay", () => {
+  it("renders kamino_borrow as blind-sign with the right action label", async () => {
+    const { renderSolanaAgentTaskBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const { solanaLedgerMessageHash } = await import(
+      "../src/signing/verification.js"
+    );
+    const tx = {
+      chain: "solana" as const,
+      action: "kamino_borrow" as const,
+      from: WALLET,
+      messageBase64: "AQAEBzA/m98Yce1Jt/hp+eAbCM3GPwfIAUQr0DAXVer+HYYg",
+      recentBlockhash: FAKE_BLOCKHASH,
+      description: "Kamino borrow: 50 USDC",
+      decoded: {
+        functionName: "kamino.borrow",
+        args: { amount: "50", symbol: "USDC" },
+      },
+      nonce: { account: "NonceAcct1", authority: WALLET, value: FAKE_BLOCKHASH },
+    };
+    const expectedHash = solanaLedgerMessageHash(tx.messageBase64);
+    const block = renderSolanaAgentTaskBlock(tx);
+    expect(block).toContain("BLIND-SIGN");
+    expect(block).toContain(expectedHash);
+    expect(block).toContain("PAIR-CONSISTENCY LEDGER HASH");
+    expect(block).toContain("durable-nonce-protected");
+  });
+
+  it("renders kamino_withdraw + kamino_repay as blind-sign", async () => {
+    const { renderSolanaAgentTaskBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const baseTx = {
+      chain: "solana" as const,
+      from: WALLET,
+      messageBase64: "AQAEBzA/m98Yce1Jt/hp+eAbCM3GPwfIAUQr0DAXVer+HYYg",
+      recentBlockhash: FAKE_BLOCKHASH,
+      nonce: { account: "NonceAcct1", authority: WALLET, value: FAKE_BLOCKHASH },
+    };
+    const withdraw = renderSolanaAgentTaskBlock({
+      ...baseTx,
+      action: "kamino_withdraw",
+      description: "Kamino withdraw: 30 USDC",
+      decoded: { functionName: "kamino.withdraw", args: {} },
+    });
+    expect(withdraw).toContain("BLIND-SIGN");
+    expect(withdraw).toContain("PAIR-CONSISTENCY LEDGER HASH");
+    const repay = renderSolanaAgentTaskBlock({
+      ...baseTx,
+      action: "kamino_repay",
+      description: "Kamino repay: 20 USDC",
+      decoded: { functionName: "kamino.repay", args: {} },
+    });
+    expect(repay).toContain("BLIND-SIGN");
+    expect(repay).toContain("PAIR-CONSISTENCY LEDGER HASH");
+  });
+});

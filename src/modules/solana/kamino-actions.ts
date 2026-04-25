@@ -85,7 +85,12 @@ function tokenBaseUnits(amountDecimal: string, decimals: number): bigint {
 function buildDraft(args: {
   ctx: NonceContext;
   walletStr: string;
-  action: "kamino_init_user" | "kamino_supply";
+  action:
+    | "kamino_init_user"
+    | "kamino_supply"
+    | "kamino_borrow"
+    | "kamino_withdraw"
+    | "kamino_repay";
   description: string;
   decoded: { functionName: string; args: Record<string, string> };
   actionIxs: TransactionInstruction[];
@@ -118,7 +123,12 @@ export interface PrepareKaminoInitUserParams {
 
 export interface PreparedKaminoTx {
   handle: string;
-  action: "kamino_init_user" | "kamino_supply";
+  action:
+    | "kamino_init_user"
+    | "kamino_supply"
+    | "kamino_borrow"
+    | "kamino_withdraw"
+    | "kamino_repay";
   chain: "solana";
   from: string;
   description: string;
@@ -397,6 +407,345 @@ export async function buildKaminoSupply(
     description,
     decoded: draft.meta.decoded,
     nonceAccount: ctx.noncePubkey.toBase58(),
+  };
+}
+
+/**
+ * Common preflight for borrow/withdraw/repay: load market, validate the
+ * mint, fetch the obligation, refuse if userMetadata or obligation are
+ * missing. Returns everything the three write builders need to call the
+ * matching `KaminoAction.build*Txns`.
+ */
+async function loadKaminoSupplyContext(p: {
+  wallet: string;
+  mint: string;
+  amount: string;
+}): Promise<{
+  ctx: NonceContext;
+  // Cast to `any` because the kit-typed SDK objects flow through this
+  // module without our local types layering on top — the SDK's
+  // KaminoMarket / KaminoReserve / KaminoObligation are the source of
+  // truth and any explicit typing here would just shadow them and rot.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  market: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  owner: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ownerAddr: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  mintAddr: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  reserve: any;
+  symbol: string;
+  decimals: number;
+  amountBaseUnits: bigint;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  obligationState: any;
+  obligationPda: string;
+}> {
+  const ctx = await loadNonceContext(p.wallet);
+  const market = await loadKaminoMainMarket();
+  if (!market) {
+    throw new Error("Kamino main market not found on-chain.");
+  }
+  const { createNoopSigner, address: toAddress } = await import("@solana/kit");
+  const { KaminoObligation, VanillaObligation } = await import(
+    "@kamino-finance/klend-sdk"
+  );
+
+  const ownerAddr = toAddress(p.wallet);
+  const owner = createNoopSigner(ownerAddr);
+  const mintAddr = toAddress(p.mint);
+
+  const reserve = market.getReserveByMint(mintAddr);
+  if (!reserve) {
+    throw new Error(
+      `Mint ${p.mint} is not listed on Kamino's main market. Confirm via the Kamino app's reserve list.`,
+    );
+  }
+  const decimals = Number(reserve.state.liquidity.mintDecimals);
+  const amountBaseUnits = tokenBaseUnits(p.amount, decimals);
+  const symbol = reserve.getTokenSymbol() ?? p.mint.slice(0, 6);
+
+  const [, userMetadataState] = await market.getUserMetadata(ownerAddr);
+  if (userMetadataState === null) {
+    throw new Error(
+      `Wallet ${p.wallet} has no Kamino userMetadata. Run prepare_kamino_init_user first.`,
+    );
+  }
+
+  const obligationKind = new VanillaObligation(market.programId);
+  const obligationPda = await obligationKind.toPda(market.getAddress(), ownerAddr);
+  const obligationState = await KaminoObligation.load(market, obligationPda);
+  if (!obligationState) {
+    throw new Error(
+      `Wallet ${p.wallet} has no Kamino obligation at ${obligationPda.toString()}. ` +
+        `Run prepare_kamino_init_user first.`,
+    );
+  }
+
+  return {
+    ctx,
+    market,
+    owner,
+    ownerAddr,
+    mintAddr,
+    reserve,
+    symbol,
+    decimals,
+    amountBaseUnits,
+    obligationState,
+    obligationPda: obligationPda.toString(),
+  };
+}
+
+export interface PrepareKaminoBorrowParams {
+  wallet: string;
+  mint: string;
+  amount: string;
+}
+
+/**
+ * Build a Kamino borrow tx. Pulls liquidity from the named reserve as
+ * debt against the obligation's collateral. Refuses if userMetadata /
+ * obligation aren't initialized; refuses if the mint isn't listed.
+ *
+ * The on-chain program enforces the borrow LTV gate — if the borrow
+ * would push the obligation over `borrowLimit`, the tx reverts. We don't
+ * pre-validate that here (the obligation's exact LTV depends on Scope's
+ * latest prices, which Kamino refreshes inside the tx itself); the
+ * pre-sign simulation gate at `simulatePinnedSolanaTx` catches it before
+ * the user signs.
+ */
+export async function buildKaminoBorrow(
+  p: PrepareKaminoBorrowParams,
+): Promise<PreparedKaminoTx> {
+  const c = await loadKaminoSupplyContext(p);
+  const { KaminoAction } = await import("@kamino-finance/klend-sdk");
+  const { none } = await import("@solana/kit");
+
+  const action = await KaminoAction.buildBorrowTxns(
+    c.market,
+    c.amountBaseUnits.toString(),
+    c.mintAddr,
+    c.owner,
+    c.obligationState,
+    true, // useV2Ixs
+    undefined, // scopeRefreshConfig
+    1_000_000, // extraComputeBudget
+    true, // includeAtaIxs
+    false, // requestElevationGroup
+    { skipInitialization: true, skipLutCreation: true },
+    none(),
+    0n,
+  );
+  const kitIxs = KaminoAction.actionToIxs(action);
+  const actionIxs = kitInstructionsToLegacy(kitIxs);
+
+  const description = `Kamino borrow: ${p.amount} ${c.symbol} from reserve ${c.reserve.address.toString()}`;
+  const draft = buildDraft({
+    ctx: c.ctx,
+    walletStr: p.wallet,
+    action: "kamino_borrow",
+    description,
+    decoded: {
+      functionName: "kamino.borrow",
+      args: {
+        wallet: p.wallet,
+        market: c.market.getAddress().toString(),
+        reserve: c.reserve.address.toString(),
+        mint: p.mint,
+        symbol: c.symbol,
+        amount: p.amount,
+        amountBaseUnits: c.amountBaseUnits.toString(),
+        obligation: c.obligationPda,
+        nonceAccount: c.ctx.noncePubkey.toBase58(),
+      },
+    },
+    actionIxs,
+  });
+
+  const { handle } = issueSolanaDraftHandle(draft);
+  return {
+    handle,
+    action: "kamino_borrow",
+    chain: "solana",
+    from: p.wallet,
+    description,
+    decoded: draft.meta.decoded,
+    nonceAccount: c.ctx.noncePubkey.toBase58(),
+  };
+}
+
+export interface PrepareKaminoWithdrawParams {
+  wallet: string;
+  mint: string;
+  amount: string;
+}
+
+/**
+ * Build a Kamino withdraw tx. Pulls liquidity out of a previously-supplied
+ * reserve. Refuses if the obligation has zero deposits in the reserve
+ * (the on-chain program would revert; surfacing the same condition with
+ * a clear error beats a confusing revert).
+ *
+ * Withdraws are health-factor-gated on-chain — if the withdraw would
+ * leave the obligation under-collateralized for its outstanding debt,
+ * the tx reverts. The simulation gate catches this before broadcast.
+ */
+export async function buildKaminoWithdraw(
+  p: PrepareKaminoWithdrawParams,
+): Promise<PreparedKaminoTx> {
+  const c = await loadKaminoSupplyContext(p);
+  const { KaminoAction } = await import("@kamino-finance/klend-sdk");
+  const { none } = await import("@solana/kit");
+
+  // Sanity check: refuse if the obligation has no deposit in this reserve.
+  // SDK error here is opaque ("reserve not in deposits"); preflight gives
+  // a clean message.
+  const hasDeposit = c.obligationState.deposits.has(c.reserve.address);
+  if (!hasDeposit) {
+    throw new Error(
+      `Wallet ${p.wallet} has no Kamino deposit in reserve ${c.reserve.address.toString()} (mint ${p.mint}). ` +
+        `Nothing to withdraw.`,
+    );
+  }
+
+  const action = await KaminoAction.buildWithdrawTxns(
+    c.market,
+    c.amountBaseUnits.toString(),
+    c.mintAddr,
+    c.owner,
+    c.obligationState,
+    true,
+    undefined,
+    1_000_000,
+    true,
+    false,
+    { skipInitialization: true, skipLutCreation: true },
+    none(),
+    0n,
+  );
+  const kitIxs = KaminoAction.actionToIxs(action);
+  const actionIxs = kitInstructionsToLegacy(kitIxs);
+
+  const description = `Kamino withdraw: ${p.amount} ${c.symbol} from reserve ${c.reserve.address.toString()}`;
+  const draft = buildDraft({
+    ctx: c.ctx,
+    walletStr: p.wallet,
+    action: "kamino_withdraw",
+    description,
+    decoded: {
+      functionName: "kamino.withdraw",
+      args: {
+        wallet: p.wallet,
+        market: c.market.getAddress().toString(),
+        reserve: c.reserve.address.toString(),
+        mint: p.mint,
+        symbol: c.symbol,
+        amount: p.amount,
+        amountBaseUnits: c.amountBaseUnits.toString(),
+        obligation: c.obligationPda,
+        nonceAccount: c.ctx.noncePubkey.toBase58(),
+      },
+    },
+    actionIxs,
+  });
+
+  const { handle } = issueSolanaDraftHandle(draft);
+  return {
+    handle,
+    action: "kamino_withdraw",
+    chain: "solana",
+    from: p.wallet,
+    description,
+    decoded: draft.meta.decoded,
+    nonceAccount: c.ctx.noncePubkey.toBase58(),
+  };
+}
+
+export interface PrepareKaminoRepayParams {
+  wallet: string;
+  mint: string;
+  amount: string;
+}
+
+/**
+ * Build a Kamino repay tx. Pays down outstanding debt in the named
+ * reserve. Refuses if the obligation has zero borrows in the reserve.
+ *
+ * "Repay all" is not surfaced as a separate flag here; the on-chain
+ * program clamps repayment at outstanding debt, so over-repaying just
+ * burns the excess back to the user's wallet (no funds lost). If
+ * over-repay UX matters later, we can add a `repayAll: true` shortcut
+ * that fetches the exact outstanding amount.
+ */
+export async function buildKaminoRepay(
+  p: PrepareKaminoRepayParams,
+): Promise<PreparedKaminoTx> {
+  const c = await loadKaminoSupplyContext(p);
+  const { KaminoAction } = await import("@kamino-finance/klend-sdk");
+  const { none } = await import("@solana/kit");
+
+  const hasBorrow = c.obligationState.borrows.has(c.reserve.address);
+  if (!hasBorrow) {
+    throw new Error(
+      `Wallet ${p.wallet} has no Kamino debt in reserve ${c.reserve.address.toString()} (mint ${p.mint}). ` +
+        `Nothing to repay.`,
+    );
+  }
+
+  const action = await KaminoAction.buildRepayTxns(
+    c.market,
+    c.amountBaseUnits.toString(),
+    c.mintAddr,
+    c.owner,
+    c.obligationState,
+    true,
+    undefined,
+    0n, // currentSlot (note: buildRepayTxns positional differs slightly — slot first, then defaults follow)
+    c.owner, // payer
+    1_000_000,
+    true,
+    false,
+    { skipInitialization: true, skipLutCreation: true },
+    none(),
+  );
+  const kitIxs = KaminoAction.actionToIxs(action);
+  const actionIxs = kitInstructionsToLegacy(kitIxs);
+
+  const description = `Kamino repay: ${p.amount} ${c.symbol} → reserve ${c.reserve.address.toString()}`;
+  const draft = buildDraft({
+    ctx: c.ctx,
+    walletStr: p.wallet,
+    action: "kamino_repay",
+    description,
+    decoded: {
+      functionName: "kamino.repay",
+      args: {
+        wallet: p.wallet,
+        market: c.market.getAddress().toString(),
+        reserve: c.reserve.address.toString(),
+        mint: p.mint,
+        symbol: c.symbol,
+        amount: p.amount,
+        amountBaseUnits: c.amountBaseUnits.toString(),
+        obligation: c.obligationPda,
+        nonceAccount: c.ctx.noncePubkey.toBase58(),
+      },
+    },
+    actionIxs,
+  });
+
+  const { handle } = issueSolanaDraftHandle(draft);
+  return {
+    handle,
+    action: "kamino_repay",
+    chain: "solana",
+    from: p.wallet,
+    description,
+    decoded: draft.meta.decoded,
+    nonceAccount: c.ctx.noncePubkey.toBase58(),
   };
 }
 

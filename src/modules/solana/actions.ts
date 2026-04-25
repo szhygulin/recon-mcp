@@ -127,7 +127,10 @@ export interface PreparedSolanaTx {
     | "native_stake_withdraw"
     | "lifi_solana_swap"
     | "kamino_init_user"
-    | "kamino_supply";
+    | "kamino_supply"
+    | "kamino_borrow"
+    | "kamino_withdraw"
+    | "kamino_repay";
   chain: "solana";
   from: string;
   description: string;

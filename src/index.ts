@@ -80,6 +80,10 @@ import {
   prepareTronLifiSwap,
   prepareKaminoInitUser,
   prepareKaminoSupply,
+  prepareKaminoBorrow,
+  prepareKaminoWithdraw,
+  prepareKaminoRepay,
+  getKaminoPositions,
   getMarginfiPositions,
   getSolanaStakingPositions,
   getMarginfiDiagnostics,
@@ -126,6 +130,10 @@ import {
   prepareTronLifiSwapInput,
   prepareKaminoInitUserInput,
   prepareKaminoSupplyInput,
+  prepareKaminoBorrowInput,
+  prepareKaminoWithdrawInput,
+  prepareKaminoRepayInput,
+  getKaminoPositionsInput,
   getMarginfiPositionsInput,
   getSolanaStakingPositionsInput,
   getMarginfiDiagnosticsInput,
@@ -1655,6 +1663,65 @@ async function main() {
       inputSchema: prepareKaminoSupplyInput.shape,
     },
     handler(prepareKaminoSupply)
+  );
+
+  server.registerTool(
+    "prepare_kamino_borrow",
+    {
+      description:
+        "Build a Kamino borrow tx — pulls liquidity from a reserve as debt against the " +
+        "obligation's existing collateral. Refuses if the wallet hasn't run " +
+        "prepare_kamino_init_user; refuses if the mint isn't listed on Kamino's main market. " +
+        "On-chain LTV gate: borrow reverts if it would push the obligation over the " +
+        "reserve's `borrowLimit` (the simulation gate catches this before signing). " +
+        "DURABLE NONCE REQUIRED + same blind-sign treatment as prepare_kamino_supply.",
+      inputSchema: prepareKaminoBorrowInput.shape,
+    },
+    handler(prepareKaminoBorrow)
+  );
+
+  server.registerTool(
+    "prepare_kamino_withdraw",
+    {
+      description:
+        "Build a Kamino withdraw tx — pulls liquidity out of a previously-supplied reserve. " +
+        "Refuses with a clear error if the wallet has no deposit in the named reserve. " +
+        "Health-factor gated on-chain: withdraws that would leave the obligation under-" +
+        "collateralized for outstanding debt revert (caught by the simulation gate). " +
+        "DURABLE NONCE REQUIRED + same blind-sign treatment as prepare_kamino_supply.",
+      inputSchema: prepareKaminoWithdrawInput.shape,
+    },
+    handler(prepareKaminoWithdraw)
+  );
+
+  server.registerTool(
+    "prepare_kamino_repay",
+    {
+      description:
+        "Build a Kamino repay tx — pays down outstanding debt in the named reserve. " +
+        "Refuses with a clear error if the wallet has no debt in the reserve. The on-chain " +
+        "program clamps repayment at outstanding debt, so over-repaying just doesn't burn " +
+        "the excess (no funds lost). DURABLE NONCE REQUIRED + same blind-sign treatment " +
+        "as prepare_kamino_supply.",
+      inputSchema: prepareKaminoRepayInput.shape,
+    },
+    handler(prepareKaminoRepay)
+  );
+
+  server.registerTool(
+    "get_kamino_positions",
+    {
+      description:
+        "READ-ONLY — enumerate a Solana wallet's Kamino lending position on the main " +
+        "market. Returns the obligation PDA, per-reserve deposits + borrows (with USD " +
+        "values), totalSuppliedUsd / totalBorrowedUsd / netValueUsd, and a health factor " +
+        "(borrowLiquidationLimit / userTotalBorrowBorrowFactorAdjusted; >1 safe, <1 " +
+        "liquidatable, Infinity when no debt — same convention as Aave / MarginFi). " +
+        "Returns an empty list when the wallet has no Kamino userMetadata (= never used " +
+        "Kamino). Reserve-level pause / freeze flags surface in `warnings`.",
+      inputSchema: getKaminoPositionsInput.shape,
+    },
+    handler(getKaminoPositions)
   );
 
   server.registerTool(

@@ -905,5 +905,75 @@ export const prepareKaminoSupplyInput = z.object({
 
 export type PrepareKaminoInitUserArgs = z.infer<typeof prepareKaminoInitUserInput>;
 export type PrepareKaminoSupplyArgs = z.infer<typeof prepareKaminoSupplyInput>;
+
+/**
+ * Kamino borrow / withdraw / repay share the same arg shape as supply
+ * (wallet + mint + amount); we keep them as separate schemas so the
+ * tool descriptions can document the per-action constraints (LTV gate,
+ * existing-deposit / existing-debt requirements, on-chain revert
+ * conditions) inline.
+ */
+export const prepareKaminoBorrowInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana base58 wallet — must already have Kamino userMetadata + obligation."
+  ),
+  mint: solanaAddressSchema.describe(
+    "Base58 SPL mint of the asset to borrow against the obligation's collateral."
+  ),
+  amount: z
+    .string()
+    .max(50)
+    .describe(
+      'Human-readable amount to borrow (e.g. "100" for 100 USDC). Decimals are ' +
+        "resolved from the reserve's mint metadata. The on-chain program enforces " +
+        "the borrow LTV gate; if the borrow would push the obligation over the " +
+        "liquidation limit, the tx reverts (caught by the simulation gate)."
+    ),
+});
+
+export const prepareKaminoWithdrawInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana base58 wallet — must already have a Kamino deposit in the named reserve."
+  ),
+  mint: solanaAddressSchema,
+  amount: z
+    .string()
+    .max(50)
+    .describe(
+      'Human-readable amount to withdraw. The reserve must have an active deposit ' +
+        "from this wallet — the builder refuses with a clear error otherwise. " +
+        "Health-factor gated on-chain: a withdraw that would leave the obligation " +
+        "under-collateralized for outstanding debt reverts."
+    ),
+});
+
+export const prepareKaminoRepayInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana base58 wallet — must already have outstanding debt in the named reserve."
+  ),
+  mint: solanaAddressSchema,
+  amount: z
+    .string()
+    .max(50)
+    .describe(
+      'Human-readable amount to repay. The on-chain program clamps repayment at ' +
+        "outstanding debt; over-repaying just doesn't burn the excess (no funds " +
+        "lost). Refuses with a clear error if the wallet has no debt in the reserve."
+    ),
+});
+
+export const getKaminoPositionsInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana base58 wallet to enumerate Kamino positions for. Returns the wallet's " +
+      "obligation on Kamino's main market, with per-reserve deposits + borrows + " +
+      "USD valuations + health factor. Returns an empty list when the wallet has " +
+      "no Kamino userMetadata (= never used Kamino)."
+  ),
+});
+
+export type PrepareKaminoBorrowArgs = z.infer<typeof prepareKaminoBorrowInput>;
+export type PrepareKaminoWithdrawArgs = z.infer<typeof prepareKaminoWithdrawInput>;
+export type PrepareKaminoRepayArgs = z.infer<typeof prepareKaminoRepayInput>;
+export type GetKaminoPositionsArgs = z.infer<typeof getKaminoPositionsInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
 export type GetLedgerDeviceInfoArgs = z.infer<typeof getLedgerDeviceInfoInput>;
