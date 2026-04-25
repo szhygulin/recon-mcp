@@ -246,22 +246,80 @@ describe("buildSolanaSplSend", () => {
 });
 
 describe("durable-nonce preflight", () => {
-  it("buildSolanaNativeSend refuses with structured error when nonce account missing", async () => {
+  it("buildSolanaNativeSend auto-bundles createNonce + initNonce + transfer when nonce account missing", async () => {
     await setNonceMissing();
     connectionStub.getBalance.mockResolvedValue(5_000_000_000);
     const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
-    await expect(
-      buildSolanaNativeSend({ wallet: WALLET, to: RECIPIENT, amount: "1" }),
-    ).rejects.toThrow(/prepare_solana_nonce_init first/);
+    const tx = await buildSolanaNativeSend({
+      wallet: WALLET,
+      to: RECIPIENT,
+      amount: "1",
+    });
+    expect(tx.action).toBe("native_send");
+    expect(tx.decoded.args.firstTimeNonceSetup).toBe("true");
+    expect(tx.decoded.functionName).toBe(
+      "solana.system.transfer+createNonceAccount",
+    );
+    expect(tx.description).toMatch(/one-time durable-nonce account setup/);
+    // Rent surfaced on the result so the agent can show it.
+    expect(tx.rentLamports).toBe(1_500_000);
+
+    const { getSolanaDraft } = await import("../src/signing/solana-tx-store.js");
+    const draft = getSolanaDraft(tx.handle);
+    // ix[0] = createAccountWithSeed (SystemInstruction tag 3, u32 LE)
+    expect(draft.draftTx.instructions[0].programId.toBase58()).toBe(
+      "11111111111111111111111111111111",
+    );
+    expect(draft.draftTx.instructions[0].data.readUInt32LE(0)).toBe(3);
+    // ix[1] = nonceInitialize (SystemInstruction tag 6)
+    expect(draft.draftTx.instructions[1].programId.toBase58()).toBe(
+      "11111111111111111111111111111111",
+    );
+    expect(draft.draftTx.instructions[1].data.readUInt32LE(0)).toBe(6);
+    // No durable-nonce meta — preview pins via getLatestBlockhash on this run.
+    expect(draft.meta.nonce).toBeUndefined();
   });
 
-  it("buildSolanaSplSend refuses with the same structured error when nonce account missing", async () => {
+  it("buildSolanaSplSend auto-bundles createNonce + initNonce + transferChecked when nonce account missing", async () => {
     await setNonceMissing();
     connectionStub.getBalance.mockResolvedValue(1_000_000_000);
+    connectionStub.getAccountInfo
+      // sender ATA exists
+      .mockResolvedValueOnce({ data: Buffer.alloc(165), owner: new PublicKey(WALLET) })
+      // recipient ATA exists too
+      .mockResolvedValueOnce({ data: Buffer.alloc(165), owner: new PublicKey(RECIPIENT) });
+    connectionStub.getTokenAccountBalance.mockResolvedValue({
+      value: { amount: "100000000", decimals: 6, uiAmount: 100, uiAmountString: "100" },
+    });
     const { buildSolanaSplSend } = await import("../src/modules/solana/actions.js");
+    const tx = await buildSolanaSplSend({
+      wallet: WALLET,
+      mint: USDC_MINT,
+      to: RECIPIENT,
+      amount: "1",
+    });
+    expect(tx.decoded.args.firstTimeNonceSetup).toBe("true");
+    expect(tx.decoded.functionName).toBe(
+      "solana.spl.transferChecked+createNonceAccount",
+    );
+    expect(tx.description).toMatch(/one-time durable-nonce account setup/);
+    expect(tx.rentLamports).toBe(1_500_000);
+
+    const { getSolanaDraft } = await import("../src/signing/solana-tx-store.js");
+    const draft = getSolanaDraft(tx.handle);
+    expect(draft.draftTx.instructions[0].data.readUInt32LE(0)).toBe(3); // createAccountWithSeed
+    expect(draft.draftTx.instructions[1].data.readUInt32LE(0)).toBe(6); // nonceInitialize
+    expect(draft.meta.nonce).toBeUndefined();
+  });
+
+  it("first-time native_send refuses when balance can't cover amount + fee + nonce rent", async () => {
+    await setNonceMissing();
+    // 1 SOL balance, asking to send 1 SOL — leaves no room for the 0.0015 SOL nonce rent + fee.
+    connectionStub.getBalance.mockResolvedValue(1_000_000_000);
+    const { buildSolanaNativeSend } = await import("../src/modules/solana/actions.js");
     await expect(
-      buildSolanaSplSend({ wallet: WALLET, mint: USDC_MINT, to: RECIPIENT, amount: "1" }),
-    ).rejects.toThrow(/prepare_solana_nonce_init first/);
+      buildSolanaNativeSend({ wallet: WALLET, to: RECIPIENT, amount: "1" }),
+    ).rejects.toThrow(/one-time durable-nonce account rent/);
   });
 
   it("buildSolanaNativeSend prepends AdvanceNonceAccount as ix[0] when nonce is present", async () => {
