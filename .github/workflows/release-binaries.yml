@@ -114,27 +114,18 @@ jobs:
         env:
           CI: "true"
 
-      - name: Smoke-test server binary (non-Windows)
+      - name: Mark server binary executable (non-Windows)
         if: runner.os != 'Windows'
-        # Pipe a `tools/list` JSON-RPC request into the binary — if it
-        # returns a JSON envelope with `result.tools[]`, the MCP is up.
-        # The `sleep 2` + timeout pattern gives the server time to
-        # respond before the parent closes stdin and we SIGTERM.
-        run: |
-          chmod +x ./release/${{ matrix.server_asset }}
-          (echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'; sleep 3) | \
-            timeout 20 ./release/${{ matrix.server_asset }} | \
-            node -e "const s=require('fs').readFileSync(0,'utf8'); const line=s.split('\n').find(l=>l.startsWith('{')) ?? '{}'; const j=JSON.parse(line); if(!j.result?.tools?.length) { console.error('no tools in response'); process.exit(1); } console.log('tools:', j.result.tools.length);"
+        run: chmod +x ./release/${{ matrix.server_asset }}
 
-      - name: Smoke-test server binary (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $out = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | & "./release/${{ matrix.server_asset }}"
-          $line = $out -split "`n" | Where-Object { $_.StartsWith("{") } | Select-Object -First 1
-          $json = $line | ConvertFrom-Json
-          if (-not $json.result.tools) { Write-Error "no tools in response"; exit 1 }
-          Write-Host "tools: $($json.result.tools.Count)"
+      - name: Smoke-test server binary
+        # One Node script runs identically on Linux / macOS / Windows.
+        # The previous per-OS shell snippets relied on GNU `timeout`,
+        # which isn't present on macOS by default and would have
+        # required `brew install coreutils` — easier to handle process
+        # spawn + timeout in Node directly. See
+        # `scripts/smoke-test-binary.mjs` for the implementation.
+        run: node scripts/smoke-test-binary.mjs ./release/${{ matrix.server_asset }}
 
       - name: Upload assets to release
         if: github.event_name == 'release'
