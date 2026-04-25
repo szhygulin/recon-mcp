@@ -724,6 +724,23 @@ export function renderPostBroadcastBlock(args: {
   const hashMatchLine = args.preSignHash
     ? `  Signed hash: ${args.preSignHash}  (same value you matched on-device at preview)`
     : null;
+  // Bitcoin: ~10-min blocks make agent-side polling wasteful (issue
+  // #215). End the turn after the broadcast; user checks the explorer
+  // link on their own time. All other chains continue with the standard
+  // "agent will report when it confirms" pattern.
+  const trailingPara =
+    args.chain === "bitcoin"
+      ? [
+          "The tx was accepted by the relay and is now propagating. Bitcoin",
+          "blocks land every ~10 minutes on average — open the explorer link",
+          "above when you want to check confirmation. The agent will not",
+          "poll; ask it later if you want a one-shot status check.",
+        ]
+      : [
+          "The tx was accepted by the relay and is now propagating. Inclusion polling",
+          "continues below — you don't need to do anything; the agent will report the",
+          "outcome when it confirms or times out.",
+        ];
   return [
     "TRANSACTION BROADCAST — RELAY VERBATIM TO USER",
     `  Chain: ${args.chain}`,
@@ -731,9 +748,7 @@ export function renderPostBroadcastBlock(args: {
     explorerLine,
     ...(hashMatchLine ? [hashMatchLine] : []),
     "",
-    "The tx was accepted by the relay and is now propagating. Inclusion polling",
-    "continues below — you don't need to do anything; the agent will report the",
-    "outcome when it confirms or times out.",
+    ...trailingPara,
   ].join("\n");
 }
 
@@ -764,10 +779,11 @@ const POLL_CADENCE: Record<string, { intervalSec: number; maxPolls: number; budg
   // polling is pointless — dropped txs get surfaced by the status tool's
   // blockhash-expiry check once the baked blockhash is past.
   solana: { intervalSec: 2, maxPolls: 45, budgetLabel: "~90 seconds" },
-  // Bitcoin: 10-min blocks; aggressive polling is wasteful. 30s × ~24
-  // polls ≈ 12 minutes covers ~1 block confirmation. Past that, telling
-  // the user to watch on mempool.space is the right UX.
-  bitcoin: { intervalSec: 30, maxPolls: 24, budgetLabel: "~12 minutes" },
+  // No `bitcoin` entry: the BTC branch in `renderPostSendPollBlock`
+  // returns a "do NOT poll, end your turn" directive (10-min blocks
+  // make agent-side polling wasteful — issue #215). Don't reintroduce a
+  // bitcoin cadence here; route any new BTC post-send guidance through
+  // the early-return branch instead.
 };
 
 export function renderPostSendPollBlock(args: {
@@ -789,6 +805,39 @@ export function renderPostSendPollBlock(args: {
   durableNonce?: { noncePubkey: string; nonceValue: string };
 }): string {
   const { chain, txHash, nextHandle, lastValidBlockHeight, durableNonce } = args;
+  // Bitcoin: ~10-min average block time + heavy variance. Agent-side
+  // polling (even at 30s intervals for 12 minutes) wastes context for
+  // ~1 block of coverage and almost always times out without a result.
+  // The user checks mempool.space themselves; the agent ends its turn.
+  // Issue #215.
+  if (chain === "bitcoin") {
+    const lines = [
+      "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
+      `The tx was forwarded to Ledger and broadcast; a txHash is above.`,
+      `Bitcoin confirmation takes ~10 minutes on average and often longer;`,
+      `polling at this timescale wastes turns without producing a real`,
+      `outcome.`,
+      ``,
+      `Do NOT call get_transaction_status, do NOT poll inclusion, do NOT`,
+      `say "I'll watch it" — END YOUR TURN after the TRANSACTION BROADCAST`,
+      `block above. The explorer link in that block is the user's path to`,
+      `monitor confirmation.`,
+      ``,
+      `If the user later asks "did it confirm?", call`,
+      `get_transaction_status({ chain: "bitcoin", txHash: "${txHash}" })`,
+      `ONCE on demand and report the result. Never enter a polling loop.`,
+    ];
+    if (nextHandle) {
+      lines.push(
+        ``,
+        `A follow-up handle is queued (${nextHandle}). Do NOT proceed with`,
+        `it until the user confirms the prior tx has at least 1 confirmation`,
+        `— Bitcoin has no mempool-chained-spend semantics worth relying on`,
+        `in an interactive flow.`,
+      );
+    }
+    return lines.join("\n");
+  }
   const cadence = POLL_CADENCE[chain] ?? POLL_CADENCE.ethereum;
   const solanaHasDropDetect =
     chain === "solana" &&
@@ -883,15 +932,18 @@ export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification:
 /**
  * Bitcoin verification block. The Ledger BTC app clear-signs every
  * output (address + amount) and the fee — so unlike EVM's blind-sign
- * path, there's no on-device hash for the user to match in chat. The
- * defense is the per-output address + amount review on the device
- * screen itself; this block surfaces the same projection in chat so
- * the user can cross-check before the device prompt appears.
+ * path, the device IS the decoder; there's no calldata-style stream a
+ * swiss-knife URL could deconstruct, and PSBTs are too large to embed
+ * in a clickable URL anyway. This block surfaces the same projection
+ * in chat so the user can cross-check the device screens against
+ * trusted text before pressing Approve.
  *
- * No browser decoder URL: PSBT bytes are not a calldata-style
- * instruction stream a swiss-knife decoder could deconstruct. Instead
- * we surface every output's address + amount + isChange flag — the
- * exact data the device walks the user through.
+ * The block ends with an explicit instruction to the agent NOT to
+ * write multi-file PSBT decode scripts — every byte the device shows
+ * is a higher-trust source than any chat-side decode the agent could
+ * cobble together, and watching the agent `cp` files into the project
+ * tree to find bitcoinjs-lib is a worse UX than the device walk.
+ * Issue #215.
  */
 export function renderBitcoinVerificationBlock(tx: UnsignedBitcoinTx): string {
   const lines: string[] = [];
@@ -920,11 +972,35 @@ export function renderBitcoinVerificationBlock(tx: UnsignedBitcoinTx): string {
       "REJECT on Ledger and re-prepare.",
   );
   lines.push("");
-  lines.push("AFTER BROADCAST (not a pre-sign check):");
+  lines.push("[AGENT NOTE — do not forward this paragraph to the user]");
   lines.push(
-    "  Once `send_transaction` returns a txid, paste it into " +
-      "[mempool.space](https://mempool.space/) to watch confirmation count.",
+    "Do NOT decode the PSBT in chat. The Ledger device clear-signs every",
   );
+  lines.push(
+    "output address, amount, fee, and RBF flag on its screen — that walk IS",
+  );
+  lines.push(
+    "the verification, and it is a higher-trust source than any chat-side",
+  );
+  lines.push(
+    "decode you could write. Specifically: do NOT write `node -e` scripts,",
+  );
+  lines.push(
+    "do NOT create `/tmp/*.cjs` or `_psbt-verify.cjs` files, do NOT `cp`",
+  );
+  lines.push(
+    "anything into the project tree to resolve `bitcoinjs-lib`. The bullet",
+  );
+  lines.push(
+    "list above is the MCP's claim; the device screens are the truth; the",
+  );
+  lines.push(
+    "user reconciles the two by eye. If the bullets and device disagree,",
+  );
+  lines.push(
+    "the user rejects on-device — no chat-side decode would have caught it",
+  );
+  lines.push("any earlier.");
   return lines.join("\n");
 }
 

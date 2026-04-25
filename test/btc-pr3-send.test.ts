@@ -591,7 +591,85 @@ describe("renderBitcoinVerificationBlock", () => {
     expect(block).toContain(`Output 1: 0.0005 BTC → ${RECIPIENT}`);
     expect(block).toMatch(/Fee:.*BTC.*sat\/vB/);
     expect(block).toContain("RBF:      enabled");
-    expect(block).toContain("[mempool.space](https://mempool.space/)");
+  });
+
+  // Issue #215 — the agent in a live session wrote multi-file PSBT
+  // decode scripts (`/tmp/psbt-verify.cjs` then `cp` into the project
+  // tree to find bitcoinjs-lib) before signing. Lock the agent-note
+  // that explicitly forbids the pattern so a future doc edit doesn't
+  // silently revert.
+  it("explicitly tells the agent NOT to write multi-file PSBT decode scripts", async () => {
+    getUtxosMock.mockResolvedValueOnce([
+      { txid: FAKE_TXID, vout: 0, value: 100_000, unconfirmed: false },
+    ]);
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    const tx = await buildBitcoinNativeSend({
+      wallet: SEGWIT_ADDR,
+      to: RECIPIENT,
+      amount: "0.0005",
+      feeRateSatPerVb: 10,
+    });
+    const { renderBitcoinVerificationBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const block = renderBitcoinVerificationBlock(tx);
+    expect(block).toMatch(/AGENT NOTE/);
+    expect(block).toMatch(/Do NOT decode the PSBT in chat/);
+    expect(block).toMatch(/node -e/);
+    expect(block).toMatch(/_psbt-verify\.cjs/);
+    expect(block).toMatch(/cp/);
+    expect(block).toMatch(/device .* (truth|verification)/);
+    // The AFTER-BROADCAST mempool.space aside used to live here; it now
+    // belongs to renderPostBroadcastBlock so the verification block
+    // stays scoped to pre-sign concerns.
+    expect(block).not.toContain("AFTER BROADCAST");
+    expect(block).not.toContain("mempool.space");
+  });
+});
+
+describe("Bitcoin post-send blocks", () => {
+  // Issue #215 — BTC's ~10-min block time made agent-side polling
+  // wasteful (12 min budget covered ~1 block; almost always timed out
+  // without a real outcome). The BTC branch in renderPostSendPollBlock
+  // must emit a "do NOT poll, end your turn" directive instead.
+  it("post-send BTC block tells agent NOT to poll and end the turn", async () => {
+    const { renderPostSendPollBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const block = renderPostSendPollBlock({
+      chain: "bitcoin",
+      txHash: "a".repeat(64),
+    });
+    expect(block).toMatch(/AGENT TASK/);
+    expect(block).toMatch(/Do NOT call get_transaction_status/);
+    expect(block).toMatch(/Do NOT poll/i);
+    expect(block).toMatch(/END YOUR TURN/);
+    expect(block).not.toMatch(/every ~\d+ seconds/);
+    expect(block).not.toMatch(/maxPolls/);
+    // The on-demand path is still allowed — surface the exact one-shot
+    // call so the agent has it ready when the user asks "did it confirm?".
+    expect(block).toMatch(
+      new RegExp(`get_transaction_status\\(\\{ chain: "bitcoin", txHash: "${"a".repeat(64)}" \\}\\)`),
+    );
+  });
+
+  it("post-broadcast BTC block tells the user to check the explorer link later, not wait", async () => {
+    const { renderPostBroadcastBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const block = renderPostBroadcastBlock({
+      chain: "bitcoin",
+      txHash: "a".repeat(64),
+    });
+    expect(block).toContain("TRANSACTION BROADCAST");
+    expect(block).toContain("mempool.space");
+    expect(block).toMatch(/~10 minutes/);
+    expect(block).toMatch(/agent will not\s+poll/);
+    // EVM-style "agent will report when it confirms" is wrong for BTC —
+    // the agent will NOT continue polling, so don't suggest it does.
+    expect(block).not.toMatch(/will report .* when it confirms or times out/);
   });
 });
 
