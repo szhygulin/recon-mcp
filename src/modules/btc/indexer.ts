@@ -190,6 +190,17 @@ export interface BitcoinIndexer {
    * (mempool.space + standard Esplora share the same shape).
    */
   getBlockTip(): Promise<BitcoinBlockTip>;
+  /**
+   * Fetch the raw hex of a previous transaction by txid. Required for
+   * `nonWitnessUtxo` population on PSBT inputs — Ledger BTC app 2.x
+   * cryptographically verifies the input amount against this prev-tx
+   * (BIP-143 sighash doesn't commit to input amount, so the prev-tx is
+   * the only way the device can prove a malicious offline signer didn't
+   * lie about the input value to inflate the fee). Without it the device
+   * surfaces a "Security risk: unverified inputs" prompt and refuses to
+   * sign cleanly. Issue #213.
+   */
+  getTxHex(txid: string): Promise<string>;
 }
 
 /**
@@ -503,6 +514,31 @@ class EsploraIndexer implements BitcoinIndexer {
       confirmed: true,
       ...(status.block_height !== undefined ? { blockHeight: status.block_height } : {}),
     };
+  }
+
+  async getTxHex(txid: string): Promise<string> {
+    if (!/^[0-9a-fA-F]{64}$/.test(txid)) {
+      throw new Error(
+        `Bitcoin indexer getTxHex called with non-64-hex txid "${txid.slice(0, 80)}".`,
+      );
+    }
+    const res = await fetchWithTimeout(`${this.baseUrl}/tx/${txid}/hex`, {
+      method: "GET",
+      headers: { Accept: "text/plain" },
+    });
+    if (!res.ok) {
+      throw new Error(
+        `Bitcoin indexer /tx/${txid}/hex returned ${res.status} ${res.statusText}`,
+      );
+    }
+    const hex = (await res.text()).trim();
+    if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length % 2 !== 0) {
+      throw new Error(
+        `Bitcoin indexer /tx/${txid}/hex returned non-hex body (length ${hex.length}, ` +
+          `head "${hex.slice(0, 32)}").`,
+      );
+    }
+    return hex;
   }
 
   async getBlockTip(): Promise<BitcoinBlockTip> {

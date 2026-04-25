@@ -2,7 +2,56 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as pjoin } from "node:path";
+import { createRequire } from "node:module";
 import { setConfigDirForTesting } from "../src/config/user-config.js";
+
+const requireCjs = createRequire(import.meta.url);
+const bitcoinjsForFixtures = requireCjs("bitcoinjs-lib") as {
+  Transaction: new () => {
+    version: number;
+    addInput(hash: Buffer, index: number, sequence?: number): unknown;
+    addOutput(script: Buffer, value: number): unknown;
+    toHex(): string;
+  };
+  Psbt: {
+    fromBase64(b64: string): {
+      data: {
+        inputs: Array<{
+          witnessUtxo?: { script: Buffer; value: number };
+          nonWitnessUtxo?: Buffer;
+        }>;
+      };
+    };
+  };
+  address: {
+    toOutputScript(addr: string, network?: unknown): Buffer;
+  };
+  networks: { bitcoin: unknown };
+};
+
+/**
+ * Build a minimal mainnet prev-tx hex with a single output at `vout`
+ * paying `address` `value` sats. Issue #213 — `prepare_btc_send` now
+ * fetches `getTxHex(input.txid)` for every selected UTXO and stuffs
+ * the result into the PSBT as `nonWitnessUtxo`. bitcoinjs-lib's
+ * `addInput` validates the value matches `witnessUtxo.value`, so the
+ * fixture has to actually carry the right amount at the right vout.
+ */
+function buildPrevTxHex(value: number, address: string, vout = 0): string {
+  const tx = new bitcoinjsForFixtures.Transaction();
+  tx.version = 2;
+  // Coinbase-style dummy input — we don't sign or validate this prev-tx
+  // anywhere; it just needs to be parseable by bitcoinjs.
+  tx.addInput(Buffer.alloc(32, 0), 0xffffffff, 0xffffffff);
+  for (let i = 0; i <= vout; i++) {
+    const script = bitcoinjsForFixtures.address.toOutputScript(
+      address,
+      bitcoinjsForFixtures.networks.bitcoin,
+    );
+    tx.addOutput(script, i === vout ? value : 0);
+  }
+  return tx.toHex();
+}
 
 /**
  * BTC PR3 — `prepare_btc_send` (PSBT build) + `send_transaction` BTC
@@ -64,6 +113,7 @@ const getUtxosMock = vi.fn();
 const getFeeEstimatesMock = vi.fn();
 const broadcastTxMock = vi.fn();
 const getTxStatusMock = vi.fn();
+const getTxHexMock = vi.fn();
 
 vi.mock("../src/modules/btc/indexer.ts", () => ({
   getBitcoinIndexer: () => ({
@@ -71,6 +121,7 @@ vi.mock("../src/modules/btc/indexer.ts", () => ({
     getFeeEstimates: getFeeEstimatesMock,
     broadcastTx: broadcastTxMock,
     getTxStatus: getTxStatusMock,
+    getTxHex: getTxHexMock,
   }),
   resetBitcoinIndexer: () => {},
 }));
@@ -88,6 +139,34 @@ beforeEach(async () => {
   getFeeEstimatesMock.mockReset();
   broadcastTxMock.mockReset();
   getTxStatusMock.mockReset();
+  getTxHexMock.mockReset();
+  // Default: derive a valid prev-tx hex from whichever UTXOs the test
+  // most recently registered via getUtxosMock. Tests can override with
+  // mockResolvedValueOnce / mockRejectedValueOnce when they need to
+  // exercise indexer failure modes.
+  getTxHexMock.mockImplementation(async (txid: string) => {
+    const lastResult =
+      getUtxosMock.mock.results[getUtxosMock.mock.results.length - 1];
+    if (!lastResult || lastResult.type !== "return") {
+      throw new Error(
+        `Test setup error: getTxHex(${txid}) called but no getUtxos mock has run.`,
+      );
+    }
+    const utxos = (await lastResult.value) as Array<{
+      txid: string;
+      vout: number;
+      value: number;
+    }>;
+    const matching = utxos.find((u) => u.txid === txid);
+    if (!matching) {
+      throw new Error(
+        `Test setup error: no UTXO matches txid ${txid} (have: ${utxos
+          .map((u) => u.txid)
+          .join(",")}).`,
+      );
+    }
+    return buildPrevTxHex(matching.value, SEGWIT_ADDR, matching.vout);
+  });
   const { clearPairedBtcAddresses, setPairedBtcAddress } = await import(
     "../src/signing/btc-usb-signer.js"
   );
@@ -148,6 +227,16 @@ describe("buildBitcoinNativeSend", () => {
     expect(recipientOutput?.isChange).toBe(false);
     expect(tx.decoded.rbfEligible).toBe(true);
     expect(tx.decoded.feeRateSatPerVb).toBe(10);
+    // Issue #213 regression: every input must carry nonWitnessUtxo
+    // (full prev-tx hex), or Ledger BTC app 2.x raises "Security risk:
+    // unverified inputs" before showing any output details. Decode the
+    // PSBT and assert input #0 has both witnessUtxo AND nonWitnessUtxo.
+    const psbt = bitcoinjsForFixtures.Psbt.fromBase64(tx.psbtBase64);
+    expect(psbt.data.inputs.length).toBe(1);
+    expect(psbt.data.inputs[0].witnessUtxo).toBeDefined();
+    expect(psbt.data.inputs[0].nonWitnessUtxo).toBeDefined();
+    expect((psbt.data.inputs[0].nonWitnessUtxo as Buffer).length).toBeGreaterThan(0);
+    expect(getTxHexMock).toHaveBeenCalledWith(FAKE_TXID);
   });
 
   it("uses an explicit feeRate when passed", async () => {

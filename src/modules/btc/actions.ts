@@ -31,11 +31,16 @@ import { BTC_DECIMALS, SATS_PER_BTC } from "../../config/btc.js";
  * replaceable). Pass `rbf: false` to set `0xFFFFFFFE` (final, not
  * replaceable). Locktime stays at 0.
  *
- * The PSBT is v0 (the only format `signPsbtBuffer` accepts). For native
- * segwit (P2WPKH) and taproot (P2TR) inputs, only `witnessUtxo` is
- * populated — full prev-tx hex isn't required for segwit. Legacy /
- * P2SH-wrapped sends would need `nonWitnessUtxo` (raw prev-tx); deferred
- * to follow-up alongside legacy support.
+ * The PSBT is v0 (the only format `signPsbtBuffer` accepts). Every
+ * input carries BOTH `witnessUtxo` (script + value, used by the segwit
+ * sighash) AND `nonWitnessUtxo` (the full prev-tx hex). The latter is
+ * mandatory on Ledger BTC app 2.x even for segwit/taproot inputs — the
+ * device cryptographically verifies the input amount against the
+ * prev-tx because BIP-143 sighash doesn't commit to input amount,
+ * which is how a malicious offline signer could otherwise lie about
+ * the input value to inflate the fee. Omitting it trips a
+ * "Security risk: unverified inputs" device prompt and rejects with
+ * 0x6985. Issue #213.
  */
 
 const requireCjs = createRequire(import.meta.url);
@@ -46,6 +51,7 @@ const bitcoinjs = requireCjs("bitcoinjs-lib") as {
       index: number;
       sequence?: number;
       witnessUtxo?: { script: Buffer; value: number };
+      nonWitnessUtxo?: Buffer;
     }): unknown;
     addOutput(output: { address?: string; script?: Buffer; value: number }): unknown;
     toBase64(): string;
@@ -259,20 +265,39 @@ export async function buildBitcoinNativeSend(
     ...(args.allowHighFee !== undefined ? { allowHighFee: args.allowHighFee } : {}),
   });
 
-  // 7. Build PSBT.
+  // 7. Fetch full prev-tx hex for every UNIQUE input txid. Required by
+  //    Ledger BTC app 2.x's segwit-fee-inflation defense — see file
+  //    docstring + issue #213. Dedup by txid so a multi-vout-from-the-
+  //    same-prev-tx selection only fans out once. Parallel fan-out so
+  //    the wall-time stays bounded even with many distinct prev txs.
+  const uniqueTxids = [...new Set(selection.inputs.map((i) => i.txid))];
+  const prevTxHexEntries = await Promise.all(
+    uniqueTxids.map(async (txid) => [txid, await indexer.getTxHex(txid)] as const),
+  );
+  const prevTxHexByTxid = new Map(prevTxHexEntries);
+
+  // 8. Build PSBT.
   const psbt = new bitcoinjs.Psbt({ network: NETWORK });
   const sequence = args.rbf === false ? 0xfffffffe : 0xfffffffd;
   const sourceScript = bitcoinjs.address.toOutputScript(args.wallet, NETWORK);
   for (const input of selection.inputs) {
+    const prevTxHex = prevTxHexByTxid.get(input.txid);
+    if (!prevTxHex) {
+      throw new Error(
+        `Internal error: prev-tx hex missing for selected input ${input.txid}:${input.vout} ` +
+          `after fan-out fetch.`,
+      );
+    }
     psbt.addInput({
       hash: input.txid,
       index: input.vout,
       sequence,
-      // For segwit + taproot, `witnessUtxo` (script + value) is the
-      // minimum required input data for v0 PSBT signing. The Ledger
-      // BTC app validates the input value against this when computing
-      // the segwit sighash.
+      // `witnessUtxo` (script + value) feeds the segwit sighash;
+      // `nonWitnessUtxo` (full prev-tx) is what Ledger BTC app 2.x
+      // uses to cryptographically verify the input amount. Both are
+      // required — see file docstring.
       witnessUtxo: { script: sourceScript, value: input.value },
+      nonWitnessUtxo: Buffer.from(prevTxHex, "hex"),
     });
   }
   for (const output of selection.outputs) {
@@ -284,7 +309,7 @@ export async function buildBitcoinNativeSend(
   }
   const psbtBase64 = psbt.toBase64();
 
-  // 8. Decoded-output projection for the verification block. Each
+  // 9. Decoded-output projection for the verification block. Each
   //    output gets a sats + BTC-decimal string + isChange flag. The
   //    Ledger walks every entry on-screen — this projection is what
   //    `render-verification.ts` mirrors for the user to cross-check.
