@@ -1,15 +1,21 @@
-# Installing VaultPilot from a binary release
+# Installing VaultPilot
 
-This guide is for users who want to run `vaultpilot-mcp` without
-installing Node.js, npm, or any compile toolchain. Each release ships
-a self-contained executable per platform — pick the matching pair for
-your OS, run the setup wizard once, and point your MCP client at the
-server binary.
+Three install paths — pick whichever matches your setup. All three end
+at the same place: a `vaultpilot-mcp` server binary your MCP client
+runs, plus a one-time setup wizard that writes the config file.
 
-If you already have Node.js and want to install from npm or source,
-see the **Install** section in [`README.md`](./README.md) instead.
+| Path | Best for | Prerequisites |
+|---|---|---|
+| **A. Bundled binary** | Non-developers, anyone without Node.js | None — runtime is bundled |
+| **B. From npm** | Developers with Node.js already installed | Node.js ≥ 18.17, npm |
+| **C. From source** | Contributors, anyone who wants to build their own | Node.js ≥ 18.17, npm, git, OS build toolchain |
 
-## 1. Download the binaries for your OS
+Sections **3–9** (setup wizard, verification, MCP client wiring, Ledger
+pairing, update, uninstall, troubleshooting) apply to all three paths.
+
+## Path A — Bundled binary
+
+### A1. Download the binaries for your OS
 
 Open the [latest release page](https://github.com/szhygulin/vaultpilot-mcp/releases/latest)
 and download **two** files for your platform:
@@ -30,7 +36,7 @@ permanently and your MCP client can reach them. Suggested paths:
 Create the directory first if it doesn't exist (`mkdir -p ~/.local/bin`
 on Unix; right-click → New folder on Windows).
 
-## 2. Make the binaries runnable
+### A2. Make the binaries runnable
 
 ### macOS
 
@@ -74,18 +80,115 @@ if they're missing.
 Windows SmartScreen will warn when you run an unsigned binary. Click
 **More info** → **Run anyway** the first time you launch each binary.
 
+Now skip to **section 3 — Run the setup wizard**.
+
+## Path B — From npm
+
+Prerequisites: Node.js ≥ 18.17 and npm. Check with `node -v` and
+`npm -v`. If you don't have them, install via [nvm](https://github.com/nvm-sh/nvm)
+on Unix or the [official Node.js installer](https://nodejs.org/) on
+Windows. On macOS / Linux, prefer nvm so the global-install path lands
+under your home directory rather than `/usr/local/` (avoids `EACCES`
+permission errors).
+
+### B1. Install globally
+
+```bash
+npm install -g vaultpilot-mcp
+```
+
+This places two executables on your PATH:
+
+- `vaultpilot-mcp` — the MCP server
+- `vaultpilot-mcp-setup` — the setup wizard
+
+Linux: if you also want TRON / Solana hardware-signing, install the
+build toolchain so `node-hid` can compile during install:
+
+```bash
+sudo apt install libudev-dev build-essential   # Debian / Ubuntu
+sudo dnf install systemd-devel gcc-c++ make    # Fedora
+```
+
+### B2. Verify the install
+
+```bash
+which vaultpilot-mcp        # macOS / Linux
+where.exe vaultpilot-mcp    # Windows
+```
+
+Both paths should resolve. If not, check `npm bin -g` is on your
+PATH.
+
+Now go to **section 3 — Run the setup wizard**.
+
+## Path C — From source
+
+Prerequisites: Node.js ≥ 18.17, npm, git, plus the OS build toolchain
+listed in Path B (Linux only — macOS includes Xcode CLT, Windows ships
+MSBuild with current Visual Studio installs).
+
+### C1. Clone and build
+
+```bash
+git clone https://github.com/szhygulin/vaultpilot-mcp.git
+cd vaultpilot-mcp
+npm install --legacy-peer-deps
+npm run build
+```
+
+`--legacy-peer-deps` is required because the Kamino SDK has a
+transitive peer-dep nest npm 7+ rejects by default.
+
+### C2. Run from the source checkout
+
+You have two options for invoking the server:
+
+```bash
+# Option 1: run via npm scripts (stays in the repo)
+npm start          # MCP server
+npm run setup      # setup wizard
+
+# Option 2: link globally so you can call from anywhere
+npm link
+# Then `vaultpilot-mcp` and `vaultpilot-mcp-setup` work from any directory.
+```
+
+`npm link` is reversible: `npm unlink -g vaultpilot-mcp` removes the
+symlink. Useful if you want to test a local fork against your real
+config without uninstalling the npm-published version.
+
+### C3. Run the test suite (optional sanity check)
+
+```bash
+npm test
+```
+
+A successful run prints `Tests <N> passed`. As of v0.6.1 the suite is
+~1,000 cases and runs in ~15s.
+
+Now go to **section 3 — Run the setup wizard**.
+
 ## 3. Run the setup wizard
 
 This is the one mandatory configuration step. It writes
 `~/.vaultpilot-mcp/config.json` (or `%USERPROFILE%\.vaultpilot-mcp\config.json`
 on Windows) with your RPC providers and optional API keys.
 
+How you invoke the wizard depends on which install path you used:
+
 ```bash
-# macOS / Linux
+# Path A — bundled binary (macOS / Linux)
 ~/.local/bin/vaultpilot-mcp-setup-<platform>
 
-# Windows (PowerShell)
+# Path A — bundled binary (Windows, PowerShell)
 & "$env:LOCALAPPDATA\Programs\vaultpilot-mcp\vaultpilot-mcp-setup-windows-x64.exe"
+
+# Path B — installed via npm
+vaultpilot-mcp-setup
+
+# Path C — from source
+npm run setup
 ```
 
 The wizard:
@@ -118,11 +221,21 @@ If your client knows about VaultPilot, the agent will call
 results. If the client says it doesn't know about VaultPilot, see
 **Manual MCP client wiring** below.
 
-You can also confirm the server binary itself runs:
+You can also confirm the server itself runs by piping a JSON-RPC
+request into stdin:
 
 ```bash
+# Path A — bundled binary
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | \
   ~/.local/bin/vaultpilot-mcp-<platform> | head -c 200
+
+# Path B — installed via npm
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | \
+  vaultpilot-mcp | head -c 200
+
+# Path C — from source
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | \
+  node dist/index.js | head -c 200
 ```
 
 A JSON envelope listing tools should print to stdout.
@@ -130,13 +243,34 @@ A JSON envelope listing tools should print to stdout.
 ## 5. Manual MCP client wiring (if auto-register didn't run)
 
 If the setup wizard couldn't detect your client, or you skipped the
-auto-register prompt, add the entry manually. The exact JSON shape:
+auto-register prompt, add the entry manually. The JSON shape varies
+slightly per install path:
 
-```json
+```jsonc
+// Path A — bundled binary (use the absolute path to the server binary)
 {
   "mcpServers": {
     "vaultpilot-mcp": {
       "command": "/absolute/path/to/vaultpilot-mcp-<platform>"
+    }
+  }
+}
+
+// Path B — installed via npm (the bin shim is on PATH)
+{
+  "mcpServers": {
+    "vaultpilot-mcp": {
+      "command": "vaultpilot-mcp"
+    }
+  }
+}
+
+// Path C — from source
+{
+  "mcpServers": {
+    "vaultpilot-mcp": {
+      "command": "node",
+      "args": ["/absolute/path/to/vaultpilot-mcp/dist/index.js"]
     }
   }
 }
@@ -176,25 +310,68 @@ on-chain data, which the public RPC fallbacks provide.
 
 ## 7. Update to a new version
 
+**Path A — bundled binary**
+
 1. Download the new binaries from the [latest release page](https://github.com/szhygulin/vaultpilot-mcp/releases/latest).
 2. Replace the old files at the same paths.
-3. On macOS, re-run the `xattr -d com.apple.quarantine` step on the
-   new files (or right-click → Open once each).
-4. On Windows, click through SmartScreen once each.
-5. Restart your MCP client so it picks up the new binary.
+3. On macOS, re-run `xattr -d com.apple.quarantine` (or right-click →
+   Open once each). On Windows, click through SmartScreen once each.
+4. Restart your MCP client so it picks up the new binary.
+
+**Path B — npm**
+
+```bash
+npm update -g vaultpilot-mcp
+# or for a specific version:
+npm install -g vaultpilot-mcp@<version>
+```
+
+Then restart your MCP client.
+
+**Path C — from source**
+
+```bash
+cd /path/to/vaultpilot-mcp
+git pull --ff-only
+npm install --legacy-peer-deps
+npm run build
+```
 
 Your config file at `~/.vaultpilot-mcp/config.json` is preserved
-across updates.
+across all three update paths.
 
 ## 8. Uninstall
 
-1. Remove the binaries from `~/.local/bin/` (or
-   `%LOCALAPPDATA%\Programs\vaultpilot-mcp\`).
-2. Remove the config: `rm -rf ~/.vaultpilot-mcp/` (Unix) or delete
+**Path A — bundled binary**
+
+```bash
+# Remove the binaries
+rm ~/.local/bin/vaultpilot-mcp-* ~/.local/bin/vaultpilot-mcp-setup-*
+# (Windows: delete the files in %LOCALAPPDATA%\Programs\vaultpilot-mcp\)
+```
+
+**Path B — npm**
+
+```bash
+npm uninstall -g vaultpilot-mcp
+```
+
+**Path C — from source**
+
+```bash
+# If you ran `npm link`:
+npm unlink -g vaultpilot-mcp
+# Then delete the source checkout:
+rm -rf /path/to/vaultpilot-mcp
+```
+
+**All paths — clean up shared state**
+
+1. Remove the config: `rm -rf ~/.vaultpilot-mcp/` (Unix) or delete
    `%USERPROFILE%\.vaultpilot-mcp\` (Windows).
-3. Remove the `vaultpilot-mcp` entry from your MCP client's config
+2. Remove the `vaultpilot-mcp` entry from your MCP client's config
    file (paths in section 5).
-4. Optional — remove the companion skills:
+3. Optional — remove the companion skills:
    `rm -rf ~/.claude/skills/vaultpilot-{preflight,setup}/`.
 
 ## 9. Troubleshooting

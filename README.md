@@ -171,25 +171,13 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 
 ## Install
 
-From a standalone binary (no Node.js required):
+Three paths — full step-by-step instructions, MCP-client wiring, Gatekeeper / SmartScreen handling, and update / uninstall flows for all three are in **[INSTALL.md](./INSTALL.md)**.
 
-Each release ships an MCP server binary plus a setup wizard binary per platform — Linux x64, macOS arm64, macOS x64, Windows x64 — bundled with the Node.js runtime so no `npm install` or native-compile toolchain is needed. Step-by-step instructions, MCP-client wiring, Gatekeeper / SmartScreen handling, and update / uninstall flows are in **[INSTALL.md](./INSTALL.md)**. Or grab the binaries directly from the [latest release page](https://github.com/szhygulin/vaultpilot-mcp/releases/latest).
-
-From npm:
-
-```bash
-npm install -g vaultpilot-mcp
-vaultpilot-mcp-setup
-```
-
-From source:
-
-```bash
-git clone https://github.com/szhygulin/vaultpilot-mcp.git
-cd vaultpilot-mcp
-npm install
-npm run build
-```
+| Path | TL;DR |
+|---|---|
+| **Bundled binary** (no Node.js needed) | Download the matching pair for your OS from the [latest release page](https://github.com/szhygulin/vaultpilot-mcp/releases/latest), `chmod +x`, run setup. |
+| **From npm** | `npm install -g vaultpilot-mcp && vaultpilot-mcp-setup` |
+| **From source** | `git clone https://github.com/szhygulin/vaultpilot-mcp.git && cd vaultpilot-mcp && npm install --legacy-peer-deps && npm run build && npm run setup` |
 
 ## Setup
 
