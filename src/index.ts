@@ -88,6 +88,7 @@ import {
   getBitcoinBalance,
   getBitcoinBalances,
   getBitcoinFeeEstimates,
+  getBitcoinBlockTip,
   getBitcoinTxHistory,
   prepareBitcoinNativeSend,
   signBtcMessage,
@@ -145,6 +146,7 @@ import {
   getBitcoinBalanceInput,
   getBitcoinBalancesInput,
   getBitcoinFeeEstimatesInput,
+  getBitcoinBlockTipInput,
   getBitcoinTxHistoryInput,
   prepareBitcoinNativeSendInput,
   signBtcMessageInput,
@@ -1814,6 +1816,25 @@ async function main() {
       inputSchema: getBitcoinFeeEstimatesInput.shape,
     },
     handler(getBitcoinFeeEstimates)
+  );
+
+  server.registerTool(
+    "get_btc_block_tip",
+    {
+      description:
+        "READ-ONLY — current Bitcoin mainnet chain tip. Returns block height, " +
+        "64-hex block hash, header timestamp (unix seconds), server-computed " +
+        "`ageSeconds` (now − timestamp), and — when the indexer exposes them — " +
+        "BIP-113 median time past + difficulty. Backed by the configured " +
+        "indexer (mempool.space default; `BITCOIN_INDEXER_URL` env var or " +
+        "`bitcoinIndexerUrl` user-config override for self-hosted Esplora). " +
+        "Useful for: latest-hash lookups, block-age UX context (Bitcoin block " +
+        "intervals are Poisson — a 40-min gap is normal but worth surfacing), " +
+        "indexer-freshness sanity checks before quoting balances, confirmation-" +
+        "depth math against `get_btc_tx_history` entries.",
+      inputSchema: getBitcoinBlockTipInput.shape,
+    },
+    handler(getBitcoinBlockTip)
   );
 
   server.registerTool(

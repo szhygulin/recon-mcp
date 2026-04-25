@@ -124,6 +124,7 @@ import type {
   GetBitcoinBalanceArgs,
   GetBitcoinBalancesArgs,
   GetBitcoinFeeEstimatesArgs,
+  GetBitcoinBlockTipArgs,
   GetBitcoinTxHistoryArgs,
   PrepareBitcoinNativeSendArgs,
   SignBtcMessageArgs,
@@ -652,6 +653,12 @@ export async function getBitcoinFeeEstimates(_args: GetBitcoinFeeEstimatesArgs) 
   void _args;
   const { getBitcoinIndexer } = await import("../btc/indexer.js");
   return getBitcoinIndexer().getFeeEstimates();
+}
+
+export async function getBitcoinBlockTip(_args: GetBitcoinBlockTipArgs) {
+  void _args;
+  const { getBitcoinIndexer } = await import("../btc/indexer.js");
+  return getBitcoinIndexer().getBlockTip();
 }
 
 export async function getBitcoinTxHistory(args: GetBitcoinTxHistoryArgs) {

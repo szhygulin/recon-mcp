@@ -261,6 +261,96 @@ describe("indexer — getAddressTxs", () => {
   });
 });
 
+describe("indexer — getBlockTip (issue #183)", () => {
+  beforeEach(() => {
+    resetBitcoinIndexer();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetBitcoinIndexer();
+  });
+
+  it("returns height + hash + timestamp + ageSeconds + optional fields", async () => {
+    const fixedHash =
+      "0000000000000000000123456789abcdef0123456789abcdef0123456789abcd";
+    const blockTime = Math.floor(Date.now() / 1000) - 600; // ~10 min ago
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/blocks/tip/hash")) {
+        return new Response(fixedHash, { status: 200 });
+      }
+      if (url.endsWith(`/block/${fixedHash}`)) {
+        return new Response(
+          JSON.stringify({
+            id: fixedHash,
+            height: 946_598,
+            timestamp: blockTime,
+            mediantime: blockTime - 300,
+            difficulty: 110_568_428_300_421.94,
+          }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getBitcoinIndexer } = await import("../src/modules/btc/indexer.js");
+    const tip = await getBitcoinIndexer().getBlockTip();
+    expect(tip.height).toBe(946_598);
+    expect(tip.hash).toBe(fixedHash);
+    expect(tip.timestamp).toBe(blockTime);
+    expect(tip.medianTimePast).toBe(blockTime - 300);
+    expect(tip.difficulty).toBe(110_568_428_300_421.94);
+    // ageSeconds: server-side computed; allow ±2s for test wall-clock drift.
+    expect(tip.ageSeconds).toBeGreaterThanOrEqual(599);
+    expect(tip.ageSeconds).toBeLessThanOrEqual(602);
+  });
+
+  it("omits medianTimePast/difficulty when the indexer doesn't expose them", async () => {
+    const fixedHash =
+      "0000000000000000000abcdef0123456789abcdef0123456789abcdef0123456";
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/blocks/tip/hash")) {
+        return new Response(fixedHash, { status: 200 });
+      }
+      // Esplora-pure stripped to just height/timestamp.
+      return new Response(
+        JSON.stringify({ height: 100, timestamp: 1_700_000_000 }),
+        { status: 200 },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getBitcoinIndexer } = await import("../src/modules/btc/indexer.js");
+    const tip = await getBitcoinIndexer().getBlockTip();
+    expect(tip.height).toBe(100);
+    expect(tip.medianTimePast).toBeUndefined();
+    expect(tip.difficulty).toBeUndefined();
+  });
+
+  it("rejects a malformed tip-hash response (sanity check on the indexer URL)", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response("<html>404</html>", { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { getBitcoinIndexer } = await import("../src/modules/btc/indexer.js");
+    await expect(getBitcoinIndexer().getBlockTip()).rejects.toThrow(
+      /not a 64-hex block hash/,
+    );
+  });
+
+  it("throws on indexer HTTP failure", async () => {
+    const fetchMock = vi.fn(
+      async () => new Response("Bad Gateway", { status: 502, statusText: "Bad Gateway" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { getBitcoinIndexer } = await import("../src/modules/btc/indexer.js");
+    await expect(getBitcoinIndexer().getBlockTip()).rejects.toThrow(
+      /returned 502/,
+    );
+  });
+});
+
 describe("indexer URL resolution", () => {
   beforeEach(() => {
     resetBitcoinIndexer();

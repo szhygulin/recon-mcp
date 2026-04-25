@@ -1033,6 +1033,8 @@ export const getBitcoinBalancesInput = z.object({
 
 export const getBitcoinFeeEstimatesInput = z.object({});
 
+export const getBitcoinBlockTipInput = z.object({});
+
 export const prepareBitcoinNativeSendInput = z.object({
   wallet: bitcoinAddressSchema.describe(
     "Paired Bitcoin source address. Must already be in `pairings.bitcoin` " +
@@ -1099,6 +1101,7 @@ export const getBitcoinTxHistoryInput = z.object({
 export type GetBitcoinBalanceArgs = z.infer<typeof getBitcoinBalanceInput>;
 export type GetBitcoinBalancesArgs = z.infer<typeof getBitcoinBalancesInput>;
 export type GetBitcoinFeeEstimatesArgs = z.infer<typeof getBitcoinFeeEstimatesInput>;
+export type GetBitcoinBlockTipArgs = z.infer<typeof getBitcoinBlockTipInput>;
 export const signBtcMessageInput = z.object({
   wallet: bitcoinAddressSchema.describe(
     "Paired Bitcoin source address. Must already be in `pairings.bitcoin` " +

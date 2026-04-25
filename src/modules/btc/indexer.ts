@@ -182,6 +182,38 @@ export interface BitcoinIndexer {
     blockHeight?: number;
     confirmations?: number;
   } | null>;
+  /**
+   * Fetch the current Bitcoin chain tip — height, block hash, header
+   * timestamp, etc. Two HTTP calls under the hood: `/blocks/tip/hash`
+   * for the latest hash, then `/block/<hash>` for the full header
+   * details. Both endpoints are aggressively cached at the indexer
+   * (mempool.space + standard Esplora share the same shape).
+   */
+  getBlockTip(): Promise<BitcoinBlockTip>;
+}
+
+/**
+ * Latest mainnet block as the indexer reports it. Carries the height,
+ * the 64-hex block hash, the header timestamp (unix seconds), and a
+ * server-computed `ageSeconds` for UX convenience (the agent doesn't
+ * need to grab system time and subtract). `medianTimePast` and
+ * `difficulty` are surfaced when the indexer exposes them — both are
+ * standard Esplora fields but we tolerate their absence for self-
+ * hosted forks that strip them.
+ */
+export interface BitcoinBlockTip {
+  /** Block height — e.g. 946598. */
+  height: number;
+  /** 64-hex block hash. */
+  hash: string;
+  /** Block header timestamp, unix seconds. */
+  timestamp: number;
+  /** Server-computed `now - timestamp` at fetch time, in seconds. */
+  ageSeconds: number;
+  /** BIP-113 median time past, when the indexer exposes it. */
+  medianTimePast?: number;
+  /** Block difficulty, when the indexer exposes it. */
+  difficulty?: number;
 }
 
 /**
@@ -404,6 +436,56 @@ class EsploraIndexer implements BitcoinIndexer {
     return {
       confirmed: true,
       ...(status.block_height !== undefined ? { blockHeight: status.block_height } : {}),
+    };
+  }
+
+  async getBlockTip(): Promise<BitcoinBlockTip> {
+    // Esplora exposes the chain tip via two endpoints:
+    //   GET /blocks/tip/hash  → plain-text 64-hex hash
+    //   GET /block/<hash>     → JSON with height, timestamp, mediantime, difficulty
+    // Both are aggressively cached at the indexer (mempool.space caches
+    // for ~10s; self-hosted Esplora similar), so the two-call shape is
+    // cheap. Esplora-pure deployments without `/blocks/tip` (the
+    // alternate single-call shape mempool.space exposes) still work via
+    // this path.
+    const hashRes = await fetchWithTimeout(`${this.baseUrl}/blocks/tip/hash`, {
+      method: "GET",
+    });
+    if (!hashRes.ok) {
+      throw new Error(
+        `Bitcoin indexer /blocks/tip/hash returned ${hashRes.status} ${hashRes.statusText}`,
+      );
+    }
+    const hash = (await hashRes.text()).trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(hash)) {
+      throw new Error(
+        `Bitcoin indexer /blocks/tip/hash returned an unexpected response (not a 64-hex block hash): "${hash.slice(0, 80)}"`,
+      );
+    }
+    interface EsploraBlock {
+      id?: string;
+      height?: number;
+      timestamp?: number;
+      // BIP-113 median time past — Esplora exposes as `mediantime`.
+      mediantime?: number;
+      difficulty?: number;
+    }
+    const block = await this.getJson<EsploraBlock>(`/block/${hash}`);
+    if (typeof block.height !== "number" || typeof block.timestamp !== "number") {
+      throw new Error(
+        `Bitcoin indexer /block/${hash} response missing required fields ` +
+          `(height: ${block.height}, timestamp: ${block.timestamp}). The indexer ` +
+          `may not be Esplora-compatible — check the URL.`,
+      );
+    }
+    const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000) - block.timestamp);
+    return {
+      height: block.height,
+      hash,
+      timestamp: block.timestamp,
+      ageSeconds,
+      ...(typeof block.mediantime === "number" ? { medianTimePast: block.mediantime } : {}),
+      ...(typeof block.difficulty === "number" ? { difficulty: block.difficulty } : {}),
     };
   }
 }
