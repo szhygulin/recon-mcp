@@ -1,12 +1,38 @@
-import { parseUnits, formatUnits, encodeFunctionData } from "viem";
+import { parseUnits, formatUnits, encodeFunctionData, getAddress } from "viem";
 import { fetchQuote, fetchStatus } from "./lifi.js";
 import { fetchOneInchQuote } from "./oneinch.js";
 import type { GetSwapQuoteArgs, PrepareSwapArgs } from "./schemas.js";
 import { getClient } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { readUserConfig, resolveOneInchApiKey } from "../../config/user-config.js";
-import { SOLANA_ADDRESS } from "../../shared/address-patterns.js";
+import { SOLANA_ADDRESS, TRON_ADDRESS } from "../../shared/address-patterns.js";
+import {
+  tryDecodeLifiBridgeData,
+  type DecodedLifiBridgeData,
+} from "../../signing/decode-calldata.js";
+import { NON_EVM_RECEIVER_SENTINEL } from "../../abis/lifi-diamond.js";
 import type { SupportedChain, UnsignedTx } from "../../types/index.js";
+
+/**
+ * LiFi-internal numeric chain IDs for non-EVM destinations. Source: the
+ * chain IDs returned by `https://li.quest/v1/chains` (also surfaced as
+ * the `ChainId` enum in `@lifi/types`). Hardcoding here avoids a
+ * cross-module import for what is, conceptually, a small lookup table
+ * specific to bridge-intent verification.
+ *
+ * Same constants are duplicated in `decode-calldata.describeBridgeChainId` —
+ * those tables stay in lockstep manually; the test
+ * `swap-evm-to-solana.test.ts` pins both via the LiFi public chain ID.
+ */
+const LIFI_CHAIN_ID: Record<SupportedChain | "solana" | "tron", number> = {
+  ethereum: 1,
+  arbitrum: 42161,
+  polygon: 137,
+  base: 8453,
+  optimism: 10,
+  solana: 1151111081099710,
+  tron: 728126428,
+};
 
 /**
  * Validate destination addressing for cross-chain-type bridges. The schema
@@ -29,22 +55,32 @@ function assertCrossChainAddressing(
   args: GetSwapQuoteArgs | PrepareSwapArgs,
 ): void {
   const toIsSolana = args.toChain === "solana";
-  if (toIsSolana) {
+  const toIsTron = args.toChain === "tron";
+  const toIsNonEvm = toIsSolana || toIsTron;
+  if (toIsNonEvm) {
     if (!args.toAddress) {
       throw new Error(
-        `toAddress is required when toChain === "solana" — the source EVM wallet ` +
-          `is not a valid Solana recipient. Pass an explicit base58 destination address.`,
+        `toAddress is required when toChain === "${args.toChain}" — the source EVM wallet ` +
+          `is not a valid recipient on a non-EVM chain. Pass an explicit destination ` +
+          `address (Solana base58 for "solana", T-prefixed base58 for "tron").`,
       );
     }
-    if (!SOLANA_ADDRESS.test(args.toAddress)) {
+    if (toIsSolana && !SOLANA_ADDRESS.test(args.toAddress)) {
       throw new Error(
         `toAddress "${args.toAddress}" is not a valid Solana base58 address ` +
           `(expected 43-44 chars). Refusing to prepare a bridge to an unparseable destination.`,
       );
     }
+    if (toIsTron && !TRON_ADDRESS.test(args.toAddress)) {
+      throw new Error(
+        `toAddress "${args.toAddress}" is not a valid TRON base58 address ` +
+          `(expected T-prefixed, 34 chars total). Refusing to prepare a bridge to an ` +
+          `unparseable destination.`,
+      );
+    }
     if (args.amountSide === "to") {
       throw new Error(
-        `Exact-out (amountSide: "to") is not supported for cross-chain bridges to Solana. ` +
+        `Exact-out (amountSide: "to") is not supported for cross-chain bridges to ${args.toChain}. ` +
           `LiFi's quote API has no reliable exact-out for cross-chain routes; the bridge ` +
           `protocol's delivery side adds fee drift the quote can't account for. Use ` +
           `amountSide: "from" (default) and inspect the quote's toAmountMin.`,
@@ -59,6 +95,91 @@ function assertCrossChainAddressing(
           `or omit toAddress to default to the source wallet.`,
       );
     }
+  }
+}
+
+/**
+ * Cross-check the LiFi quote's encoded bridge intent against what the user
+ * asked for. Catches a compromised MCP that swaps `toChain` or `toAddress`
+ * between the prepare call and the calldata it returns — even though the
+ * prepare receipt would still print the user-requested fields, the bytes
+ * that go to Ledger would carry the attacker's destination.
+ *
+ * Decode strategy is the same as `decode-calldata.tryDecodeLifiBridgeData`:
+ * positional decode of the universal `BridgeData` tuple, ignoring the
+ * facet-specific second arg. Returns silently when the calldata is NOT
+ * bridge-shaped (e.g. intra-EVM swap-facet calls — those don't carry a
+ * BridgeData tuple, and the existing source-side guards already cover them).
+ *
+ * Asserts:
+ *   1. `BridgeData.destinationChainId` matches LiFi's chain ID for the
+ *      requested `args.toChain`. Catches a `toChain` swap.
+ *   2. `BridgeData.receiver`:
+ *      - For EVM destinations: equals `args.toAddress` (or, if omitted,
+ *        the source wallet — LiFi default behavior).
+ *      - For non-EVM destinations: is the LiFi non-EVM sentinel. The
+ *        actual non-EVM address lives in the bridge-specific second arg
+ *        (Wormhole-style `bytes32`, etc.) which we don't decode; the
+ *        user's prepare receipt + Etherscan + the destinationChainId
+ *        invariant above are the layered defenses there.
+ */
+function verifyLifiBridgeIntent(
+  args: PrepareSwapArgs,
+  data: `0x${string}`,
+): void {
+  const decoded = tryDecodeLifiBridgeData(data);
+  const isCrossChain = args.fromChain !== args.toChain;
+  if (!decoded) {
+    // No BridgeData → swap-facet calldata. Legitimate for same-chain
+    // swaps; suspicious for cross-chain asks (a same-chain swap disguised
+    // as a bridge would execute on-chain as a swap, leaving the user's
+    // funds in the source wallet as the "to" token rather than delivering
+    // them to the destination chain — funds aren't stealable but the
+    // user's intent is undermined).
+    if (isCrossChain) {
+      throw new Error(
+        `LiFi quote returned swap-facet calldata for a cross-chain request ` +
+          `(${args.fromChain} → ${args.toChain}) — expected bridge-facet ` +
+          `calldata carrying a BridgeData tuple. Refusing to return calldata; ` +
+          `re-run get_swap_quote.`,
+      );
+    }
+    return;
+  }
+  const expectedChainId = BigInt(LIFI_CHAIN_ID[args.toChain as keyof typeof LIFI_CHAIN_ID]);
+  if (decoded.destinationChainId !== expectedChainId) {
+    throw new Error(
+      `LiFi bridge calldata destinationChainId mismatch: encoded ${decoded.destinationChainId.toString()} ` +
+        `but user requested toChain="${args.toChain}" (= ${expectedChainId.toString()}). ` +
+        `Refusing to return calldata — this would route funds to the wrong chain. Re-run get_swap_quote.`,
+    );
+  }
+
+  const toIsNonEvm = args.toChain === "solana" || args.toChain === "tron";
+  if (toIsNonEvm) {
+    if (decoded.receiver.toLowerCase() !== NON_EVM_RECEIVER_SENTINEL) {
+      throw new Error(
+        `LiFi bridge calldata receiver mismatch for non-EVM destination ${args.toChain}: ` +
+          `expected the LiFi non-EVM sentinel (${NON_EVM_RECEIVER_SENTINEL}), got ${decoded.receiver.toLowerCase()}. ` +
+          `Refusing to return calldata. The actual ${args.toChain} destination is encoded in ` +
+          `the bridge-specific data; the sentinel is how LiFi marks this is a non-EVM route.`,
+      );
+    }
+    return;
+  }
+
+  // EVM destination — receiver must match either explicit toAddress or
+  // (when toAddress omitted) the source wallet.
+  const expectedReceiver = (args.toAddress ?? args.wallet) as `0x${string}`;
+  if (
+    getAddress(decoded.receiver) !== getAddress(expectedReceiver)
+  ) {
+    throw new Error(
+      `LiFi bridge calldata receiver mismatch: encoded ${getAddress(decoded.receiver)} but ` +
+        `user requested ${getAddress(expectedReceiver)}. Refusing to return calldata — ` +
+        `this would route funds to a different recipient than the prepare receipt shows. ` +
+        `Re-run get_swap_quote.`,
+    );
   }
 }
 
@@ -348,12 +469,13 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
   assertCrossChainAddressing(args);
   const chain = args.fromChain as SupportedChain;
   const toIsSolana = args.toChain === "solana";
+  const toIsTron = args.toChain === "tron";
+  const toIsNonEvm = toIsSolana || toIsTron;
   const amountSide = args.amountSide ?? "from";
   const isExactOut = amountSide === "to";
 
-  // Same exact-out branch story as getSwapQuote — exact-out is rejected
-  // for Solana destinations, so the cast to SupportedChain in that branch
-  // is safe.
+  // Exact-out is rejected for non-EVM destinations in
+  // assertCrossChainAddressing, so the cast in this branch is safe.
   const sideDecimals = isExactOut
     ? await resolveDecimals(
         args.toChain as SupportedChain,
@@ -365,7 +487,9 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
 
   const lifiReq = {
     fromChain: chain,
-    toChain: toIsSolana ? "solana" : (args.toChain as SupportedChain),
+    toChain: toIsNonEvm
+      ? (args.toChain as "solana" | "tron")
+      : (args.toChain as SupportedChain),
     fromToken: args.fromToken as `0x${string}` | "native",
     toToken: args.toToken as `0x${string}` | "native",
     fromAddress: args.wallet as `0x${string}`,
@@ -380,19 +504,30 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
     throw new Error("LiFi did not return a transactionRequest for this quote.");
   }
 
+  // Bridge-intent cross-check. For routes whose calldata embeds a LiFi
+  // BridgeData tuple (= every cross-chain bridge facet), assert the encoded
+  // destinationChainId + receiver match what the user requested. Closes the
+  // attack vector where a compromised MCP returns calldata that bridges to
+  // a different chain or address than the prepare receipt advertises.
+  // Intra-EVM swap facets don't carry BridgeData and the helper returns null
+  // there — no false positives on the existing same-chain swap path.
+  verifyLifiBridgeIntent(args, txRequest.data as `0x${string}`);
+
   // Cross-check LiFi's reported token decimals against on-chain reads. A mismatch
   // would mean either LiFi has stale metadata or the route targets a token different
   // from what we asked for — in either case, the formatted expectedOut/minOut shown
   // to the user would be wrong, so refuse. Native assets are skipped (no contract).
   //
-  // Solana destination (cross-chain bridge): we cannot read SPL decimals via EVM
-  // RPC. The user's signature only authorizes the EVM-side action; the bridge
-  // protocol delivers SPL on Solana with whatever decimals LiFi reports. The
-  // destination cross-check is dropped here — the source-side check (which is
-  // what the user's signed bytes pull) still fires.
+  // Non-EVM destination (Solana / TRON cross-chain bridge): we cannot read SPL
+  // or TRC-20 decimals via EVM RPC. The user's signature only authorizes the
+  // EVM-side action; the bridge protocol delivers tokens on the destination
+  // chain with whatever decimals LiFi reports. The destination cross-check is
+  // dropped here — the source-side check (what the user's signed bytes pull)
+  // still fires, and `verifyLifiBridgeIntent` below cross-checks the encoded
+  // destination chain ID + receiver against the user's request.
   const fromToken = args.fromToken as `0x${string}` | "native";
   const fromDecimalsOnchain = await readOnchainDecimals(chain, fromToken);
-  const toDecimalsOnchain = toIsSolana
+  const toDecimalsOnchain = toIsNonEvm
     ? undefined
     : await readOnchainDecimals(
         args.toChain as SupportedChain,

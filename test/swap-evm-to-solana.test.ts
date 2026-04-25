@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { parseUnits } from "viem";
+import { encodeAbiParameters, parseUnits } from "viem";
+import {
+  LIFI_BRIDGE_DATA_TUPLE,
+  NON_EVM_RECEIVER_SENTINEL,
+} from "../src/abis/lifi-diamond.js";
 
 /**
  * EVM → Solana bridge via the existing `prepare_swap` / `get_swap_quote`
@@ -50,6 +54,33 @@ vi.mock("../src/config/user-config.js", () => ({
   resolveOneInchApiKey: () => undefined,
 }));
 
+/**
+ * Build proper bridge-shaped calldata so the new `verifyLifiBridgeIntent`
+ * cross-check has a BridgeData tuple to inspect. Tests that don't care
+ * about specific fields can override `bridgeData` with the defaults shown.
+ */
+function makeBridgeCalldata(): `0x${string}` {
+  const argsHex = encodeAbiParameters(
+    [LIFI_BRIDGE_DATA_TUPLE, { type: "bytes", name: "_facetData" }],
+    [
+      {
+        transactionId: ("0x" + "11".repeat(32)) as `0x${string}`,
+        bridge: "mayan",
+        integrator: "vaultpilot-mcp",
+        referrer: "0x0000000000000000000000000000000000000000",
+        sendingAssetId: ETH_USDC_MAINNET.toLowerCase() as `0x${string}`,
+        receiver: NON_EVM_RECEIVER_SENTINEL as `0x${string}`,
+        minAmount: 9_900_000n,
+        destinationChainId: 1151111081099710n, // Solana
+        hasSourceSwaps: false,
+        hasDestinationCall: false,
+      },
+      "0xc0de",
+    ],
+  );
+  return ("0xdeadbeef" + argsHex.slice(2)) as `0x${string}`;
+}
+
 function makeEvmToSolQuote(overrides?: { fromAmount?: string; toAmount?: string }) {
   return {
     action: {
@@ -77,7 +108,7 @@ function makeEvmToSolQuote(overrides?: { fromAmount?: string; toAmount?: string 
     },
     transactionRequest: {
       to: LIFI_DIAMOND,
-      data: "0xdeadbeef",
+      data: makeBridgeCalldata(),
       value: "0",
       gasLimit: "500000",
     },
@@ -166,7 +197,7 @@ describe("getSwapQuote — EVM → Solana", () => {
         amount: "10",
         amountSide: "to",
       }),
-    ).rejects.toThrow(/Exact-out.*not supported for cross-chain bridges to Solana/);
+    ).rejects.toThrow(/Exact-out.*not supported for cross-chain bridges to solana/);
   });
 });
 
@@ -198,7 +229,7 @@ describe("prepareSwap — EVM → Solana", () => {
 
     expect(tx.chain).toBe("ethereum"); // source chain — that's what the user signs
     expect(tx.to).toBe(LIFI_DIAMOND);
-    expect(tx.data).toBe("0xdeadbeef");
+    expect(tx.data.startsWith("0xdeadbeef")).toBe(true);
     expect(tx.description).toContain("Bridge");
     expect(tx.description).toContain("solana");
 

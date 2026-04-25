@@ -156,6 +156,8 @@ function describeBridgeChainId(id: bigint): string {
       return "gnosis (100)";
     case 1151111081099710n:
       return "solana (1151111081099710)";
+    case 728126428n:
+      return "tron (728126428)";
     case 20000000000001n:
       return "bitcoin (20000000000001)";
     case 9270000000000000n:
@@ -170,7 +172,7 @@ function describeBridgeChainId(id: bigint): string {
  * mirror of `LIFI_BRIDGE_DATA_TUPLE`. Returned only when decode succeeds —
  * caller falls back to `source: "none"` on parse failure.
  */
-interface DecodedLifiBridgeData {
+export interface DecodedLifiBridgeData {
   transactionId: `0x${string}`;
   bridge: string;
   integrator: string;
@@ -198,7 +200,7 @@ interface DecodedLifiBridgeData {
  * matching parameter at the start of the buffer and ignores trailing bytes,
  * so we don't need to know the bridge-specific second argument's shape.
  */
-function tryDecodeLifiBridgeData(
+export function tryDecodeLifiBridgeData(
   data: `0x${string}`,
 ): DecodedLifiBridgeData | null {
   // Selector + at least one offset word (= bridge data offset). We don't

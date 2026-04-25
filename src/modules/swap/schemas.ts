@@ -1,17 +1,20 @@
 import { z } from "zod";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
-import { EVM_ADDRESS, SOLANA_ADDRESS } from "../../shared/address-patterns.js";
+import { EVM_ADDRESS, SOLANA_ADDRESS, TRON_ADDRESS } from "../../shared/address-patterns.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
 /**
- * Destination-chain enum: EVM chains plus Solana. Used for cross-chain
- * bridging where the user signs an EVM tx and the bridge protocol delivers
- * SPL tokens on Solana. Source chain stays EVM-only (this tool does not
- * sign Solana txs — that's `prepare_solana_lifi_swap`).
+ * Destination-chain enum: EVM chains plus Solana and TRON. Used for cross-
+ * chain bridging where the user signs an EVM tx and the bridge protocol
+ * delivers tokens on the destination chain. Source chain stays EVM-only
+ * (Solana-source goes through `prepare_solana_lifi_swap`; TRON-source LiFi
+ * is not yet wired — tracked as a follow-up that needs raw_data
+ * reconstruction).
  */
 const toChainEnum = z.enum([
   ...(SUPPORTED_CHAINS as unknown as [string, ...string[]]),
   "solana",
+  "tron",
 ]);
 const walletSchema = z.string().regex(EVM_ADDRESS);
 const tokenSchema = z.union([
@@ -20,14 +23,18 @@ const tokenSchema = z.union([
 ]);
 /**
  * Destination token: EVM hex when `toChain` is EVM, base58 SPL mint when
- * `toChain === "solana"`. Format-validated per-chain in the resolver
+ * `toChain === "solana"`, base58 TRC-20 contract address (T-prefixed)
+ * when `toChain === "tron"`. Format-validated per-chain in the resolver
  * (`assertCrossChainAddressing`) since zod can't cross-reference fields
- * within `union` cleanly.
+ * within `union` cleanly. `TRON_ADDRESS` is a strict subset of
+ * `SOLANA_ADDRESS` (TRON is exactly 34 chars + T prefix; Solana is 43-44
+ * chars), so the union-with-regex works cleanly.
  */
 const toTokenSchema = z.union([
   z.literal("native"),
   z.string().regex(EVM_ADDRESS),
   z.string().regex(SOLANA_ADDRESS),
+  z.string().regex(TRON_ADDRESS),
 ]);
 
 const baseSwapSchema = z.object({
@@ -42,10 +49,11 @@ const baseSwapSchema = z.object({
     .optional()
     .describe(
       "Destination wallet. OMIT for same-chain-type swaps (defaults to the source " +
-        "wallet — LiFi behavior). REQUIRED when `toChain === \"solana\"` because " +
-        "the source EVM hex wallet isn't a valid Solana recipient. Format must " +
-        "match the destination chain (Solana base58 for `toChain: \"solana\"`, " +
-        "EVM hex for EVM destinations)."
+        "wallet — LiFi behavior). REQUIRED when `toChain` is `\"solana\"` or " +
+        "`\"tron\"` because the source EVM hex wallet isn't a valid recipient on " +
+        "those chains. Format must match the destination chain (Solana base58 " +
+        "for `\"solana\"`, TRON base58 with T-prefix for `\"tron\"`, EVM hex " +
+        "otherwise)."
     ),
   amount: z
     .string()

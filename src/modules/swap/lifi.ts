@@ -22,6 +22,14 @@ export function initLifi(): void {
  */
 export const LIFI_SOLANA_CHAIN_ID = 1151111081099710 as const;
 
+/**
+ * LiFi numeric chain ID for TRON. Same value as TRON's standard chain ID
+ * (728126428), since TRON uses an EVM-compatible chain ID — but LiFi's
+ * routing graph still labels it as a TVM chain (chainType: "TVM"). Probe:
+ * GET https://li.quest/v1/chains?chainTypes=TVM returns id=728126428.
+ */
+export const LIFI_TRON_CHAIN_ID = 728126428 as const;
+
 /** Map our chain name to LiFi's numeric chain ID. */
 function toLifiChain(chain: SupportedChain): number {
   return CHAIN_IDS[chain];
@@ -30,26 +38,28 @@ function toLifiChain(chain: SupportedChain): number {
 interface LifiQuoteRequestBase {
   fromChain: SupportedChain;
   /**
-   * Destination chain. Either a known EVM `SupportedChain` (existing
-   * intra-EVM and EVM-EVM-cross flows) or `"solana"` (cross-chain bridge
-   * landing on Solana). LiFi's API itself accepts any numeric chain ID;
-   * we constrain to chains we've validated end-to-end in this server.
+   * Destination chain. EVM `SupportedChain` (intra-EVM + EVM-cross), or
+   * `"solana"` / `"tron"` (cross-chain bridge to a non-EVM chain). LiFi's
+   * API itself accepts any numeric chain ID; we constrain to chains we've
+   * validated end-to-end in this server.
    */
-  toChain: SupportedChain | "solana";
+  toChain: SupportedChain | "solana" | "tron";
   /** Use "native" or "0x0000000000000000000000000000000000000000" for native token. */
   fromToken: `0x${string}` | "native";
   /**
    * Destination token. EVM hex when `toChain` is EVM; SPL mint (base58)
-   * when `toChain === "solana"`. `"native"` resolves to the chain's
-   * native sentinel (`0x0…0` for EVM, wSOL mint for Solana — handled
-   * inside `fetchQuote`).
+   * when `toChain === "solana"`; TRC-20 contract address (T-prefixed
+   * base58) when `toChain === "tron"`. `"native"` resolves to the chain's
+   * native sentinel (`0x0…0` for EVM, wSOL mint for Solana, TRX
+   * contract address for TRON — handled inside `fetchQuote`).
    */
   toToken: string | "native";
   fromAddress: `0x${string}`;
   /**
    * Destination wallet. Defaults to `fromAddress` for intra-EVM swaps
-   * (LiFi behavior). REQUIRED when `toChain === "solana"` because the
-   * source EVM hex wallet isn't a valid Solana recipient.
+   * (LiFi behavior). REQUIRED when `toChain` is `"solana"` or `"tron"`
+   * because the source EVM hex wallet isn't a valid recipient on those
+   * chains.
    */
   toAddress?: string;
   /** Optional slippage override — LiFi default is 0.5% (0.005). */
@@ -70,22 +80,32 @@ export type LifiQuoteRequest =
 
 const NATIVE = "0x0000000000000000000000000000000000000000";
 
+// LiFi's canonical native-token handles per non-EVM chain. Source: the
+// `nativeToken.address` field in `https://li.quest/v1/chains` for each chain.
+const SOLANA_WSOL_NATIVE = "So11111111111111111111111111111111111111112";
+const TRON_NATIVE = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb";
+
 export async function fetchQuote(req: LifiQuoteRequest) {
   initLifi();
   const fromChain = toLifiChain(req.fromChain);
   const toIsSolana = req.toChain === "solana";
+  const toIsTron = req.toChain === "tron";
   const toChain = toIsSolana
     ? LIFI_SOLANA_CHAIN_ID
-    : toLifiChain(req.toChain as SupportedChain);
+    : toIsTron
+      ? LIFI_TRON_CHAIN_ID
+      : toLifiChain(req.toChain as SupportedChain);
   const fromToken = req.fromToken === "native" ? NATIVE : req.fromToken;
   // Destination native sentinel depends on the chain family — wSOL for
-  // Solana, 0x0…0 for EVM. LiFi's routing graph treats both as the
-  // canonical native handle.
+  // Solana, TRX contract for TRON, 0x0…0 for EVM. LiFi's routing graph
+  // treats each of these as the canonical native handle for that chain.
   const toToken =
     req.toToken === "native"
       ? toIsSolana
-        ? "So11111111111111111111111111111111111111112"
-        : NATIVE
+        ? SOLANA_WSOL_NATIVE
+        : toIsTron
+          ? TRON_NATIVE
+          : NATIVE
       : req.toToken;
 
   if (req.toAmount !== undefined) {
