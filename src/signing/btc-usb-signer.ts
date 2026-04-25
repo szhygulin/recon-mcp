@@ -1,4 +1,6 @@
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import {
   openLedger,
   getAppAndVersion,
@@ -7,6 +9,12 @@ import {
 } from "./btc-usb-loader.js";
 import { getConfigPath, patchUserConfig, readUserConfig } from "../config/user-config.js";
 import type { PairedBitcoinEntry } from "../types/index.js";
+
+const requireCjs = createRequire(import.meta.url);
+const bitcoinjs = requireCjs("bitcoinjs-lib") as {
+  address: { toOutputScript(addr: string, network?: unknown): Buffer };
+  networks: { bitcoin: unknown };
+};
 
 export type { PairedBitcoinEntry };
 
@@ -207,6 +215,111 @@ export async function deriveBtcLedgerAccount(
         });
       }
       return { appVersion: appVer.version, entries };
+    } finally {
+      await (transport as BtcLedgerTransport).close().catch(() => {});
+    }
+  });
+}
+
+/**
+ * Build a Ledger derivation-path number array from a string path like
+ * `84'/0'/0'/0/0`. Hardened segments (trailing `'`) get the
+ * 0x80000000 high bit; non-hardened segments are passed through. Used
+ * to populate `signPsbtBuffer.knownAddressDerivations`, which the
+ * device's owner-input + change-output detection relies on.
+ */
+function pathStringToNumbers(path: string): number[] {
+  return path.split("/").map((seg) => {
+    const hardened = seg.endsWith("'");
+    const n = Number(hardened ? seg.slice(0, -1) : seg);
+    if (!Number.isInteger(n) || n < 0) {
+      throw new Error(`Invalid Bitcoin path segment "${seg}" in "${path}".`);
+    }
+    return hardened ? (n | 0x80000000) >>> 0 : n;
+  });
+}
+
+/**
+ * Sign a base64-encoded PSBT v0 on the Ledger BTC app. The device walks
+ * every output (address + amount + the "change" label for known
+ * internal-chain outputs), shows the total fee, and asks the user to
+ * confirm. Returns the network-broadcastable raw tx hex.
+ *
+ * `expectedFrom` is the source address the prepare-time receipt
+ * advertised. We re-derive the address from `path` against the live
+ * device and refuse to sign if it doesn't match — same proof-of-identity
+ * pattern as `signSolanaTxOnLedger` / `signTronTxOnLedger`. Catches a
+ * stale or planted pairing entry that points at an address the device
+ * no longer derives the same way.
+ */
+export async function signBtcPsbtOnLedger(args: {
+  psbtBase64: string;
+  expectedFrom: string;
+  path: string;
+  accountPath: string;
+  addressFormat: "legacy" | "p2sh" | "bech32" | "bech32m";
+}): Promise<{ rawTxHex: string }> {
+  return withBtcUsbLock(async () => {
+    const { app, transport, rawTransport } = await openLedger();
+    try {
+      const appVer = await getAppAndVersion(rawTransport);
+      if (
+        appVer.name !== "Bitcoin" &&
+        appVer.name !== "Bitcoin Test" &&
+        appVer.name !== "BTC"
+      ) {
+        throw new Error(
+          `Ledger reports the open app as "${appVer.name}" v${appVer.version}, but Bitcoin is required. ` +
+            `Open the Bitcoin app on your device and retry.`,
+        );
+      }
+      // Re-derive + validate the source address. If the device produces
+      // a different address for the same path the pairing cache
+      // registered, refuse to sign — something is wrong (different seed,
+      // different app, planted pairing). Don't blind-sign through it.
+      const derived = await app.getWalletPublicKey(args.path, {
+        format: args.addressFormat,
+      });
+      if (derived.bitcoinAddress !== args.expectedFrom) {
+        throw new Error(
+          `Ledger derived ${derived.bitcoinAddress} at ${args.path}, but the prepared tx ` +
+            `lists ${args.expectedFrom} as the source. The device may have a different seed ` +
+            `loaded, the Bitcoin app version may have changed the derivation, or the cached ` +
+            `pairing is stale. Re-pair via \`pair_ledger_btc\` and retry.`,
+        );
+      }
+
+      // Build the knownAddressDerivations map. Phase 1 sends keep change
+      // on the source address, so a single entry covers both inputs and
+      // any same-address output. The script the wallet owns is the
+      // source address's scriptPubKey; the SDK keys the map by sha256
+      // of the scriptPubKey, hex-encoded.
+      const scriptPubKey = bitcoinjs.address.toOutputScript(
+        args.expectedFrom,
+        bitcoinjs.networks.bitcoin,
+      );
+      const scriptHash = createHash("sha256").update(scriptPubKey).digest("hex");
+      const known = new Map<string, { pubkey: Buffer; path: number[] }>();
+      known.set(scriptHash, {
+        pubkey: Buffer.from(derived.publicKey, "hex"),
+        path: pathStringToNumbers(args.path),
+      });
+
+      const psbtBuffer = Buffer.from(args.psbtBase64, "base64");
+      const result = await app.signPsbtBuffer(psbtBuffer, {
+        finalizePsbt: true,
+        accountPath: args.accountPath,
+        addressFormat: args.addressFormat,
+        knownAddressDerivations: known,
+      });
+      if (!result.tx) {
+        throw new Error(
+          `Ledger BTC app returned no finalized tx hex from signPsbtBuffer. ` +
+            `The PSBT may have been signed but not finalized — check the device for an ` +
+            `unexpected approval state and retry.`,
+        );
+      }
+      return { rawTxHex: result.tx };
     } finally {
       await (transport as BtcLedgerTransport).close().catch(() => {});
     }

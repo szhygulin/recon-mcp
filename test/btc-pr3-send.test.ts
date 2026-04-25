@@ -1,0 +1,479 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as pjoin } from "node:path";
+import { setConfigDirForTesting } from "../src/config/user-config.js";
+
+/**
+ * BTC PR3 — `prepare_btc_send` (PSBT build) + `send_transaction` BTC
+ * branch + `get_transaction_status` BTC branch.
+ *
+ * The Ledger BTC SDK is mocked via `btc-usb-loader.js` (same shim the
+ * pairing tests use). The mempool.space indexer is mocked via
+ * `getBitcoinIndexer`, replacing each method we touch with a fixture.
+ * Real PSBTs are built via bitcoinjs-lib (not mocked) so the test
+ * exercises the actual coin-selection + addInput/addOutput path.
+ */
+
+// A real-looking native segwit address with a deterministic pubkey.
+// (Using bitcoinjs-lib's network constants + a fake leaf pubkey is enough
+// — we don't broadcast or sign for real.)
+const SEGWIT_ADDR = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+const SEGWIT_PUBKEY = "03a34b99f22c790c4e36b2b3c2c35a36db06226e41c692fc82b8b56ac1c540c5bd";
+const TAPROOT_ADDR =
+  "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4z63cgcfr0xj0qg";
+// A well-formed P2WPKH derived from a deterministic 20-byte pubkey hash
+// (so coin-selection vbyte math matches our roughVbytes estimator —
+// P2WSH outputs are 12 vbytes larger and trip the "max" test's
+// exact-fit math).
+const RECIPIENT = "bc1q539etcvmjsvm3wtltwdkkj6tfd95kj6ttxc3zu";
+const FAKE_TXID =
+  "1111111111111111111111111111111111111111111111111111111111111111";
+const FAKE_RAW_TX_HEX = "020000000001abcd";
+const FAKE_BROADCAST_TXID =
+  "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+
+const getWalletPublicKeyMock = vi.fn();
+const signPsbtBufferMock = vi.fn();
+const transportCloseMock = vi.fn(async () => {});
+const getAppAndVersionMock = vi.fn();
+
+vi.mock("../src/signing/btc-usb-loader.js", () => ({
+  openLedger: async () => ({
+    app: {
+      getWalletPublicKey: getWalletPublicKeyMock,
+      signPsbtBuffer: signPsbtBufferMock,
+    },
+    transport: { close: transportCloseMock },
+    rawTransport: {},
+  }),
+  getAppAndVersion: (rt: unknown) => getAppAndVersionMock(rt),
+}));
+
+const getUtxosMock = vi.fn();
+const getFeeEstimatesMock = vi.fn();
+const broadcastTxMock = vi.fn();
+const getTxStatusMock = vi.fn();
+
+vi.mock("../src/modules/btc/indexer.ts", () => ({
+  getBitcoinIndexer: () => ({
+    getUtxos: getUtxosMock,
+    getFeeEstimates: getFeeEstimatesMock,
+    broadcastTx: broadcastTxMock,
+    getTxStatus: getTxStatusMock,
+  }),
+  resetBitcoinIndexer: () => {},
+}));
+
+let tmpHome: string;
+
+beforeEach(async () => {
+  tmpHome = mkdtempSync(pjoin(tmpdir(), "vaultpilot-btc-pr3-"));
+  setConfigDirForTesting(tmpHome);
+  getWalletPublicKeyMock.mockReset();
+  signPsbtBufferMock.mockReset();
+  transportCloseMock.mockClear();
+  getAppAndVersionMock.mockReset();
+  getUtxosMock.mockReset();
+  getFeeEstimatesMock.mockReset();
+  broadcastTxMock.mockReset();
+  getTxStatusMock.mockReset();
+  const { clearPairedBtcAddresses, setPairedBtcAddress } = await import(
+    "../src/signing/btc-usb-signer.js"
+  );
+  const { __clearBitcoinTxStore } = await import(
+    "../src/signing/btc-tx-store.js"
+  );
+  clearPairedBtcAddresses();
+  __clearBitcoinTxStore();
+  // Pre-pair the segwit address so prepare_btc_send finds it.
+  setPairedBtcAddress({
+    address: SEGWIT_ADDR,
+    publicKey: SEGWIT_PUBKEY,
+    path: "84'/0'/0'/0/0",
+    appVersion: "2.2.0",
+    addressType: "segwit",
+    accountIndex: 0,
+  });
+});
+
+afterEach(() => {
+  setConfigDirForTesting(null);
+  rmSync(tmpHome, { recursive: true, force: true });
+});
+
+describe("buildBitcoinNativeSend", () => {
+  it("builds a PSBT, registers a handle, and projects every output", async () => {
+    getUtxosMock.mockResolvedValueOnce([
+      { txid: FAKE_TXID, vout: 0, value: 100_000, unconfirmed: false },
+    ]);
+    getFeeEstimatesMock.mockResolvedValueOnce({
+      fastestFee: 20,
+      halfHourFee: 10,
+      hourFee: 5,
+      economyFee: 2,
+      minimumFee: 1,
+    });
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    const tx = await buildBitcoinNativeSend({
+      wallet: SEGWIT_ADDR,
+      to: RECIPIENT,
+      amount: "0.0005",
+    });
+    expect(tx.chain).toBe("bitcoin");
+    expect(tx.action).toBe("native_send");
+    expect(tx.from).toBe(SEGWIT_ADDR);
+    expect(tx.handle).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(tx.fingerprint).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(tx.psbtBase64.length).toBeGreaterThan(0);
+    expect(tx.accountPath).toBe("84'/0'/0'");
+    expect(tx.addressFormat).toBe("bech32");
+    expect(tx.decoded.outputs.length).toBeGreaterThanOrEqual(1);
+    const recipientOutput = tx.decoded.outputs.find((o) => o.address === RECIPIENT);
+    expect(recipientOutput).toBeDefined();
+    expect(recipientOutput?.amountSats).toBe("50000");
+    expect(recipientOutput?.amountBtc).toBe("0.0005");
+    expect(recipientOutput?.isChange).toBe(false);
+    expect(tx.decoded.rbfEligible).toBe(true);
+    expect(tx.decoded.feeRateSatPerVb).toBe(10);
+  });
+
+  it("uses an explicit feeRate when passed", async () => {
+    getUtxosMock.mockResolvedValueOnce([
+      { txid: FAKE_TXID, vout: 0, value: 100_000, unconfirmed: false },
+    ]);
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    const tx = await buildBitcoinNativeSend({
+      wallet: SEGWIT_ADDR,
+      to: RECIPIENT,
+      amount: "0.0005",
+      feeRateSatPerVb: 25,
+    });
+    expect(tx.decoded.feeRateSatPerVb).toBe(25);
+    expect(getFeeEstimatesMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects unpaired source addresses", async () => {
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    await expect(
+      buildBitcoinNativeSend({
+        wallet: TAPROOT_ADDR,
+        to: RECIPIENT,
+        amount: "0.0005",
+        feeRateSatPerVb: 10,
+      }),
+    ).rejects.toThrow(/not paired/);
+  });
+
+  it("rejects legacy/p2sh-segwit source addresses (Phase 1 scope)", async () => {
+    const { setPairedBtcAddress, clearPairedBtcAddresses } = await import(
+      "../src/signing/btc-usb-signer.js"
+    );
+    clearPairedBtcAddresses();
+    setPairedBtcAddress({
+      address: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+      publicKey: SEGWIT_PUBKEY,
+      path: "44'/0'/0'/0/0",
+      appVersion: "2.2.0",
+      addressType: "legacy",
+      accountIndex: 0,
+    });
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    await expect(
+      buildBitcoinNativeSend({
+        wallet: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+        to: RECIPIENT,
+        amount: "0.0005",
+        feeRateSatPerVb: 10,
+      }),
+    ).rejects.toThrow(/not supported in Phase 1/);
+  });
+
+  it("rejects when the wallet has no UTXOs", async () => {
+    getUtxosMock.mockResolvedValueOnce([]);
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    await expect(
+      buildBitcoinNativeSend({
+        wallet: SEGWIT_ADDR,
+        to: RECIPIENT,
+        amount: "0.0005",
+        feeRateSatPerVb: 10,
+      }),
+    ).rejects.toThrow(/No UTXOs/);
+  });
+
+  it("supports rbf=false (sequence finality)", async () => {
+    getUtxosMock.mockResolvedValueOnce([
+      { txid: FAKE_TXID, vout: 0, value: 100_000, unconfirmed: false },
+    ]);
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    const tx = await buildBitcoinNativeSend({
+      wallet: SEGWIT_ADDR,
+      to: RECIPIENT,
+      amount: "0.0005",
+      feeRateSatPerVb: 10,
+      rbf: false,
+    });
+    expect(tx.decoded.rbfEligible).toBe(false);
+  });
+
+  it("resolves \"max\" to balance minus fee", async () => {
+    getUtxosMock.mockResolvedValueOnce([
+      { txid: FAKE_TXID, vout: 0, value: 1_000_000, unconfirmed: false },
+    ]);
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    const tx = await buildBitcoinNativeSend({
+      wallet: SEGWIT_ADDR,
+      to: RECIPIENT,
+      amount: "max",
+      feeRateSatPerVb: 5,
+    });
+    // 1_000_000 - fee (~545 sats at 5 sat/vB for one input + one output).
+    // The recipient output is the full balance minus fee — there's no
+    // change output on a clean exact-fit "max".
+    const recipientOutput = tx.decoded.outputs.find((o) => o.address === RECIPIENT);
+    expect(recipientOutput).toBeDefined();
+    const sats = Number(recipientOutput!.amountSats);
+    expect(sats).toBeGreaterThan(998_000);
+    expect(sats).toBeLessThan(1_000_000);
+    // Fee should be on the order of 5 sat/vB × ~110 vbytes.
+    expect(Number(tx.decoded.feeSats)).toBeGreaterThan(0);
+    expect(Number(tx.decoded.feeSats)).toBeLessThan(2000);
+  });
+});
+
+describe("sendBitcoinTransaction", () => {
+  it("signs the PSBT on Ledger and broadcasts the raw tx", async () => {
+    getUtxosMock.mockResolvedValueOnce([
+      { txid: FAKE_TXID, vout: 0, value: 100_000, unconfirmed: false },
+    ]);
+    getAppAndVersionMock.mockResolvedValueOnce({
+      name: "Bitcoin",
+      version: "2.2.0",
+    });
+    getWalletPublicKeyMock.mockResolvedValueOnce({
+      bitcoinAddress: SEGWIT_ADDR,
+      publicKey: SEGWIT_PUBKEY,
+      chainCode: "0".repeat(64),
+    });
+    signPsbtBufferMock.mockResolvedValueOnce({
+      psbt: Buffer.alloc(0),
+      tx: FAKE_RAW_TX_HEX,
+    });
+    broadcastTxMock.mockResolvedValueOnce(FAKE_BROADCAST_TXID);
+
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    const tx = await buildBitcoinNativeSend({
+      wallet: SEGWIT_ADDR,
+      to: RECIPIENT,
+      amount: "0.0005",
+      feeRateSatPerVb: 10,
+    });
+
+    const { sendTransaction } = await import(
+      "../src/modules/execution/index.js"
+    );
+    const result = await sendTransaction({
+      handle: tx.handle!,
+      confirmed: true,
+    });
+    expect(result.txHash).toBe(FAKE_BROADCAST_TXID);
+    expect(result.chain).toBe("bitcoin");
+    expect(broadcastTxMock).toHaveBeenCalledWith(FAKE_RAW_TX_HEX);
+    expect(signPsbtBufferMock).toHaveBeenCalledTimes(1);
+    const [, options] = signPsbtBufferMock.mock.calls[0];
+    expect(options.accountPath).toBe("84'/0'/0'");
+    expect(options.addressFormat).toBe("bech32");
+    expect(options.finalizePsbt).toBe(true);
+  });
+
+  it("refuses to sign when the device derives a different address", async () => {
+    getUtxosMock.mockResolvedValueOnce([
+      { txid: FAKE_TXID, vout: 0, value: 100_000, unconfirmed: false },
+    ]);
+    getAppAndVersionMock.mockResolvedValueOnce({
+      name: "Bitcoin",
+      version: "2.2.0",
+    });
+    // Device returns a DIFFERENT address than the paired one — proof
+    // that the seed/app changed under us. Refuse rather than blind-sign.
+    getWalletPublicKeyMock.mockResolvedValueOnce({
+      bitcoinAddress: TAPROOT_ADDR,
+      publicKey: SEGWIT_PUBKEY,
+      chainCode: "0".repeat(64),
+    });
+
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    const tx = await buildBitcoinNativeSend({
+      wallet: SEGWIT_ADDR,
+      to: RECIPIENT,
+      amount: "0.0005",
+      feeRateSatPerVb: 10,
+    });
+
+    const { sendTransaction } = await import(
+      "../src/modules/execution/index.js"
+    );
+    await expect(
+      sendTransaction({
+        handle: tx.handle!,
+        confirmed: true,
+      }),
+    ).rejects.toThrow(/derived .* but the prepared tx lists/);
+  });
+});
+
+describe("getTransactionStatus(bitcoin)", () => {
+  it("reports success with confirmation count for confirmed txs", async () => {
+    getTxStatusMock.mockResolvedValueOnce({
+      confirmed: true,
+      blockHeight: 850_000,
+      confirmations: 3,
+    });
+    const { getTransactionStatus } = await import(
+      "../src/modules/execution/index.js"
+    );
+    const r = await getTransactionStatus({
+      chain: "bitcoin",
+      txHash: FAKE_BROADCAST_TXID,
+    });
+    expect(r).toMatchObject({
+      chain: "bitcoin",
+      status: "success",
+      blockNumber: "850000",
+      confirmations: 3,
+    });
+  });
+
+  it("reports pending for in-mempool txs", async () => {
+    getTxStatusMock.mockResolvedValueOnce({ confirmed: false });
+    const { getTransactionStatus } = await import(
+      "../src/modules/execution/index.js"
+    );
+    const r = await getTransactionStatus({
+      chain: "bitcoin",
+      txHash: FAKE_BROADCAST_TXID,
+    });
+    expect(r.status).toBe("pending");
+  });
+
+  it("reports unknown when the indexer doesn't know the txid", async () => {
+    getTxStatusMock.mockResolvedValueOnce(null);
+    const { getTransactionStatus } = await import(
+      "../src/modules/execution/index.js"
+    );
+    const r = await getTransactionStatus({
+      chain: "bitcoin",
+      txHash: FAKE_BROADCAST_TXID,
+    });
+    expect(r.status).toBe("unknown");
+  });
+});
+
+describe("renderBitcoinVerificationBlock", () => {
+  it("emits a Markdown-friendly block with every output, fee, and RBF flag", async () => {
+    getUtxosMock.mockResolvedValueOnce([
+      { txid: FAKE_TXID, vout: 0, value: 100_000, unconfirmed: false },
+    ]);
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    const tx = await buildBitcoinNativeSend({
+      wallet: SEGWIT_ADDR,
+      to: RECIPIENT,
+      amount: "0.0005",
+      feeRateSatPerVb: 10,
+    });
+    const { renderBitcoinVerificationBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const block = renderBitcoinVerificationBlock(tx);
+    expect(block).toContain("VERIFY BEFORE SIGNING (Bitcoin");
+    expect(block).toContain(`Output 1: 0.0005 BTC → ${RECIPIENT}`);
+    expect(block).toMatch(/Fee:.*BTC.*sat\/vB/);
+    expect(block).toContain("RBF:      enabled");
+    expect(block).toContain("[mempool.space](https://mempool.space/)");
+  });
+});
+
+describe("coin-select", () => {
+  it("rejects invalid feeRate", async () => {
+    const { selectInputs } = await import(
+      "../src/modules/btc/coin-select.js"
+    );
+    expect(() =>
+      selectInputs({
+        utxos: [{ txid: FAKE_TXID, vout: 0, value: 1_000_000 }],
+        outputs: [{ address: RECIPIENT, value: 200_000 }],
+        feeRate: 0,
+        changeAddress: SEGWIT_ADDR,
+      }),
+    ).toThrow(/Invalid feeRate/);
+    expect(() =>
+      selectInputs({
+        utxos: [{ txid: FAKE_TXID, vout: 0, value: 1_000_000 }],
+        outputs: [{ address: RECIPIENT, value: 200_000 }],
+        feeRate: 20_000,
+        changeAddress: SEGWIT_ADDR,
+      }),
+    ).toThrow(/Invalid feeRate/);
+  });
+
+  it("rejects empty UTXO sets and zero-value outputs", async () => {
+    const { selectInputs } = await import(
+      "../src/modules/btc/coin-select.js"
+    );
+    expect(() =>
+      selectInputs({
+        utxos: [],
+        outputs: [{ address: RECIPIENT, value: 200_000 }],
+        feeRate: 1,
+        changeAddress: SEGWIT_ADDR,
+      }),
+    ).toThrow(/No UTXOs/);
+    expect(() =>
+      selectInputs({
+        utxos: [{ txid: FAKE_TXID, vout: 0, value: 1_000_000 }],
+        outputs: [{ address: RECIPIENT, value: 0 }],
+        feeRate: 1,
+        changeAddress: SEGWIT_ADDR,
+      }),
+    ).toThrow(/strictly-positive value/);
+  });
+
+  it("returns a feasible selection for a typical tx", async () => {
+    const { selectInputs } = await import(
+      "../src/modules/btc/coin-select.js"
+    );
+    const r = selectInputs({
+      utxos: [{ txid: FAKE_TXID, vout: 0, value: 1_000_000 }],
+      outputs: [{ address: RECIPIENT, value: 200_000 }],
+      feeRate: 5,
+      changeAddress: SEGWIT_ADDR,
+    });
+    expect(r.inputs.length).toBe(1);
+    expect(r.outputs.length).toBeGreaterThanOrEqual(1);
+    // Recipient + change.
+    const recipient = r.outputs.find((o) => o.address === RECIPIENT);
+    expect(recipient?.value).toBe(200_000);
+    expect(r.fee).toBeGreaterThan(0);
+  });
+});

@@ -126,6 +126,23 @@ interface EsploraTx {
   status?: { confirmed?: boolean; block_height?: number; block_time?: number };
 }
 
+/**
+ * UTXO entry. Esplora returns these from `/address/<addr>/utxo`.
+ * `scriptPubKey` is NOT in the Esplora payload directly — we derive it
+ * from the address at PSBT-build time (cheaper than a per-UTXO lookup
+ * since all UTXOs for one address share the same scriptPubKey).
+ */
+export interface BitcoinUtxo {
+  txid: string;
+  vout: number;
+  /** UTXO value in sats. */
+  value: number;
+  /** Block height of the funding tx. Undefined for mempool UTXOs. */
+  blockHeight?: number;
+  /** True when the UTXO is in mempool (not yet confirmed). */
+  unconfirmed: boolean;
+}
+
 export interface BitcoinIndexer {
   getBalance(address: string): Promise<BitcoinAddressBalance>;
   getFeeEstimates(): Promise<BitcoinFeeEstimates>;
@@ -139,6 +156,32 @@ export interface BitcoinIndexer {
     address: string,
     opts?: { limit?: number },
   ): Promise<BitcoinTxHistoryEntry[]>;
+  /**
+   * Fetch the UTXO set for an address. Returned newest-first (block
+   * height descending). Used as the input set for coin-selection on
+   * `prepare_btc_send`.
+   */
+  getUtxos(address: string): Promise<BitcoinUtxo[]>;
+  /**
+   * Broadcast a fully-signed tx hex via the indexer's `/tx` endpoint.
+   * Returns the on-chain txid on success. Throws with the indexer's
+   * error body on failures (most commonly: "min relay fee not met"
+   * when feeRate is below the mempool floor, or "txn-already-known"
+   * when re-broadcasting a tx that's already in the mempool).
+   */
+  broadcastTx(rawTxHex: string): Promise<string>;
+  /**
+   * Fetch confirmation status for a txid. Used by
+   * `get_transaction_status` BTC branch — returns the confirmation
+   * count at current tip when the tx is mined; returns `confirmed: false`
+   * for in-mempool txs; null when the tx isn't found at all (dropped
+   * or never broadcast).
+   */
+  getTxStatus(txid: string): Promise<{
+    confirmed: boolean;
+    blockHeight?: number;
+    confirmations?: number;
+  } | null>;
 }
 
 /**
@@ -263,6 +306,105 @@ class EsploraIndexer implements BitcoinIndexer {
     // — we don't paginate in PR1.
     const txs = await this.getJson<EsploraTx[]>(`/address/${address}/txs`);
     return txs.slice(0, limit).map((tx) => summarizeTx(tx, address));
+  }
+
+  async getUtxos(address: string): Promise<BitcoinUtxo[]> {
+    interface EsploraUtxo {
+      txid: string;
+      vout: number;
+      value: number;
+      status?: { confirmed?: boolean; block_height?: number };
+    }
+    const utxos = await this.getJson<EsploraUtxo[]>(`/address/${address}/utxo`);
+    return utxos.map((u) => ({
+      txid: u.txid,
+      vout: u.vout,
+      value: u.value,
+      unconfirmed: !u.status?.confirmed,
+      ...(u.status?.block_height !== undefined
+        ? { blockHeight: u.status.block_height }
+        : {}),
+    }));
+  }
+
+  async broadcastTx(rawTxHex: string): Promise<string> {
+    const res = await fetchWithTimeout(`${this.baseUrl}/tx`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: rawTxHex,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(
+        `Bitcoin indexer /tx broadcast returned ${res.status} ${res.statusText}: ${body.slice(0, 200)}`,
+      );
+    }
+    // Esplora returns the txid as plain text.
+    const txid = (await res.text()).trim();
+    if (!/^[0-9a-fA-F]{64}$/.test(txid)) {
+      throw new Error(
+        `Bitcoin indexer /tx returned an unexpected response (not a 64-hex-char txid): "${txid.slice(0, 80)}"`,
+      );
+    }
+    return txid;
+  }
+
+  async getTxStatus(txid: string): Promise<{
+    confirmed: boolean;
+    blockHeight?: number;
+    confirmations?: number;
+  } | null> {
+    interface EsploraTxStatus {
+      confirmed: boolean;
+      block_height?: number;
+      block_hash?: string;
+      block_time?: number;
+    }
+    interface EsploraTip {
+      // mempool.space's `/blocks/tip/height` returns plain text
+      // numeric. Esplora-pure returns the same. We fetch via getJson
+      // since the Response.json() coerces a plain numeric body just
+      // fine; for resilience we handle string parsing too.
+      _height?: number;
+    }
+    void ({} as EsploraTip);
+    let status: EsploraTxStatus;
+    try {
+      status = await this.getJson<EsploraTxStatus>(`/tx/${txid}/status`);
+    } catch (err) {
+      // Treat 404 as "tx not found" rather than a hard error — caller
+      // surfaces the not-found case as a distinct "dropped" state.
+      if (err instanceof Error && /returned 404/.test(err.message)) {
+        return null;
+      }
+      throw err;
+    }
+    if (!status.confirmed) return { confirmed: false };
+    // Confirmed → fetch the chain tip to compute confirmation count.
+    const tipRes = await fetchWithTimeout(`${this.baseUrl}/blocks/tip/height`, {
+      method: "GET",
+    });
+    if (!tipRes.ok) {
+      // Tip fetch failed but we know it's confirmed; return without
+      // a count rather than failing the whole call.
+      return {
+        confirmed: true,
+        ...(status.block_height !== undefined ? { blockHeight: status.block_height } : {}),
+      };
+    }
+    const tipText = (await tipRes.text()).trim();
+    const tipHeight = Number(tipText);
+    if (status.block_height !== undefined && Number.isFinite(tipHeight)) {
+      return {
+        confirmed: true,
+        blockHeight: status.block_height,
+        confirmations: Math.max(0, tipHeight - status.block_height + 1),
+      };
+    }
+    return {
+      confirmed: true,
+      ...(status.block_height !== undefined ? { blockHeight: status.block_height } : {}),
+    };
   }
 }
 

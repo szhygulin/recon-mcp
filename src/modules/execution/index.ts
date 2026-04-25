@@ -22,6 +22,15 @@ import {
   pinSolanaHandle,
 } from "../../signing/solana-tx-store.js";
 import {
+  consumeBitcoinHandle,
+  retireBitcoinHandle,
+  hasBitcoinHandle,
+} from "../../signing/btc-tx-store.js";
+import {
+  signBtcPsbtOnLedger,
+  getPairedBtcByAddress,
+} from "../../signing/btc-usb-signer.js";
+import {
   getTronLedgerAddress,
   signTronTxOnLedger,
   setPairedTronAddress,
@@ -116,6 +125,7 @@ import type {
   GetBitcoinBalancesArgs,
   GetBitcoinFeeEstimatesArgs,
   GetBitcoinTxHistoryArgs,
+  PrepareBitcoinNativeSendArgs,
   GetMarginfiPositionsArgs,
   GetSolanaStakingPositionsArgs,
   PreviewSendArgs,
@@ -653,6 +663,22 @@ export async function getBitcoinTxHistory(args: GetBitcoinTxHistoryArgs) {
   return { address: args.address, txs };
 }
 
+export async function prepareBitcoinNativeSend(
+  args: PrepareBitcoinNativeSendArgs,
+) {
+  const { buildBitcoinNativeSend } = await import("../btc/actions.js");
+  return buildBitcoinNativeSend({
+    wallet: args.wallet,
+    to: args.to,
+    amount: args.amount,
+    ...(args.feeRateSatPerVb !== undefined
+      ? { feeRateSatPerVb: args.feeRateSatPerVb }
+      : {}),
+    ...(args.rbf !== undefined ? { rbf: args.rbf } : {}),
+    ...(args.allowHighFee !== undefined ? { allowHighFee: args.allowHighFee } : {}),
+  });
+}
+
 export async function getMarginfiPositions(args: GetMarginfiPositionsArgs) {
   const { getMarginfiPositions: reader } = await import(
     "../positions/marginfi.js"
@@ -1102,6 +1128,45 @@ async function sendSolanaTransaction(args: SendTransactionArgs): Promise<{
         }
       : {}),
   };
+}
+
+/**
+ * Send a Bitcoin tx: consume handle, sign PSBT on the Ledger BTC app
+ * (which clear-signs every output + fee on-screen), broadcast the
+ * finalized raw tx hex to the indexer's `/tx` endpoint, return the txid.
+ *
+ * No preview-gate: the Ledger BTC app's clear-signing UX *is* the
+ * review step. Every output (address + amount), the fee, and the change
+ * label are shown on-device — there's no blind-sign hash for the user
+ * to pre-match in chat. The agent-side verification block surfaces the
+ * same projection, so the user can cross-check before the device prompt.
+ */
+async function sendBitcoinTransaction(args: SendTransactionArgs): Promise<{
+  txHash: string;
+  chain: "bitcoin";
+}> {
+  const tx = consumeBitcoinHandle(args.handle);
+  const paired = getPairedBtcByAddress(tx.from);
+  if (!paired) {
+    throw new Error(
+      `Bitcoin source ${tx.from} is no longer in the pairing cache. The cache may have ` +
+        `been cleared since prepare_btc_send. Re-pair via \`pair_ledger_btc\` and re-run ` +
+        `prepare_btc_send to get a fresh handle.`,
+    );
+  }
+  const { rawTxHex } = await signBtcPsbtOnLedger({
+    psbtBase64: tx.psbtBase64,
+    expectedFrom: tx.from,
+    path: paired.path,
+    accountPath: tx.accountPath,
+    addressFormat: tx.addressFormat,
+  });
+  const { getBitcoinIndexer } = await import("../btc/indexer.js");
+  const txid = await getBitcoinIndexer().broadcastTx(rawTxHex);
+  // Retire only after successful broadcast — the same retry-on-failure
+  // policy as the Solana / TRON branches.
+  retireBitcoinHandle(args.handle);
+  return { txHash: txid, chain: "bitcoin" };
 }
 
 /** Attach eth_call simulation result, gas estimate, and USD cost. */
@@ -1687,7 +1752,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
  */
 export async function sendTransaction(args: SendTransactionArgs): Promise<{
   txHash: `0x${string}` | string;
-  chain: SupportedChain | "tron" | "solana";
+  chain: SupportedChain | "tron" | "solana" | "bitcoin";
   nextHandle?: string;
   /**
    * EIP-1559 pre-sign RLP hash the user already matched on-device during
@@ -1722,6 +1787,9 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
   }
   if (hasSolanaHandle(args.handle)) {
     return sendSolanaTransaction(args);
+  }
+  if (hasBitcoinHandle(args.handle)) {
+    return sendBitcoinTransaction(args);
   }
   const stashed = getPinnedGas(args.handle);
   if (!stashed) {
@@ -1803,6 +1871,41 @@ export async function getTransactionStatus(args: GetTransactionStatusArgs) {
         : {}),
       ...(args.durableNonce ? { durableNonce: args.durableNonce } : {}),
     });
+  }
+  if (args.chain === "bitcoin") {
+    const { getBitcoinIndexer } = await import("../btc/indexer.js");
+    const status = await getBitcoinIndexer().getTxStatus(args.txHash);
+    if (status === null) {
+      return {
+        chain: "bitcoin" as const,
+        txHash: args.txHash,
+        status: "unknown" as const,
+        note:
+          "Tx not found at the indexer. Either it was dropped before any node saw it " +
+          "(low fee, RBF-replaced, or never broadcast) or it hasn't propagated yet — " +
+          "wait a minute and re-poll. If a low fee is suspected, the original handle " +
+          "is gone after broadcast; rebuild via prepare_btc_send with a higher feeRate.",
+      };
+    }
+    if (!status.confirmed) {
+      return {
+        chain: "bitcoin" as const,
+        txHash: args.txHash,
+        status: "pending" as const,
+        note: "Tx is in the mempool — waiting for inclusion in a block.",
+      };
+    }
+    return {
+      chain: "bitcoin" as const,
+      txHash: args.txHash,
+      status: "success" as const,
+      ...(status.blockHeight !== undefined
+        ? { blockNumber: status.blockHeight.toString() }
+        : {}),
+      ...(status.confirmations !== undefined
+        ? { confirmations: status.confirmations }
+        : {}),
+    };
   }
   const client = getClient(args.chain as SupportedChain);
   try {

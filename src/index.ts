@@ -89,6 +89,7 @@ import {
   getBitcoinBalances,
   getBitcoinFeeEstimates,
   getBitcoinTxHistory,
+  prepareBitcoinNativeSend,
   getMarginfiPositions,
   getSolanaStakingPositions,
   getMarginfiDiagnostics,
@@ -144,6 +145,7 @@ import {
   getBitcoinBalancesInput,
   getBitcoinFeeEstimatesInput,
   getBitcoinTxHistoryInput,
+  prepareBitcoinNativeSendInput,
   getMarginfiPositionsInput,
   getSolanaStakingPositionsInput,
   getMarginfiDiagnosticsInput,
@@ -260,6 +262,7 @@ import {
   renderMissingSetupSkillWarning,
   renderPostBroadcastBlock,
   renderPostSendPollBlock,
+  renderBitcoinVerificationBlock,
   renderPrepareReceiptBlock,
   renderPreviewVerifyAgentTaskBlock,
   renderSolanaAgentTaskBlock,
@@ -275,6 +278,7 @@ import { verifyEvmCalldata, type VerifyDecodeResult } from "./signing/verify-dec
 import type {
   SupportedChain,
   TxVerification,
+  UnsignedBitcoinTx,
   UnsignedSolanaTx,
   UnsignedTronTx,
   UnsignedTx,
@@ -474,6 +478,14 @@ export async function collectVerificationBlocks(
       blocks.push(renderSolanaPrepareSummaryBlock(prepared));
       blocks.push(renderSolanaPrepareAgentTaskBlock(prepared));
     }
+    return blocks;
+  }
+  // Bitcoin prepare results carry no `verification` field — the Ledger BTC
+  // app clear-signs every output, so the per-output address+amount
+  // projection IS the review surface. Handle BEFORE the `!verification`
+  // early-return that the EVM branch relies on.
+  if (chain === "bitcoin" && typeof r.psbtBase64 === "string") {
+    blocks.push(renderBitcoinVerificationBlock(result as UnsignedBitcoinTx));
     return blocks;
   }
   if (!verification) return blocks;
@@ -752,7 +764,7 @@ function previewSolanaSendHandler(
 function sendTransactionHandler(
   fn: (args: SendTransactionArgs) => Promise<{
     txHash: `0x${string}` | string;
-    chain: SupportedChain | "tron" | "solana";
+    chain: SupportedChain | "tron" | "solana" | "bitcoin";
     nextHandle?: string;
     preSignHash?: `0x${string}`;
     to?: `0x${string}`;
@@ -1805,6 +1817,25 @@ async function main() {
       inputSchema: getBitcoinTxHistoryInput.shape,
     },
     handler(getBitcoinTxHistory)
+  );
+
+  server.registerTool(
+    "prepare_btc_send",
+    {
+      description:
+        "Build an unsigned Bitcoin native-send PSBT (segwit/taproot only in Phase 1). " +
+        "Returns a 15-min handle the agent forwards to send_transaction; the Ledger " +
+        "BTC app clear-signs every output (address + amount) + fee on-screen, so there " +
+        "is NO blind-sign hash to pre-match in chat. The verification block surfaces " +
+        "every output's address, amount in BTC, isChange flag, fee (BTC + sat/vB), " +
+        "and RBF flag. Coin-selection runs branch-and-bound + accumulative fallback " +
+        "via the `coinselect` library; a fee-cap guard refuses any tx whose fee " +
+        "exceeds `max(10 × feeRate × vbytes, 2% of total output value)` unless " +
+        "`allowHighFee: true` is passed. RBF is enabled by default (sequence " +
+        "0xFFFFFFFD); pass `rbf: false` to mark final.",
+      inputSchema: prepareBitcoinNativeSendInput.shape,
+    },
+    handler(prepareBitcoinNativeSend, { toolName: "prepare_btc_send" })
   );
 
   server.registerTool(

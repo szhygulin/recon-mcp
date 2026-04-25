@@ -1064,6 +1064,71 @@ export interface PairedSolanaEntry {
   accountIndex: number | null;
 }
 
+/**
+ * Unsigned Bitcoin transaction. Parallel to `UnsignedTronTx` /
+ * `UnsignedSolanaTx`. Stores a PSBT (Partially Signed Bitcoin
+ * Transaction, BIP-174) — the device signs it via
+ * `@ledgerhq/hw-app-btc`'s `signPsbtBuffer`, we finalize, extract the
+ * tx hex, and broadcast via the indexer.
+ *
+ * `decoded.outputs[]` and `decoded.changeOutput` carry the human-
+ * readable preview the agent surfaces to the user. The PSBT bytes are
+ * the source of truth — the device walks every output (including
+ * change, with the "change" label when the path matches the wallet's
+ * internal chain) and shows fee + total before asking for approval.
+ */
+export interface UnsignedBitcoinTx {
+  chain: "bitcoin";
+  /** Discriminator for the action — only native_send in Phase 1. */
+  action: "native_send";
+  /** Base58/bech32 source address — must already be paired. */
+  from: string;
+  /** Base64-encoded PSBT v0 bytes. The device's `signPsbtBuffer` consumes this. */
+  psbtBase64: string;
+  /**
+   * BIP-32 account-level path (e.g. `m/84'/0'/0'`) the PSBT signs from.
+   * `signPsbtBuffer` requires this so it can populate missing BIP-32
+   * derivation info on the PSBT inputs.
+   */
+  accountPath: string;
+  /**
+   * Address format the account uses — passed explicitly to
+   * `signPsbtBuffer.addressFormat`. "bech32" for native segwit, etc.
+   */
+  addressFormat: "legacy" | "p2sh" | "bech32" | "bech32m";
+  /** Human-readable description for the preview. */
+  description: string;
+  /** Decoded outputs + fee + RBF flag. The shape Ledger's screen mirrors. */
+  decoded: {
+    functionName: string;
+    args: Record<string, string>;
+    outputs: Array<{
+      address: string;
+      amountSats: string;
+      amountBtc: string;
+      isChange: boolean;
+      /** Path of the change output (when isChange=true), e.g. `m/84'/0'/0'/1/0`. */
+      changePath?: string;
+    }>;
+    feeSats: string;
+    feeBtc: string;
+    feeRateSatPerVb: number;
+    /** Sequence number — < 0xFFFFFFFE marks the tx BIP-125 RBF-eligible. */
+    rbfEligible: boolean;
+  };
+  /** Estimated tx vsize, used to derive the displayed feeRateSatPerVb. */
+  vsize: number;
+  /** Opaque handle — see btc-tx-store.ts. send_transaction consumes this. */
+  handle?: string;
+  /**
+   * Domain-tagged sha256 over the PSBT base64. Pair-consistency
+   * anchor between prepare → preview → sign stages. NOT shown
+   * on-device (Ledger BTC clear-signs outputs; on-device anchor is
+   * address + amount per output).
+   */
+  fingerprint?: `0x${string}`;
+}
+
 /** TRON pairing entry — same shape, different BIP-44 layout (`44'/195'/<n>'/0/0`). */
 export interface PairedTronEntry {
   address: string;

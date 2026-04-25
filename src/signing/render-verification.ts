@@ -2,6 +2,7 @@ import { CHAIN_IDS } from "../types/index.js";
 import type {
   SupportedChain,
   TxVerification,
+  UnsignedBitcoinTx,
   UnsignedSolanaTx,
   UnsignedTronTx,
   UnsignedTx,
@@ -699,6 +700,7 @@ const EXPLORER_TX_URL: Record<string, (hash: string) => string> = {
   polygon: (h) => `https://polygonscan.com/tx/${h}`,
   base: (h) => `https://basescan.org/tx/${h}`,
   tron: (h) => `https://tronscan.org/#/transaction/${h}`,
+  bitcoin: (h) => `https://mempool.space/tx/${h}`,
 };
 
 /**
@@ -762,6 +764,10 @@ const POLL_CADENCE: Record<string, { intervalSec: number; maxPolls: number; budg
   // polling is pointless — dropped txs get surfaced by the status tool's
   // blockhash-expiry check once the baked blockhash is past.
   solana: { intervalSec: 2, maxPolls: 45, budgetLabel: "~90 seconds" },
+  // Bitcoin: 10-min blocks; aggressive polling is wasteful. 30s × ~24
+  // polls ≈ 12 minutes covers ~1 block confirmation. Past that, telling
+  // the user to watch on mempool.space is the right UX.
+  bitcoin: { intervalSec: 30, maxPolls: 24, budgetLabel: "~12 minutes" },
 };
 
 export function renderPostSendPollBlock(args: {
@@ -872,6 +878,54 @@ export function renderTronVerificationBlock(tx: UnsignedTronTx & { verification:
     "AFTER BROADCAST (not a pre-sign check):",
     `  Paste txID into [tronscan.org](https://tronscan.org/#/transaction/${tx.txID}) to cross-check on-network.`,
   ].join("\n");
+}
+
+/**
+ * Bitcoin verification block. The Ledger BTC app clear-signs every
+ * output (address + amount) and the fee — so unlike EVM's blind-sign
+ * path, there's no on-device hash for the user to match in chat. The
+ * defense is the per-output address + amount review on the device
+ * screen itself; this block surfaces the same projection in chat so
+ * the user can cross-check before the device prompt appears.
+ *
+ * No browser decoder URL: PSBT bytes are not a calldata-style
+ * instruction stream a swiss-knife decoder could deconstruct. Instead
+ * we surface every output's address + amount + isChange flag — the
+ * exact data the device walks the user through.
+ */
+export function renderBitcoinVerificationBlock(tx: UnsignedBitcoinTx): string {
+  const lines: string[] = [];
+  lines.push("VERIFY BEFORE SIGNING (Bitcoin — native send)");
+  lines.push(
+    "The Ledger Bitcoin app clear-signs every output. Confirm on-device:",
+  );
+  for (let i = 0; i < tx.decoded.outputs.length; i++) {
+    const o = tx.decoded.outputs[i];
+    const tag = o.isChange ? "Change" : `Output ${i + 1}`;
+    const labelSuffix = o.isChange ? " (your wallet)" : "";
+    lines.push(`  • ${tag}: ${o.amountBtc} BTC → ${o.address}${labelSuffix}`);
+  }
+  lines.push(
+    `  • Fee:      ${tx.decoded.feeBtc} BTC (~${tx.decoded.feeRateSatPerVb} sat/vB)`,
+  );
+  lines.push(
+    `  • RBF:      ${tx.decoded.rbfEligible ? "enabled — replaceable" : "disabled — final"}`,
+  );
+  lines.push(
+    `  • From:     ${tx.from}  (BIP-32 account ${tx.accountPath})`,
+  );
+  lines.push("");
+  lines.push(
+    "If ANY output address or amount on-device differs from the above → " +
+      "REJECT on Ledger and re-prepare.",
+  );
+  lines.push("");
+  lines.push("AFTER BROADCAST (not a pre-sign check):");
+  lines.push(
+    "  Once `send_transaction` returns a txid, paste it into " +
+      "[mempool.space](https://mempool.space/) to watch confirmation count.",
+  );
+  return lines.join("\n");
 }
 
 /**

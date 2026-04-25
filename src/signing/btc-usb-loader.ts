@@ -47,6 +47,29 @@ export interface BtcLedgerApp {
     path: string,
     messageHex: string,
   ): Promise<{ v: number; r: string; s: string }>;
+  /**
+   * Sign a v0 PSBT on the Ledger BTC app. The device walks every output
+   * (address + amount) on-screen, displays change with a "change" label
+   * when the derivation matches a known internal-chain entry, shows the
+   * fee, and asks the user to confirm. Returns the signed (and finalized
+   * when `finalizePsbt: true`) PSBT bytes plus the network-broadcastable
+   * tx hex.
+   *
+   * `knownAddressDerivations` maps scriptPubKey-hash hex → { pubkey, path }
+   * for every address the wallet owns that appears in the PSBT (inputs +
+   * change outputs). `accountPath` is the BIP-32 account-level path
+   * (e.g. `84'/0'/0'`) and `addressFormat` is the Ledger format string
+   * for that account type.
+   */
+  signPsbtBuffer(
+    psbtBuffer: Buffer,
+    options: {
+      finalizePsbt: boolean;
+      accountPath: string;
+      addressFormat: BtcAddressFormat;
+      knownAddressDerivations: Map<string, { pubkey: Buffer; path: number[] }>;
+    },
+  ): Promise<{ psbt: Buffer; tx?: string }>;
 }
 
 export interface BtcAppAndVersion {

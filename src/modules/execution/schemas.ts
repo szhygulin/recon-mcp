@@ -763,14 +763,18 @@ export type PreviewSolanaSendArgs = z.infer<typeof previewSolanaSendInput>;
 
 export const getTransactionStatusInput = z.object({
   chain: z
-    .enum([...SUPPORTED_CHAINS, "tron", "solana"] as unknown as [string, ...string[]])
-    .describe("EVM chain, 'tron', or 'solana'."),
+    .enum([...SUPPORTED_CHAINS, "tron", "solana", "bitcoin"] as unknown as [
+      string,
+      ...string[],
+    ])
+    .describe("EVM chain, 'tron', 'solana', or 'bitcoin'."),
   txHash: z
     .string()
     .regex(/^(0x)?[a-fA-F0-9]{64}$|^[1-9A-HJ-NP-Za-km-z]{86,88}$/)
     .describe(
       "Transaction identifier. EVM: 32-byte hex (0x-prefixed or bare). TRON: 32-byte bare hex. " +
-        "Solana: 64-byte signature as base58 (86–88 chars). All three forms are accepted."
+        "Solana: 64-byte signature as base58 (86–88 chars). Bitcoin: 32-byte bare hex. " +
+        "All four forms are accepted."
     ),
   lastValidBlockHeight: z
     .number()
@@ -1029,6 +1033,55 @@ export const getBitcoinBalancesInput = z.object({
 
 export const getBitcoinFeeEstimatesInput = z.object({});
 
+export const prepareBitcoinNativeSendInput = z.object({
+  wallet: bitcoinAddressSchema.describe(
+    "Paired Bitcoin source address. Must already be in `pairings.bitcoin` " +
+      "(call `pair_ledger_btc` first). Phase 1 sends only support native " +
+      "segwit (`bc1q...`) and taproot (`bc1p...`) source addresses; legacy " +
+      "(`1...`) and P2SH-wrapped (`3...`) sends are deferred."
+  ),
+  to: bitcoinAddressSchema.describe(
+    "Bitcoin recipient address. Any of the four mainnet types is accepted as " +
+      "a destination — the restriction is only on the source side."
+  ),
+  amount: z
+    .string()
+    .max(50)
+    .regex(/^(max|\d+(\.\d{1,8})?)$/)
+    .describe(
+      'Decimal BTC string (up to 8 fractional digits, e.g. "0.001") or "max" ' +
+        "to sweep the full balance minus fees. \"max\" picks the fee-aware amount " +
+        "after coin-selection so the user doesn't have to subtract fees by hand."
+    ),
+  feeRateSatPerVb: z
+    .number()
+    .positive()
+    .max(10000)
+    .optional()
+    .describe(
+      "Fee rate in sat/vB. Optional — when omitted, uses mempool.space's " +
+        "`halfHourFee` recommendation (~3-block confirm target). Override for " +
+        "priority sends through congestion. Capped at 10000 sat/vB for safety."
+    ),
+  rbf: z
+    .boolean()
+    .optional()
+    .describe(
+      "BIP-125 Replace-By-Fee. Default true → sequence 0xFFFFFFFD on every " +
+        "input, marking the tx replaceable so the user can fee-bump if it stalls. " +
+        "Set false → 0xFFFFFFFE (final, not replaceable). RBF is the default for " +
+        "every modern wallet."
+    ),
+  allowHighFee: z
+    .boolean()
+    .optional()
+    .describe(
+      "Override the fee-cap guard. The cap is `max(10 × feeRate × vbytes, 2% " +
+        "of total output value)`. Legitimate priority sends through heavy " +
+        "congestion can exceed it; pass true after confirming with the user."
+    ),
+});
+
 export const getBitcoinTxHistoryInput = z.object({
   address: bitcoinAddressSchema,
   limit: z
@@ -1047,5 +1100,6 @@ export type GetBitcoinBalanceArgs = z.infer<typeof getBitcoinBalanceInput>;
 export type GetBitcoinBalancesArgs = z.infer<typeof getBitcoinBalancesInput>;
 export type GetBitcoinFeeEstimatesArgs = z.infer<typeof getBitcoinFeeEstimatesInput>;
 export type GetBitcoinTxHistoryArgs = z.infer<typeof getBitcoinTxHistoryInput>;
+export type PrepareBitcoinNativeSendArgs = z.infer<typeof prepareBitcoinNativeSendInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
 export type GetLedgerDeviceInfoArgs = z.infer<typeof getLedgerDeviceInfoInput>;
