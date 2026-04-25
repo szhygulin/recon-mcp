@@ -8,6 +8,11 @@ import {
   type BtcLedgerApp,
   type BtcLedgerTransport,
 } from "./btc-usb-loader.js";
+import {
+  accountNodeFromLedgerResponse,
+  deriveAccountChildAddress,
+  type AccountNode,
+} from "./btc-bip32-derive.js";
 import { getConfigPath, patchUserConfig, readUserConfig } from "../config/user-config.js";
 import type { PairedBitcoinEntry } from "../types/index.js";
 
@@ -77,6 +82,30 @@ export function btcPathForAccountIndex(
  * index) tuple. Used by gap-limit scanning to walk both the receive
  * chain (chain=0) and change chain (chain=1) at non-zero indices.
  */
+/**
+ * Build the BIP-44 account-level path (3 hardened segments — purpose,
+ * coin_type, account). This is the deepest path the Ledger BTC app
+ * needs to derive on-device per address type; everything below it
+ * (`/0/i`, `/1/i`) is non-hardened and computable host-side from the
+ * returned (publicKey, chainCode) pair. Issue #192.
+ */
+export function btcAccountLevelPath(
+  accountIndex: number,
+  addressType: BtcAddressType,
+): string {
+  if (
+    !Number.isInteger(accountIndex) ||
+    accountIndex < 0 ||
+    accountIndex > MAX_BTC_ACCOUNT_INDEX
+  ) {
+    throw new Error(
+      `Invalid Bitcoin accountIndex ${accountIndex} — must be an integer in [0, ${MAX_BTC_ACCOUNT_INDEX}].`,
+    );
+  }
+  const { purpose } = TYPE_META[addressType];
+  return `${purpose}'/0'/${accountIndex}'`;
+}
+
 export function btcLeafPath(
   accountIndex: number,
   addressType: BtcAddressType,
@@ -256,18 +285,30 @@ export interface ScanChainResult {
  * (44'/49'/84'/86') across both BIP-32 chains (receive=0, change=1),
  * stopping each chain after `gapLimit` consecutive empty addresses.
  *
- * Optimization: when the receive chain (chain=0) returns all-empty for
- * a given type, the change chain is skipped — change addresses can
- * only have history if at least one corresponding receive saw a spend,
- * and "no receives" → "no spends" → "no change history". Saves ~half
- * the USB roundtrips on a fresh wallet.
+ * Performance posture (issue #192):
  *
- * Performance: a fresh wallet (every chain empty) takes
- * `4 types × gapLimit` derivations = 80 with the default gap of 20.
- * A heavily-used wallet does that plus `numUsed` extra calls per
- * chain. USB calls are serialized via `withBtcUsbLock`; the indexer
- * txCount probe is awaited inline rather than batched because the
- * stop decision is per-call.
+ *   - Per address type, exactly ONE device call: `getWalletPublicKey`
+ *     at the account-level path (`<purpose>'/0'/<account>'`), returning
+ *     the (publicKey, chainCode) pair for that account-level node.
+ *   - All `0/i` and `1/i` leaves below that node are derived host-side
+ *     via @scure/bip32 — no further device interaction. BIP-32 is
+ *     deterministic for non-hardened descendants of a known parent
+ *     pubkey + chainCode, so the math is identical to what the device
+ *     would have produced.
+ *   - Per (type, chain) the gap-limit window is probed in PARALLEL
+ *     against the indexer (`Promise.all` over a chunk equal to the
+ *     remaining `gapLimit` budget). The serial `getWalletPublicKey →
+ *     fetchTxCount` round-trip from before is gone.
+ *
+ * Combined floor: 4 device calls per accountIndex (one per BIP-44
+ * purpose) plus ~`O(gapLimit)` parallel HTTP calls per (type, chain).
+ * Down from the prior `4 × 2 × gapLimit ≈ 160` device round-trips.
+ *
+ * Optimization: when the receive chain (chain=0) returns all-empty for
+ * a given type, the change chain is skipped entirely — change
+ * addresses can only have history if at least one corresponding
+ * receive saw a spend, and "no receives" → "no spends" → "no change".
+ * Saves the change-chain HTTP round on fresh wallets.
  */
 export async function scanBtcAccount(args: {
   accountIndex: number;
@@ -305,8 +346,22 @@ export async function scanBtcAccount(args: {
 
       const all: Array<DerivedAddress & { txCount: number }> = [];
       for (const addressType of BTC_ADDRESS_TYPES) {
-        const receive = await scanChain({
-          app,
+        // ONE device call per type — pull the account-level (publicKey,
+        // chainCode). Everything below this in the BIP-44 tree is
+        // non-hardened and host-derivable.
+        const accountPath = btcAccountLevelPath(accountIndex, addressType);
+        const { format } = TYPE_META[addressType];
+        const accountResp = await app.getWalletPublicKey(accountPath, {
+          format,
+        });
+        const node: AccountNode = accountNodeFromLedgerResponse({
+          publicKeyHex: accountResp.publicKey,
+          chainCodeHex: accountResp.chainCode,
+          addressFormat: format,
+        });
+
+        const receive = await scanChainHostSide({
+          node,
           accountIndex,
           addressType,
           chain: 0,
@@ -318,10 +373,10 @@ export async function scanBtcAccount(args: {
           all.push({ ...receive.addresses[i], txCount: receive.txCounts[i] });
         }
         // No receives ever → no change can exist. Skip the change-chain
-        // walk entirely (saves up to `gapLimit` USB roundtrips per type).
+        // walk entirely (saves the entire change-chain HTTP round).
         if (receive.empty) continue;
-        const change = await scanChain({
-          app,
+        const change = await scanChainHostSide({
+          node,
           accountIndex,
           addressType,
           chain: 1,
@@ -341,17 +396,20 @@ export async function scanBtcAccount(args: {
 }
 
 /**
- * Walk a single (type, chain) starting at index 0 until `gapLimit`
- * consecutive empty addresses are observed. Returns every address we
- * derived along the way, including the trailing empty window — the
- * trailing FIRST empty is the wallet's next fresh address for that
- * chain, useful for receive UX.
+ * Walk a single (type, chain) host-side until `gapLimit` consecutive
+ * empty addresses are observed. Each iteration derives a window of
+ * children purely via BIP-32 math, then probes the indexer for all
+ * window entries in parallel. The window is sized dynamically to
+ * `gapLimit - consecutiveEmpty` — we only ever probe the addresses we
+ * still NEED to satisfy the stop condition, so there's no over-fetch
+ * if a chunk has activity that resets the counter.
  *
- * Helper for `scanBtcAccount`; not exported because the caller already
- * holds the USB lock + open transport.
+ * Returns every address we derived in walk order, including the
+ * trailing empty window — the FIRST trailing empty is the wallet's
+ * next fresh address for that chain, useful for receive UX.
  */
-async function scanChain(args: {
-  app: { getWalletPublicKey: BtcLedgerApp["getWalletPublicKey"] };
+async function scanChainHostSide(args: {
+  node: AccountNode;
   accountIndex: number;
   addressType: BtcAddressType;
   chain: 0 | 1;
@@ -359,45 +417,70 @@ async function scanChain(args: {
   appVersion: string;
   fetchTxCount: BtcAddressTxCountFetcher;
 }): Promise<ScanChainResult> {
-  const { format } = TYPE_META[args.addressType];
   const addresses: DerivedAddress[] = [];
   const txCounts: number[] = [];
   let consecutiveEmpty = 0;
   let addressIndex = 0;
   while (consecutiveEmpty < args.gapLimit) {
-    const path = btcLeafPath(
-      args.accountIndex,
-      args.addressType,
-      args.chain,
-      addressIndex,
+    // Window size = remaining-empties-needed. If we already have N
+    // trailing empties, we only need (gapLimit - N) more to terminate;
+    // probing more would be wasted HTTP. The window shrinks
+    // monotonically toward the stop unless an interior result in the
+    // chunk turns out to be USED (which resets consecutiveEmpty back
+    // to 0 and re-grows the next window to gapLimit).
+    const windowSize = args.gapLimit - consecutiveEmpty;
+    const windowStart = addressIndex;
+
+    // Host-side BIP-32 child derivations — no I/O, near-instant.
+    const window: Array<{
+      addressIndex: number;
+      address: string;
+      publicKey: Uint8Array;
+    }> = [];
+    for (let i = 0; i < windowSize; i++) {
+      const idx = windowStart + i;
+      const child = deriveAccountChildAddress(args.node, args.chain, idx);
+      window.push({
+        addressIndex: idx,
+        address: child.address,
+        publicKey: child.publicKey,
+      });
+    }
+
+    // Parallel indexer fan-out for the whole window. Per-call failures
+    // degrade to txCount=0 so a flaky HTTP doesn't abort the scan.
+    const counts = await Promise.all(
+      window.map((w) =>
+        args.fetchTxCount(w.address).catch(() => 0),
+      ),
     );
-    const out = await args.app.getWalletPublicKey(path, { format });
-    let txCount: number;
-    try {
-      txCount = await args.fetchTxCount(out.bitcoinAddress);
-    } catch {
-      // Indexer hiccup — treat as zero so the scan can make forward
-      // progress. The user can re-pair to refresh; we don't want a
-      // single flaky HTTP call to abort a 100-call scan.
-      txCount = 0;
+
+    // Process results in order. Update consecutiveEmpty inside the
+    // loop so a USED address mid-window resets the counter and any
+    // empties AFTER it in the same window contribute fresh to the
+    // next stop budget.
+    for (let i = 0; i < window.length; i++) {
+      const w = window[i];
+      addresses.push({
+        address: w.address,
+        publicKey: Buffer.from(w.publicKey).toString("hex"),
+        path: btcLeafPath(
+          args.accountIndex,
+          args.addressType,
+          args.chain,
+          w.addressIndex,
+        ),
+        appVersion: args.appVersion,
+        addressType: args.addressType,
+        accountIndex: args.accountIndex,
+        chain: args.chain,
+        addressIndex: w.addressIndex,
+      });
+      txCounts.push(counts[i]);
+      if (counts[i] === 0) consecutiveEmpty++;
+      else consecutiveEmpty = 0;
     }
-    addresses.push({
-      address: out.bitcoinAddress,
-      publicKey: out.publicKey,
-      path,
-      appVersion: args.appVersion,
-      addressType: args.addressType,
-      accountIndex: args.accountIndex,
-      chain: args.chain,
-      addressIndex,
-    });
-    txCounts.push(txCount);
-    if (txCount === 0) {
-      consecutiveEmpty++;
-    } else {
-      consecutiveEmpty = 0;
-    }
-    addressIndex++;
+    addressIndex += window.length;
   }
   // `empty` = chain returned ZERO used addresses; equivalent to "the
   // first `gapLimit` entries are all zero-tx" and `addresses.length === gapLimit`.

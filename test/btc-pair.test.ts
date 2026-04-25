@@ -3,6 +3,9 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as pjoin } from "node:path";
+import { HDKey } from "@scure/bip32";
+import { secp256k1 } from "@noble/curves/secp256k1";
+import { encodeAddressForFormat } from "../src/signing/btc-bip32-derive.js";
 import { setConfigDirForTesting } from "../src/config/user-config.js";
 
 /**
@@ -10,6 +13,13 @@ import { setConfigDirForTesting } from "../src/config/user-config.js";
  * via `vi.mock("../src/signing/btc-usb-loader.js")` so the test never
  * touches real USB. Pairing entries persist to ~/.vaultpilot-mcp/config.json,
  * so each test redirects the config dir to a fresh tmp dir.
+ *
+ * Post-#192: the scanner derives leaves host-side from an account-level
+ * (publicKey, chainCode) pair. Tests need REAL BIP-32 material so the
+ * production code's derivation produces self-consistent results. We
+ * use `@scure/bip32.fromMasterSeed` over a deterministic test seed to
+ * generate the account-level fixtures, then re-derive the same leaves
+ * in tests when we need to know which addresses to mock against.
  */
 
 const LEGACY_ADDR = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa";
@@ -17,8 +27,68 @@ const P2SH_ADDR = "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy";
 const SEGWIT_ADDR = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
 const TAPROOT_ADDR =
   "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4z63cgcfr0xj0qg";
+
+/**
+ * Deterministic 32-byte seed (sha256 of "vaultpilot-btc-test-seed").
+ * Drives a synthetic HD wallet whose account-level nodes feed the
+ * mocked Ledger and whose leaves we can independently derive in
+ * assertions.
+ */
+const TEST_SEED = createHash("sha256")
+  .update("vaultpilot-btc-test-seed")
+  .digest();
+const TEST_ROOT = HDKey.fromMasterSeed(TEST_SEED);
+
+interface AccountFixture {
+  /** Uncompressed pubkey hex (130 chars), as Ledger returns. */
+  publicKeyHex: string;
+  /** 32-byte chain code as hex. */
+  chainCodeHex: string;
+  /** The HDKey at the account-level path — for re-deriving leaves in tests. */
+  hd: HDKey;
+}
+
+/**
+ * Build a synthetic account-level Ledger response for one BIP-44
+ * purpose. Returns the same shape `getWalletPublicKey(accountPath)`
+ * returns from a real device, plus the underlying HDKey so tests can
+ * cross-derive leaf addresses to mock against the indexer.
+ */
+function makeAccountFixture(purpose: number, accountIndex: number): AccountFixture {
+  const accountHd = TEST_ROOT.derive(`m/${purpose}'/0'/${accountIndex}'`);
+  if (!accountHd.publicKey || !accountHd.chainCode) {
+    throw new Error("test-fixture: derivation produced no pubkey/chainCode");
+  }
+  // @scure/bip32 returns COMPRESSED pubkey; the Ledger SDK returns
+  // UNCOMPRESSED. Convert via secp256k1 point math so the fixture
+  // matches the device's actual response shape.
+  const point = secp256k1.ProjectivePoint.fromHex(
+    Buffer.from(accountHd.publicKey).toString("hex"),
+  );
+  const uncompressed = point.toRawBytes(false);
+  return {
+    publicKeyHex: Buffer.from(uncompressed).toString("hex"),
+    chainCodeHex: Buffer.from(accountHd.chainCode).toString("hex"),
+    hd: accountHd,
+  };
+}
+
+const PURPOSE_BY_TYPE = {
+  legacy: 44,
+  "p2sh-segwit": 49,
+  segwit: 84,
+  taproot: 86,
+} as const;
+type AddressType = keyof typeof PURPOSE_BY_TYPE;
+
+/**
+ * Synthetic 33-byte compressed pubkey hex for tests that write paired
+ * entries directly to the cache via `setPairedBtcAddress`. The cache
+ * stores the pubkey as opaque metadata — no validation, no derivation
+ * — so a placeholder is fine. Real derivation tests use the
+ * `makeAccountFixture` helper above instead.
+ */
 const FAKE_PUBKEY = "0".repeat(66);
-const FAKE_CHAIN_CODE = "0".repeat(64);
 
 const getWalletPublicKeyMock = vi.fn();
 const signMessageMock = vi.fn();
@@ -159,22 +229,77 @@ describe("btcLeafPath", () => {
   });
 });
 
-describe("pairLedgerBitcoin (BIP44 gap-limit scan, issue #189)", () => {
-  // Helper: synthesize a unique fake address for each derived path so
-  // the in-memory cache (keyed by path) doesn't deduplicate. Real
-  // checksum validation happens at signing time, not here.
-  function fakeAddressForPath(path: string): string {
-    // Deterministic per-path slug — use the SHA-1 of the whole path
-    // (truncated to 12 hex chars) so each unique BIP-32 leaf gets a
-    // distinct fake address. Earlier attempt sliced the raw path bytes
-    // which collapsed to the same slug because the differing trailing
-    // segments (chain/index) all share the leading 6 bytes.
-    const hash = createHash("sha1").update(path).digest("hex").slice(0, 12);
-    if (path.startsWith("44'")) return `1Fake${hash}H1nADuVeoUaqcJBZ`;
-    if (path.startsWith("49'")) return `3Fake${hash}H1nADuVeoUaqcJBZ`;
-    if (path.startsWith("84'"))
-      return `bc1qfake${hash}h1naduveoaqcjbz1ypqsxz3y`;
-    return `bc1pfake${hash}h1naduveoaqcjbz1ypqsxz3y`;
+describe("pairLedgerBitcoin (BIP44 gap-limit scan, issues #189 + #192)", () => {
+  /**
+   * Build account fixtures for all four address types at one
+   * accountIndex. Wires `getWalletPublicKeyMock` to look responses up
+   * by account-level path. Issue #192 cut the device call frequency
+   * from per-leaf to per-(type, account); the mock now matches.
+   */
+  function setupAccountFixtures(accountIndex: number): {
+    fixtures: Record<AddressType, AccountFixture>;
+    /** Derive the address the production code would produce at this leaf. */
+    deriveLeaf(
+      addressType: AddressType,
+      chain: 0 | 1,
+      addressIndex: number,
+    ): string;
+  } {
+    const fixtures: Record<AddressType, AccountFixture> = {
+      legacy: makeAccountFixture(44, accountIndex),
+      "p2sh-segwit": makeAccountFixture(49, accountIndex),
+      segwit: makeAccountFixture(84, accountIndex),
+      taproot: makeAccountFixture(86, accountIndex),
+    };
+    // Cross-derivation reuses the production helpers so the leaf
+    // addresses we mock against are EXACTLY the ones the scanner
+    // computes. Self-consistency only — not a check against external
+    // BIP-84 vectors.
+    const requireDerive = async () =>
+      import("../src/signing/btc-bip32-derive.js");
+    const formatByType: Record<AddressType, "legacy" | "p2sh" | "bech32" | "bech32m"> =
+      {
+        legacy: "legacy",
+        "p2sh-segwit": "p2sh",
+        segwit: "bech32",
+        taproot: "bech32m",
+      };
+
+    getWalletPublicKeyMock.mockImplementation(async (path: string) => {
+      // Map path to the matching fixture. The production scanner only
+      // calls getWalletPublicKey at account-level paths; any other
+      // path is a regression and should fail loudly.
+      for (const [type, fixture] of Object.entries(fixtures) as [
+        AddressType,
+        AccountFixture,
+      ][]) {
+        const purpose = PURPOSE_BY_TYPE[type];
+        if (path === `${purpose}'/0'/${accountIndex}'`) {
+          return {
+            publicKey: fixture.publicKeyHex,
+            chainCode: fixture.chainCodeHex,
+            // bitcoinAddress at the account level is meaningless;
+            // production code ignores it.
+            bitcoinAddress: "",
+          };
+        }
+      }
+      throw new Error(
+        `[test fixture] unexpected getWalletPublicKey call for path "${path}" — ` +
+          `the post-#192 scanner should only request account-level paths.`,
+      );
+    });
+
+    void requireDerive; // unused — kept for future async-only paths
+    return {
+      fixtures,
+      deriveLeaf(addressType, chain, addressIndex) {
+        const fixture = fixtures[addressType];
+        const child = fixture.hd.derive(`m/${chain}/${addressIndex}`);
+        if (!child.publicKey) throw new Error("test: child no pubkey");
+        return encodeAddressForFormat(child.publicKey, formatByType[addressType]);
+      },
+    };
   }
 
   beforeEach(() => {
@@ -191,11 +316,7 @@ describe("pairLedgerBitcoin (BIP44 gap-limit scan, issue #189)", () => {
 
   it("walks gap-limit empty receive chains and skips change for a fresh wallet", async () => {
     getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.2.3" });
-    getWalletPublicKeyMock.mockImplementation(async (path: string) => ({
-      publicKey: FAKE_PUBKEY,
-      bitcoinAddress: fakeAddressForPath(path),
-      chainCode: FAKE_CHAIN_CODE,
-    }));
+    setupAccountFixtures(0);
 
     const { pairLedgerBitcoin } = await import(
       "../src/modules/execution/index.js"
@@ -217,24 +338,20 @@ describe("pairLedgerBitcoin (BIP44 gap-limit scan, issue #189)", () => {
     expect(segwitWalk).toEqual([0, 1, 2, 3, 4]);
     expect(out.summary).toEqual({ totalDerived: 20, used: 0, unused: 20 });
 
-    // 4 types × 5 derivations = 20 USB calls; one transport open.
-    expect(getWalletPublicKeyMock).toHaveBeenCalledTimes(20);
+    // Issue #192 win: only 4 USB roundtrips total (one per address
+    // type, at the account-level path) — down from 20 leaf-by-leaf
+    // calls. All 20 leaves are derived host-side.
+    expect(getWalletPublicKeyMock).toHaveBeenCalledTimes(4);
     expect(indexerGetBalanceMock).toHaveBeenCalledTimes(20);
     expect(transportCloseMock).toHaveBeenCalledTimes(1);
   });
 
   it("walks both receive and change chains when receive has activity", async () => {
     getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.2.3" });
-    getWalletPublicKeyMock.mockImplementation(async (path: string) => ({
-      publicKey: FAKE_PUBKEY,
-      bitcoinAddress: fakeAddressForPath(path),
-      chainCode: FAKE_CHAIN_CODE,
-    }));
+    const { deriveLeaf } = setupAccountFixtures(0);
     // Mark the segwit /0/0 (receive index 0) as USED. Every other
-    // address stays at txCount=0. Receive chain stops after the gap
-    // window FOLLOWING that single used entry; change chain runs too
-    // because receive isn't fully empty.
-    const segwitReceive0 = fakeAddressForPath("84'/0'/0'/0/0");
+    // address stays at txCount=0.
+    const segwitReceive0 = deriveLeaf("segwit", 0, 0);
     indexerGetBalanceMock.mockImplementation(async (address: string) => ({
       address,
       confirmedSats: 0n,
@@ -259,6 +376,40 @@ describe("pairLedgerBitcoin (BIP44 gap-limit scan, issue #189)", () => {
       (a) => a.addressType === "segwit" && a.chain === 1,
     );
     expect(segwitChange.length).toBe(3);
+  });
+
+  it("issues parallel indexer probes within each chunk (issue #192)", async () => {
+    // Make the indexer mock track call ordering by recording when each
+    // call entered and resolved. If chunks are parallel, all 5
+    // entries in the first window enter together before any resolves;
+    // if serial, each call resolves before the next enters.
+    getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.2.3" });
+    setupAccountFixtures(0);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    indexerGetBalanceMock.mockImplementation(async (address: string) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      // Tiny delay so concurrent calls overlap measurably.
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return {
+        address,
+        confirmedSats: 0n,
+        mempoolSats: 0n,
+        totalSats: 0n,
+        txCount: 0,
+      };
+    });
+
+    const { pairLedgerBitcoin } = await import(
+      "../src/modules/execution/index.js"
+    );
+    await pairLedgerBitcoin({ accountIndex: 0, gapLimit: 5 });
+
+    // Within a single (type, chain), the 5-address window is probed
+    // in parallel — peak in-flight should reach the window size.
+    expect(maxInFlight).toBeGreaterThanOrEqual(5);
   });
 
   it("rejects gapLimit out of [1, 100]", async () => {
@@ -286,11 +437,7 @@ describe("pairLedgerBitcoin (BIP44 gap-limit scan, issue #189)", () => {
 
   it("clears stale entries for an accountIndex before re-pairing", async () => {
     getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.2.3" });
-    getWalletPublicKeyMock.mockImplementation(async (path: string) => ({
-      publicKey: FAKE_PUBKEY,
-      bitcoinAddress: fakeAddressForPath(path),
-      chainCode: FAKE_CHAIN_CODE,
-    }));
+    setupAccountFixtures(0);
     const { pairLedgerBitcoin } = await import(
       "../src/modules/execution/index.js"
     );
@@ -699,27 +846,30 @@ describe("get_ledger_status — btc section", () => {
     }));
 
     getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.2.3" });
-    let counter = 0;
-    getWalletPublicKeyMock.mockImplementation(
-      async (path: string, opts: { format: string }) => {
-        counter++;
-        // Synthesize a unique fake per call with type-correct prefixes.
-        const slug = counter.toString().padStart(3, "0");
-        const addr =
-          opts.format === "legacy"
-            ? `1Fake${slug}H1nADuVeoUaqcJBZ1Yp`
-            : opts.format === "p2sh"
-              ? `3Fake${slug}H1nADuVeoUaqcJBZ1Yp`
-              : opts.format === "bech32"
-                ? `bc1qfake${slug}h1naduveoaqcjbz1ypqsxz3yr`
-                : `bc1pfake${slug}h1naduveoaqcjbz1ypqsxz3yr`;
-        return {
-          publicKey: FAKE_PUBKEY,
-          bitcoinAddress: addr,
-          chainCode: FAKE_CHAIN_CODE,
-        };
-      },
-    );
+    // Post-#192: scanner only calls getWalletPublicKey at account-level
+    // paths. Build deterministic fixtures for all four BIP-44 purposes
+    // and respond by path lookup. Leaves are derived host-side.
+    const fixturesByPurpose = new Map<number, AccountFixture>();
+    for (const [type, purpose] of Object.entries(PURPOSE_BY_TYPE) as [
+      AddressType,
+      number,
+    ][]) {
+      void type;
+      fixturesByPurpose.set(purpose, makeAccountFixture(purpose, 0));
+    }
+    getWalletPublicKeyMock.mockImplementation(async (path: string) => {
+      const m = path.match(/^(\d+)'\/0'\/0'$/);
+      if (!m) {
+        throw new Error(`unexpected path "${path}" — expected account-level only`);
+      }
+      const fixture = fixturesByPurpose.get(Number(m[1]));
+      if (!fixture) throw new Error(`no fixture for purpose ${m[1]}`);
+      return {
+        publicKey: fixture.publicKeyHex,
+        chainCode: fixture.chainCodeHex,
+        bitcoinAddress: "",
+      };
+    });
 
     const { pairLedgerBitcoin } = await import(
       "../src/modules/execution/index.js"
