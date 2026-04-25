@@ -19,8 +19,8 @@ This is an agent-driven portfolio management tool, not a wallet replacement. The
 
 - **Portfolio** — cross-chain balances (EVM + TRON + Solana), DeFi position aggregation, USD totals
 - **Positions** — Aave, Compound, Morpho, Uniswap V3 LP, MarginFi; health-factor alerts
-- **Staking** — Lido + EigenLayer on EVM, TRON Stake 2.0 (freeze/unfreeze/vote/claim)
-- **Swaps** — LiFi on EVM (optionally cross-checked against 1inch), Jupiter v6 on Solana
+- **Staking** — Lido + EigenLayer on EVM; TRON Stake 2.0 (freeze/unfreeze/vote/claim); Solana (Marinade / Jito / native stake-account reads, Marinade + native-SOL delegation writes)
+- **Swaps** — LiFi on EVM + cross-chain EVM↔Solana (optionally cross-checked against 1inch), Jupiter v6 on Solana
 - **Execution** — prepare/sign tx for every supported protocol + native/token sends on EVM, TRON, and Solana. Solana sends are protected by a per-wallet durable-nonce account so Ledger review time doesn't race the blockhash window, and every Solana prepare runs a pre-sign `simulateTransaction` gate so program-level reverts fail loudly at prepare time rather than on broadcast.
 - **Security** — contract verification, upgradeability checks, privileged-role enumeration, DefiLlama-backed protocol risk score
 - **Utilities** — ENS resolution, token balances, transaction status
@@ -52,17 +52,56 @@ Restart Claude Code after installing. When the skill is missing, the MCP emits a
 
 **TRON**: full reads + writes via USB HID (`@ledgerhq/hw-app-trx`). Balance coverage: TRX + canonical TRC-20 stablecoins (USDT, USDC, USDD, TUSD). Staking: Stake 2.0 freeze/unfreeze/withdraw-expire-unfreeze + voting-reward claims. No lending/LP (Aave/Compound/Morpho/Uniswap aren't deployed on TRON). Pair once per session via `pair_ledger_tron`.
 
-**Solana**: SOL + SPL balances, MarginFi lending positions, Jupiter v6 swap quotes, plus write coverage for SOL/SPL transfers, MarginFi supply/withdraw/borrow/repay, and Jupiter-routed swaps. Signing via `@ledgerhq/hw-app-solana`. Sends are protected by a per-wallet durable-nonce account (~0.00144 SOL rent, reclaimable) so the ~60s blockhash validity window doesn't expire during Ledger review. One-time setup via `prepare_solana_nonce_init`; teardown via `prepare_solana_nonce_close`. Pair once per session via `pair_ledger_solana`. SOL native transfers clear-sign on device; SPL, MarginFi, and Jupiter flows blind-sign against a Message Hash — enable **Allow blind signing** in the Solana app's on-device Settings.
+**Solana**: SOL + SPL balances; MarginFi lending positions; Marinade / Jito / native stake-account reads (with SOL-equivalent valuation); Jupiter v6 swap quotes. Writes cover SOL / SPL transfers, MarginFi supply / withdraw / borrow / repay, Jupiter-routed swaps, Marinade stake + immediate-unstake, native SOL delegate / deactivate / withdraw, and LiFi-routed EVM↔Solana bridging. Signing via `@ledgerhq/hw-app-solana`. Sends are protected by a per-wallet durable-nonce account (~0.00144 SOL rent, reclaimable) so the ~60s blockhash validity window doesn't expire during Ledger review. One-time setup via `prepare_solana_nonce_init`; teardown via `prepare_solana_nonce_close`. Pair once per session via `pair_ledger_solana`. SOL native transfers clear-sign on device; SPL, MarginFi, and Jupiter flows blind-sign against a Message Hash — enable **Allow blind signing** in the Solana app's on-device Settings.
 
 Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verified 2026-04-14) or expose Solana accounts (verified 2026-04-23), which is why both paths use USB HID. Readers short-circuit cleanly on chains where a protocol isn't deployed.
 
 ## Roadmap
 
-- **MetaMask support** (WalletConnect) — alongside the existing Ledger Live integration.
-- **More Solana protocols** — Kamino, Drift, Solend lending; Marinade/Jito/native staking.
-- **Nonce-aware dropped-tx polling** (Solana) — use the on-chain nonce as the authoritative signal for whether a durable-nonce tx can still land; replaces the `lastValidBlockHeight` path that's meaningless for nonce-protected sends.
+**In flight**
+
+- **Kamino lending** (Solana) — PR #151 landed the `@solana-program/kit` bridge foundation; supply / withdraw / borrow / repay tools follow.
+
+**New protocols (EVM)**
+
+- **Curve + Convex + Pendle + GMX V2** — stable-LP / yield-trading / perps. Direct ABI integration for Curve / Convex / GMX; `@pendle/sdk-v2` for Pendle. ([plan](./claude-work/plan-defi-expansion-roadmap.md))
+- **Balancer V2 + V3 + Aura** — Vault-centric LP + V3 Hooks pools + Aura boost. ([plan](./claude-work/plan-balancer-v2-v3-aura.md))
+- **DEX liquidity verb set** — Uniswap V3 `mint` / `collect` / `decrease_liquidity` / `burn` / `rebalance` (reads already shipped), Curve LP, Balancer LP. ([plan](./claude-work/plan-dex-liquidity-provision.md))
+
+**New chains**
+
+- **Bitcoin** via Ledger USB HID — native segwit + taproot sends, portfolio integration, mempool.space fee estimation, BIP-125 RBF by default. ([plan](./claude-work/plan-bitcoin-ledger-phase1.md))
+- **Hyperliquid L1** — full parity (perps + spot + vaults + staking + TWAP). Ledger-per-trade blind-sign signing; no API-wallet shortcut. ([plan](./claude-work/plan-hyperliquid-full-parity.md))
+
+**More Solana protocols**
+
+- **Drift + Solend lending** — after Kamino lands.
+- **Jito liquid-staking writes** — reads ship today; writes blocked on the SDK's ephemeral-signer pattern, raw-ix builder workaround tracked.
+- **Multi-tx send pipeline** — unblocks flows that exceed the single-v0-tx size limit (needed for parts of Kamino / Drift).
+
+**New tools**
+
+- **`check_liquidation_risk`** — per-asset "ETH drops X% triggers liquidation" math across Aave V3 / Compound V3 / Morpho Blue. Replaces today's raw-HF-number output with actionable price deltas. ([plan](./claude-work/plan-health-factor-monitoring.md))
+- **`get_pnl_summary`** — wallet-level net PnL over preset periods across EVM / TRON / Solana. Balance-delta minus net user contribution, priced via DefiLlama historical. ([plan](./claude-work/plan-pnl-summary-tool.md))
+
+**Wallet integrations**
+
+- **MetaMask Mobile** via WalletConnect v2 — alongside Ledger Live. Reduced final-mile anchor (software wallet) surfaced clearly in docs + pairing receipt. Browser-extension bridge deferred to a follow-up. ([plan](./claude-work/plan-metamask-mobile-walletconnect.md))
+
+**Deployment modes**
+
+- **Hosted MCP endpoint** — OAuth 2.1 + bearer tokens for headless users, operator-supplied API keys, EVM-only for v1. TRON / Solana USB HID tools stay local. ([plan](./claude-work/plan-hosted-mcp-endpoint.md))
+
+**Security hardening**
+
 - **Server-integrated second-agent verification** — MCP calls an independent LLM directly on high-value sends and blocks on disagreement. Structurally closes the coordinated-agent gap that today's copy-paste `get_verification_artifact` flow only narrows.
 - **PreToolUse hook for mechanical hash enforcement** — host-side code that recomputes the pre-sign hash and blocks the MCP tool call on divergence, making the check mechanical rather than prose-based. Ships as a separate `vaultpilot-hook` repo.
+
+**Recently shipped** (previously on this list)
+
+- **Nonce-aware dropped-tx polling** (Solana) — on-chain nonce is the authoritative signal for whether a durable-nonce tx can still land; replaces the `lastValidBlockHeight` path that's meaningless for nonce-protected sends (#137).
+- **Solana liquid + native staking** — Marinade / Jito / native stake-account reads (#141, portfolio fold-in #143), Marinade writes (#145), native SOL delegate / deactivate / withdraw (#149).
+- **LiFi cross-chain EVM ↔ Solana routing** (#153, #155).
 
 ## Tools
 
@@ -81,6 +120,7 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 - `get_transaction_history` — merged recent-tx reader across external / ERC-20 / internal (and Solana `program_interaction`) with 4byte-decoded methods and historical USD values (Etherscan for EVM, TronGrid for TRON, Solana RPC for Solana)
 - `get_tron_staking`, `list_tron_witnesses` — TRON staking state + SR list
 - `get_solana_setup_status` — cheap probe of a wallet's Solana setup PDAs (nonce + MarginFi account existence)
+- `get_solana_staking_positions` — Marinade mSOL + Jito jitoSOL + native stake-account enumeration with activation status and SOL-equivalent valuation via on-chain exchange rates
 - `get_vaultpilot_config_status` — diagnostic snapshot of the local server config (RPC source per chain, API-key presence per service, paired-account counts, WC session-topic suffix, preflight-skill state). Strict no-secrets contract — booleans / counts / source enums / topic suffix only, never values. Use to triage "why isn't my balance read working" before suggesting `vaultpilot-mcp-setup`.
 - `get_ledger_device_info` — probe the connected Ledger over USB HID and report which app is currently open (name + version + dashboard flag) plus an actionable hint. Uses the dashboard-level `GET_APP_AND_VERSION` APDU so it works whether the device is on the dashboard or inside any chain app. Returns `deviceConnected: false` cleanly with a hint when no device is plugged in or udev rules are missing on Linux. Call BEFORE `pair_ledger_solana` / `pair_ledger_tron` so you can replace generic "open the Solana app" guidance with a state-aware instruction.
 - `resolve_ens_name`, `reverse_resolve_ens` — ENS forward/reverse
@@ -101,6 +141,8 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 - `prepare_solana_nonce_init` / `_close` — one-time setup/teardown of the durable-nonce PDA
 - `prepare_solana_native_send`, `prepare_solana_spl_send`, `prepare_solana_swap` — SOL, SPL (auto-includes `createAssociatedTokenAccount` when needed), Jupiter swap
 - `prepare_marginfi_init` + `prepare_marginfi_supply` / `_withdraw` / `_borrow` / `_repay` — MarginFi lending
+- `prepare_marinade_stake` / `prepare_marinade_unstake_immediate` — Marinade liquid staking: SOL → mSOL deposit, and SOL-pool immediate-unstake (fee applies; unstake-ticket delayed path deferred)
+- `prepare_native_stake_delegate` / `_deactivate` / `_withdraw` — native SOL staking: create+delegate a stake account to a validator vote pubkey, deactivate (one-epoch cooldown), drain post-cooldown (full or partial)
 - `preview_solana_send` — pins the current nonce/blockhash, serializes the message, computes the Message Hash the user matches on-device, runs the pre-sign simulation gate, emits the CHECKS PERFORMED block. Required between every `prepare_solana_*` and `send_transaction`.
 - `send_transaction` — forwards to Ledger: EVM via WalletConnect, TRON/Solana via USB HID
 
