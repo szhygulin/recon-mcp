@@ -764,11 +764,21 @@ export async function rescanBitcoinAccount(args: RescanBitcoinAccountArgs) {
   }
   const { getBitcoinIndexer } = await import("../btc/indexer.js");
   const indexer = getBitcoinIndexer();
-  // Indexer fan-out is purely HTTP — parallelize for speed. Per-address
-  // failures degrade gracefully (the entry's txCount stays at its prior
-  // value rather than getting wiped to 0).
-  const probes = await Promise.allSettled(
-    forAccount.map((e) => indexer.getBalance(e.address)),
+  const { pLimitMap } = await import("../../data/http.js");
+  const { resolveBitcoinIndexerParallelism } = await import(
+    "../../config/btc.js"
+  );
+  // Indexer fan-out is purely HTTP — parallelize for speed but cap
+  // concurrency to avoid bursting past mempool.space's free-tier
+  // rate limit (issue #199; ~40% probe failures observed without a
+  // cap on a 100+-address account). Per-address failures degrade
+  // gracefully (the entry's txCount stays at its prior value rather
+  // than getting wiped to 0). The configured cap can be overridden
+  // via `BITCOIN_INDEXER_PARALLELISM` env var; self-hosted Esplora
+  // users with no rate concerns can set it as high as 32.
+  const parallelism = resolveBitcoinIndexerParallelism();
+  const probes = await pLimitMap(forAccount, parallelism, (e) =>
+    indexer.getBalance(e.address),
   );
 
   type BTCEntry = (typeof forAccount)[number];
@@ -821,10 +831,21 @@ export async function rescanBitcoinAccount(args: RescanBitcoinAccountArgs) {
 
   // needsExtend: for any (type, chain), if the entry with the LARGEST
   // addressIndex (the trailing buffer empty from the original walk)
-  // now has txCount > 0, the gap window may no longer cover all funds.
-  // The user should re-pair to extend.
+  // now has txCount > 0, the gap window may no longer cover all funds
+  // and the user should re-pair to extend. Issue #197 — the tail
+  // probe has THREE outcomes; conflating "rejected" with "healthy"
+  // silently masks an extend that's needed.
   let needsExtend = false;
   const extendChains: Array<{
+    addressType: BTCEntry["addressType"];
+    chain: 0 | 1;
+    lastAddressIndex: number;
+  }> = [];
+  // Tail probes whose live HTTP call rejected — we don't know whether
+  // the chain has been exceeded. Caller should rerun the rescan once
+  // (or when the indexer is healthier) to re-test those chains;
+  // re-pairing is only warranted when needsExtend turns true.
+  const unverifiedChains: Array<{
     addressType: BTCEntry["addressType"];
     chain: 0 | 1;
     lastAddressIndex: number;
@@ -835,19 +856,52 @@ export async function rescanBitcoinAccount(args: RescanBitcoinAccountArgs) {
     );
     const i = forAccount.indexOf(tail);
     const probe = probes[i];
-    if (probe.status === "fulfilled" && probe.value.txCount > 0) {
+    const [addressTypeStr, chainStr] = key.split(":");
+    const chainEntry = {
+      addressType: addressTypeStr as BTCEntry["addressType"],
+      chain: Number(chainStr) as 0 | 1,
+      lastAddressIndex: tail.addressIndex ?? -1,
+    };
+    if (probe.status === "rejected") {
+      // Tail probe failed — indeterminate. Surface as `unverifiedChains`
+      // so the caller can distinguish "definitely healthy" from "we
+      // didn't get a clean signal this run".
+      unverifiedChains.push(chainEntry);
+      continue;
+    }
+    if (probe.value.txCount > 0) {
       needsExtend = true;
-      const [addressTypeStr, chainStr] = key.split(":");
-      extendChains.push({
-        addressType: addressTypeStr as BTCEntry["addressType"],
-        chain: Number(chainStr) as 0 | 1,
-        lastAddressIndex: tail.addressIndex ?? -1,
-      });
+      extendChains.push(chainEntry);
     }
   }
 
   const fetchFailures = refreshed.filter((r) => !r.fetchOk).length;
   const txCountChanges = refreshed.filter((r) => r.delta !== 0).length;
+  // Note text adapts to which combination of signals fired. The "go
+  // re-pair" prompt only fires for `needsExtend`; an `unverified`-only
+  // response asks the caller to retry the rescan rather than
+  // immediately re-pair (re-pairing forces a device interaction the
+  // user may not want for a probably-transient indexer hiccup).
+  let note: string | undefined;
+  if (needsExtend) {
+    note =
+      "The trailing empty address on at least one cached chain now has " +
+      "on-chain history. The original gap-limit window may miss funds " +
+      "past it. Run `pair_ledger_btc({ accountIndex: " +
+      args.accountIndex +
+      " })` to extend the scan with fresh on-device derivations." +
+      (unverifiedChains.length > 0
+        ? " (Some other chains' tail probes failed and are reported as " +
+          "`unverifiedChains` — those are independent of the extend signal.)"
+        : "");
+  } else if (unverifiedChains.length > 0) {
+    note =
+      "Some chains' tail probes failed this run, so we can't confirm the " +
+      "gap window is still healthy for them — see `unverifiedChains`. " +
+      "This is usually a transient indexer hiccup (rate limit / 5xx); " +
+      "re-run `rescan_btc_account` after a moment. Don't re-pair on this " +
+      "alone — `needsExtend: true` is the signal for that.";
+  }
   return {
     accountIndex: args.accountIndex,
     addressesScanned: refreshed.length,
@@ -855,17 +909,9 @@ export async function rescanBitcoinAccount(args: RescanBitcoinAccountArgs) {
     fetchFailures,
     needsExtend,
     ...(needsExtend ? { extendChains } : {}),
+    ...(unverifiedChains.length > 0 ? { unverifiedChains } : {}),
     refreshed,
-    ...(needsExtend
-      ? {
-          note:
-            "The trailing empty address on at least one cached chain now has " +
-            "on-chain history. The original gap-limit window may miss funds " +
-            "past it. Run `pair_ledger_btc({ accountIndex: " +
-            args.accountIndex +
-            " })` to extend the scan with fresh on-device derivations.",
-        }
-      : {}),
+    ...(note ? { note } : {}),
   };
 }
 
