@@ -22,10 +22,10 @@ and download **two** files for your platform:
 
 | Platform | Server binary | Setup wizard |
 |---|---|---|
-| Linux x64 | `vaultpilot-mcp-linux-x64` | `vaultpilot-mcp-setup-linux-x64` |
-| macOS Apple silicon (M1/M2/M3) | `vaultpilot-mcp-macos-arm64` | `vaultpilot-mcp-setup-macos-arm64` |
-| macOS Intel | `vaultpilot-mcp-macos-x64` | `vaultpilot-mcp-setup-macos-x64` |
-| Windows x64 | `vaultpilot-mcp-windows-x64.exe` | `vaultpilot-mcp-setup-windows-x64.exe` |
+| Linux x64 | `vaultpilot-mcp-linux-x64-server` | `vaultpilot-mcp-linux-x64-setup` |
+| macOS Apple silicon (M1/M2/M3) | `vaultpilot-mcp-macos-arm64-server` | `vaultpilot-mcp-macos-arm64-setup` |
+| macOS Intel | `vaultpilot-mcp-macos-x64-server` | `vaultpilot-mcp-macos-x64-setup` |
+| Windows x64 | `vaultpilot-mcp-windows-x64-server.exe` | `vaultpilot-mcp-windows-x64-setup.exe` |
 
 Move both files into a stable location — somewhere they will live
 permanently and your MCP client can reach them. Suggested paths:
@@ -46,9 +46,8 @@ get past it:
 **Option A — strip the quarantine attribute (one-time, command-line)**
 
 ```bash
-chmod +x ~/.local/bin/vaultpilot-mcp-macos-* ~/.local/bin/vaultpilot-mcp-setup-macos-*
+chmod +x ~/.local/bin/vaultpilot-mcp-macos-*
 xattr -d com.apple.quarantine ~/.local/bin/vaultpilot-mcp-macos-* 2>/dev/null
-xattr -d com.apple.quarantine ~/.local/bin/vaultpilot-mcp-setup-macos-* 2>/dev/null
 ```
 
 **Option B — Finder right-click → Open**
@@ -67,7 +66,7 @@ filenames. Code-signing is on the roadmap but not shipped yet.
 ### Linux
 
 ```bash
-chmod +x ~/.local/bin/vaultpilot-mcp-linux-x64 ~/.local/bin/vaultpilot-mcp-setup-linux-x64
+chmod +x ~/.local/bin/vaultpilot-mcp-linux-x64-*
 ```
 
 If you plan to use TRON or Solana hardware-signing flows, you also need
@@ -179,10 +178,10 @@ How you invoke the wizard depends on which install path you used:
 
 ```bash
 # Path A — bundled binary (macOS / Linux)
-~/.local/bin/vaultpilot-mcp-setup-<platform>
+~/.local/bin/vaultpilot-mcp-<platform>-<arch>-setup
 
 # Path A — bundled binary (Windows, PowerShell)
-& "$env:LOCALAPPDATA\Programs\vaultpilot-mcp\vaultpilot-mcp-setup-windows-x64.exe"
+& "$env:LOCALAPPDATA\Programs\vaultpilot-mcp\vaultpilot-mcp-windows-x64-setup.exe"
 
 # Path B — installed via npm
 vaultpilot-mcp-setup
@@ -227,7 +226,7 @@ request into stdin:
 ```bash
 # Path A — bundled binary
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | \
-  ~/.local/bin/vaultpilot-mcp-<platform> | head -c 200
+  ~/.local/bin/vaultpilot-mcp-<platform>-<arch>-server | head -c 200
 
 # Path B — installed via npm
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | \
@@ -251,7 +250,7 @@ slightly per install path:
 {
   "mcpServers": {
     "vaultpilot-mcp": {
-      "command": "/absolute/path/to/vaultpilot-mcp-<platform>"
+      "command": "/absolute/path/to/vaultpilot-mcp-<platform>-<arch>-server"
     }
   }
 }
@@ -346,7 +345,7 @@ across all three update paths.
 
 ```bash
 # Remove the binaries
-rm ~/.local/bin/vaultpilot-mcp-* ~/.local/bin/vaultpilot-mcp-setup-*
+rm ~/.local/bin/vaultpilot-mcp-*-server ~/.local/bin/vaultpilot-mcp-*-setup
 # (Windows: delete the files in %LOCALAPPDATA%\Programs\vaultpilot-mcp\)
 ```
 

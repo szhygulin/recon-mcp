@@ -51,23 +51,29 @@ jobs:
         # dynamic import under pkg's ESM→CJS transformer. Two binaries
         # keeps both users (MCP runtime, first-run wizard) on the
         # zero-node-install path with no fragile dispatching.
+        # Asset names follow `vaultpilot-mcp-<platform>-<arch>-<role>` so
+        # the GitHub Releases page (which sorts assets alphabetically)
+        # shows the server + setup binaries for each platform adjacent
+        # to each other rather than scattered. The previous shape put
+        # `setup` BETWEEN platforms when sorted, which made the page
+        # harder to scan for users picking one platform.
         include:
           - target: node22-linux-x64
             runner: ubuntu-latest
-            server_asset: vaultpilot-mcp-linux-x64
-            setup_asset: vaultpilot-mcp-setup-linux-x64
+            server_asset: vaultpilot-mcp-linux-x64-server
+            setup_asset: vaultpilot-mcp-linux-x64-setup
           - target: node22-macos-x64
             runner: macos-13
-            server_asset: vaultpilot-mcp-macos-x64
-            setup_asset: vaultpilot-mcp-setup-macos-x64
+            server_asset: vaultpilot-mcp-macos-x64-server
+            setup_asset: vaultpilot-mcp-macos-x64-setup
           - target: node22-macos-arm64
             runner: macos-14
-            server_asset: vaultpilot-mcp-macos-arm64
-            setup_asset: vaultpilot-mcp-setup-macos-arm64
+            server_asset: vaultpilot-mcp-macos-arm64-server
+            setup_asset: vaultpilot-mcp-macos-arm64-setup
           - target: node22-win-x64
             runner: windows-latest
-            server_asset: vaultpilot-mcp-windows-x64.exe
-            setup_asset: vaultpilot-mcp-setup-windows-x64.exe
+            server_asset: vaultpilot-mcp-windows-x64-server.exe
+            setup_asset: vaultpilot-mcp-windows-x64-setup.exe
 
     steps:
       - name: Checkout
