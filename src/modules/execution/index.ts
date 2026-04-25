@@ -147,12 +147,21 @@ export async function pairLedgerLive(): Promise<{
   approval.catch(() => {
     // WalletConnect will surface any error on the next call.
   });
+  // If this is a re-pair (prior session exists on disk), surface the
+  // cached peer version so the generated instructions lead with the UI
+  // path that matched last time. Fresh first-ever pairs have no cached
+  // session → version is undefined → instructions fall back to listing
+  // both common UI paths.
+  const { getCurrentSession } = await import("../../signing/walletconnect.js");
+  const { parseLedgerLiveVersion, ledgerLivePairingInstructions } = await import(
+    "../../signing/session.js"
+  );
+  const cached = getCurrentSession();
+  const cachedVersion = parseLedgerLiveVersion(cached?.peer?.metadata);
   return {
     uri,
     qr,
-    instructions:
-      "Open Ledger Live → Discover → WalletConnect, paste this URI (or scan the QR) to pair. " +
-      "Once pairing completes, the session is persisted; you can call `send_transaction` without re-pairing.",
+    instructions: ledgerLivePairingInstructions(cachedVersion),
     waitingForApproval: true,
   };
 }

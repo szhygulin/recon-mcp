@@ -34,6 +34,21 @@ export interface SessionStatus {
   /** Peer-advertised description. Self-reported — NOT a trusted identity. */
   peerDescription?: string;
   /**
+   * Best-effort version string parsed from peer metadata (e.g. "2.80.0").
+   * Self-reported by the peer just like `wallet` / `peerUrl` — not trusted
+   * for any security decision, only used to tailor pairing instructions
+   * for re-pair flows. Absent when no semver token could be found.
+   */
+  peerVersion?: string;
+  /**
+   * Tailored pairing instructions — emitted only when the session is
+   * unreachable (re-pair likely needed) or unpaired. The string covers
+   * both common Ledger Live UI paths (Discover vs Settings → Connected
+   * Apps) so it works across 2.x branches; `peerVersion` adds a "try this
+   * first" hint when available. Absent on healthy paired sessions.
+   */
+  pairingInstructions?: string;
+  /**
    * Only set when the paired peer's URL host is NOT on the Ledger-first-party
    * allowlist (see `isKnownLedgerPeer`). The common case — pairing with Ledger
    * Live, which advertises a `ledger.com` host — produces no warning, so the
@@ -109,6 +124,67 @@ export const PEER_UNREACHABLE_GUIDANCE =
   "Only call pair_ledger_live on explicit confirmation. Do NOT auto-re-pair on read-only requests.";
 
 /**
+ * Best-effort Ledger Live version extraction from WalletConnect peer
+ * metadata. The peer's `name`, `description`, and `url` fields are self-
+ * reported and the shape varies across Ledger Live releases — sometimes the
+ * version lands in `name` ("Ledger Live 2.80.0"), sometimes only in
+ * `description`, sometimes absent entirely. We look for the first
+ * semver-shaped token across all three fields; any match is returned
+ * verbatim. Returns `undefined` when nothing looks like a version.
+ *
+ * This is intentionally a UX hint, not load-bearing: mismatched or
+ * missing versions never affect signing — they only tailor the pairing
+ * instructions we emit for re-pair flows.
+ */
+export function parseLedgerLiveVersion(meta: {
+  name?: string;
+  description?: string;
+  url?: string;
+} | undefined): string | undefined {
+  if (!meta) return undefined;
+  const haystack = [meta.name, meta.description, meta.url]
+    .filter((s): s is string => typeof s === "string" && s.length > 0)
+    .join(" ");
+  // Lookbehind/ahead for "not a digit and not a dot" so we don't start the
+  // match mid-version (e.g. "v2.90.1" → "2.90.1", not "90.1") and don't
+  // truncate the middle-component of a three-part semver. `\b` alone was
+  // insufficient because `\b` sees `v` as a word char adjacent to `2`.
+  const match = haystack.match(/(?<![\d.])(\d+\.\d+(?:\.\d+)?)(?![\d.])/);
+  return match ? match[1] : undefined;
+}
+
+/**
+ * Produce a tailored pairing-instructions string for Ledger Live's
+ * WalletConnect flow. The WC entry point moved around across Ledger Live
+ * 2.x branches — older builds surfaced it under **Discover**, newer builds
+ * under **Settings → Connected Apps** (sometimes nested further). Rather
+ * than hard-code a single path (which rots with every Ledger Live release),
+ * we emit BOTH common paths and, when we have a detected version, add a
+ * best-effort "try this first" nudge. Unknown version → no nudge, both
+ * paths listed so the user can find whichever applies.
+ *
+ * Exported so `pair_ledger_live` and `get_ledger_status` share the same
+ * copy — otherwise the two surfaces would drift.
+ */
+export function ledgerLivePairingInstructions(
+  detectedVersion: string | undefined,
+): string {
+  const lead = detectedVersion
+    ? `Detected Ledger Live ${detectedVersion} on your last pairing. `
+    : "";
+  return (
+    `${lead}Open Ledger Live, find the WalletConnect entry, and paste the URI ` +
+    `(or scan the QR) to pair. The entry point moved across Ledger Live 2.x ` +
+    `branches — try these in order: ` +
+    `(1) Discover → WalletConnect (older builds), ` +
+    `(2) Settings → Connected Apps → WalletConnect (newer builds), ` +
+    `(3) search "WalletConnect" in Ledger Live's search bar. ` +
+    `Once pairing completes, the session is persisted and this server can ` +
+    `reuse it across tool calls without re-pairing.`
+  );
+}
+
+/**
  * Hosts the server treats as first-party Ledger WC peers. Exact match or any
  * subdomain of `ledger.com` (so `wc.apps.ledger.com`, `ledger.com`, etc. all
  * pass). Everything else trips `peerTrustWarning`.
@@ -155,6 +231,8 @@ export async function getSessionStatus(): Promise<SessionStatus> {
       paired: false,
       accounts: [],
       accountDetails: [],
+      // Unpaired: no peerVersion yet, so instructions are fully generic.
+      pairingInstructions: ledgerLivePairingInstructions(undefined),
       ...tronSection,
       ...solanaSection,
     };
@@ -163,6 +241,7 @@ export async function getSessionStatus(): Promise<SessionStatus> {
   const meta = session.peer?.metadata;
   const unreachable = isPeerUnreachable();
   const warnPeer = !isKnownLedgerPeer(meta?.url);
+  const version = parseLedgerLiveVersion(meta);
   return {
     paired: true,
     accounts,
@@ -172,9 +251,16 @@ export async function getSessionStatus(): Promise<SessionStatus> {
     ...(meta?.name ? { wallet: meta.name } : {}),
     ...(meta?.url ? { peerUrl: meta.url } : {}),
     ...(meta?.description ? { peerDescription: meta.description } : {}),
+    ...(version ? { peerVersion: version } : {}),
     ...(warnPeer ? { peerTrustWarning: PEER_TRUST_WARNING } : {}),
     ...(unreachable
-      ? { peerUnreachable: true, peerUnreachableGuidance: PEER_UNREACHABLE_GUIDANCE }
+      ? {
+          peerUnreachable: true,
+          peerUnreachableGuidance: PEER_UNREACHABLE_GUIDANCE,
+          // Emit re-pair instructions on the unreachable path — the
+          // healthy-paired case doesn't need them cluttering responses.
+          pairingInstructions: ledgerLivePairingInstructions(version),
+        }
       : {}),
     ...tronSection,
     ...solanaSection,
