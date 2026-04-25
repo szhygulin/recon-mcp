@@ -472,8 +472,16 @@ describe("renderLedgerHashBlock", () => {
 });
 
 describe("previewSendHandler — LEDGER BLIND-SIGN HASH gating", () => {
-  beforeEach(() => vi.resetModules());
-  afterEach(() => vi.restoreAllMocks());
+  // No `vi.resetModules()` here on purpose. These tests don't use
+  // `vi.doMock` — the `fakePreview` closure is the full input — so a
+  // module reset would only buy module-graph cache invalidation we
+  // don't need. Keeping the reset made these tests flaky: each fresh
+  // `await import("../src/index.js")` re-walks the entire server
+  // module graph (BTC + Solana + TRON + LiFi + Kamino + …) and on a
+  // contended worker can spill past vitest's 5s default timeout. The
+  // `previewSendHandler` returned function is pure (no module-level
+  // state read/written), so cross-test contamination from upstream
+  // tests in other files is impossible here.
 
   // Live-test regression: on a 0.1 ETH self-send the user saw a
   // `LEDGER BLIND-SIGN HASH — RELAY VERBATIM TO USER` block even though
