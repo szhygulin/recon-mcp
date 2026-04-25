@@ -110,6 +110,7 @@ import type {
   PrepareMarginfiRepayArgs,
   PrepareMarinadeStakeArgs,
   PrepareMarinadeUnstakeImmediateArgs,
+  PrepareJitoStakeArgs,
   PrepareNativeStakeDelegateArgs,
   PrepareNativeStakeDeactivateArgs,
   PrepareNativeStakeWithdrawArgs,
@@ -491,6 +492,17 @@ export async function prepareMarinadeUnstakeImmediate(
   const prepared = await buildMarinadeUnstakeImmediate({
     wallet: args.wallet,
     amountMSol: args.amountMSol,
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareJitoStake(
+  args: PrepareJitoStakeArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildJitoStake } = await import("../solana/jito.js");
+  const prepared = await buildJitoStake({
+    wallet: args.wallet,
+    amountSol: args.amountSol,
   });
   return prepared as unknown as PreparedSolanaTx;
 }
@@ -2157,6 +2169,7 @@ export interface SolanaVerificationArtifact {
     | "marginfi_repay"
     | "marinade_stake"
     | "marinade_unstake_immediate"
+    | "jito_stake"
     | "native_stake_delegate"
     | "native_stake_deactivate"
     | "native_stake_withdraw"

@@ -73,6 +73,7 @@ import {
   prepareMarginfiBorrow,
   prepareMarginfiRepay,
   prepareMarinadeStake,
+  prepareJitoStake,
   prepareMarinadeUnstakeImmediate,
   prepareNativeStakeDelegate,
   prepareNativeStakeDeactivate,
@@ -131,6 +132,7 @@ import {
   prepareMarginfiBorrowInput,
   prepareMarginfiRepayInput,
   prepareMarinadeStakeInput,
+  prepareJitoStakeInput,
   prepareMarinadeUnstakeImmediateInput,
   prepareNativeStakeDelegateInput,
   prepareNativeStakeDeactivateInput,
@@ -1592,6 +1594,29 @@ async function main() {
       inputSchema: prepareMarinadeStakeInput.shape,
     },
     handler(prepareMarinadeStake)
+  );
+
+  server.registerTool(
+    "prepare_jito_stake",
+    {
+      description:
+        "Build an unsigned Jito stake-pool deposit tx: deposit `amountSol` SOL " +
+        "into Jito's stake pool and receive jitoSOL (Jito's liquid-staking token). " +
+        "Uses the SPL stake-pool program's raw `DepositSol` instruction with the " +
+        "user's wallet as the on-chain `fundingAccount` — no ephemeral keypair, " +
+        "Ledger-compatible. The high-level @solana/spl-stake-pool helper would " +
+        "generate an ephemeral SOL-transfer keypair (incompatible with Ledger-only " +
+        "signing); we hand-build the ix to avoid that. The jitoSOL ATA is created " +
+        "automatically on first stake (~0.002 SOL ATA rent, reclaimable). DURABLE " +
+        "NONCE REQUIRED — wallet must have run `prepare_solana_nonce_init` first; " +
+        "otherwise this tool errors. BLIND-SIGN on Ledger (the SPL stake-pool " +
+        "program is not in the Solana app's clear-sign registry) — match the " +
+        "Message Hash on-device after `preview_solana_send`. Unstake (immediate " +
+        "via WithdrawSol or delayed via WithdrawStake) is not yet exposed; tracked " +
+        "as a follow-up.",
+      inputSchema: prepareJitoStakeInput.shape,
+    },
+    handler(prepareJitoStake)
   );
 
   server.registerTool(

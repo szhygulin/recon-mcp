@@ -949,6 +949,7 @@ export interface RenderableSolanaPrepareResult {
     | "marginfi_repay"
     | "marinade_stake"
     | "marinade_unstake_immediate"
+    | "jito_stake"
     | "native_stake_delegate"
     | "native_stake_deactivate"
     | "native_stake_withdraw"
@@ -999,6 +1000,8 @@ function solanaActionLabel(action: RenderableSolanaPrepareResult["action"]): str
       return "Marinade stake (SOL → mSOL)";
     case "marinade_unstake_immediate":
       return "Marinade liquid unstake (mSOL → SOL via pool)";
+    case "jito_stake":
+      return "Jito stake (SOL → jitoSOL via SPL stake-pool)";
     case "native_stake_delegate":
       return "Native stake delegate (create stake account + delegate to validator)";
     case "native_stake_deactivate":

@@ -878,6 +878,7 @@ export interface UnsignedSolanaTx {
     | "marginfi_repay"
     | "marinade_stake"
     | "marinade_unstake_immediate"
+    | "jito_stake"
     | "native_stake_delegate"
     | "native_stake_deactivate"
     | "native_stake_withdraw"

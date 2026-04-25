@@ -302,6 +302,29 @@ export const prepareMarinadeStakeInput = z.object({
     ),
 });
 
+/**
+ * Jito stake-pool deposit. Mirrors the Marinade-stake schema shape but
+ * uses the SPL stake-pool program directly via raw `StakePoolInstruction`
+ * builders (no ephemeral keypair — Ledger-compatible). Withdraw flows
+ * are not yet exposed; see `src/modules/solana/jito.ts` doc-comment for
+ * the rationale.
+ */
+export const prepareJitoStakeInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana wallet that funds the deposit and receives jitoSOL. Must have an " +
+      "initialized durable-nonce account (prepare_solana_nonce_init) and enough " +
+      "SOL to cover the deposit + jitoSOL ATA rent (~0.002 SOL if the ATA " +
+      "doesn't exist yet) + tx fee.",
+  ),
+  amountSol: z
+    .string()
+    .max(50)
+    .describe(
+      'Human-readable SOL amount to stake (e.g. "1.5"). Decimals are SOL-native ' +
+        "(9 dec); the builder rounds down to lamport precision.",
+    ),
+});
+
 export const prepareMarinadeUnstakeImmediateInput = z.object({
   wallet: solanaAddressSchema.describe(
     "Solana wallet that burns mSOL and receives SOL. Must have an initialized " +
@@ -869,6 +892,7 @@ export type PrepareMarinadeStakeArgs = z.infer<typeof prepareMarinadeStakeInput>
 export type PrepareMarinadeUnstakeImmediateArgs = z.infer<
   typeof prepareMarinadeUnstakeImmediateInput
 >;
+export type PrepareJitoStakeArgs = z.infer<typeof prepareJitoStakeInput>;
 export type PrepareNativeStakeDelegateArgs = z.infer<
   typeof prepareNativeStakeDelegateInput
 >;
