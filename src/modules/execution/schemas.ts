@@ -1088,7 +1088,27 @@ export const getBitcoinAccountBalanceInput = z.object({
         "their on-chain balances, and surfaces the per-address breakdown so the " +
         "agent can show which legs hold the funds. Empty cached addresses are " +
         "skipped to keep the response tight; if you suspect the cache is stale, " +
-        "re-run `pair_ledger_btc` first."
+        "call `rescan_btc_account` (indexer-only, no Ledger needed)."
+    ),
+});
+
+export const rescanBitcoinAccountInput = z.object({
+  accountIndex: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .describe(
+      "Ledger Bitcoin account slot to rescan. Must already be paired (call " +
+        "`pair_ledger_btc` first). Re-queries the indexer for the live " +
+        "`txCount` of every cached address under this account and updates " +
+        "the persisted cache — useful after the user has received funds or " +
+        "the indexer was stale at original scan time. Pure indexer-side: no " +
+        "Ledger / USB interaction. If the LAST cached address on a chain " +
+        "(originally an empty buffer) now has on-chain history, the response " +
+        "flags `needsExtend: true` — the gap-limit window may now miss funds " +
+        "past it, and the caller should re-run `pair_ledger_btc` (which DOES " +
+        "use the device) to extend the walked window."
     ),
 });
 
@@ -1161,6 +1181,9 @@ export type GetBitcoinFeeEstimatesArgs = z.infer<typeof getBitcoinFeeEstimatesIn
 export type GetBitcoinBlockTipArgs = z.infer<typeof getBitcoinBlockTipInput>;
 export type GetBitcoinAccountBalanceArgs = z.infer<
   typeof getBitcoinAccountBalanceInput
+>;
+export type RescanBitcoinAccountArgs = z.infer<
+  typeof rescanBitcoinAccountInput
 >;
 export const signBtcMessageInput = z.object({
   wallet: bitcoinAddressSchema.describe(

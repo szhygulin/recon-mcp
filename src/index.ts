@@ -91,6 +91,7 @@ import {
   getBitcoinFeeEstimates,
   getBitcoinBlockTip,
   getBitcoinAccountBalance,
+  rescanBitcoinAccount,
   getBitcoinTxHistory,
   prepareBitcoinNativeSend,
   signBtcMessage,
@@ -151,6 +152,7 @@ import {
   getBitcoinFeeEstimatesInput,
   getBitcoinBlockTipInput,
   getBitcoinAccountBalanceInput,
+  rescanBitcoinAccountInput,
   getBitcoinTxHistoryInput,
   prepareBitcoinNativeSendInput,
   signBtcMessageInput,
@@ -1846,6 +1848,27 @@ async function main() {
   );
 
   server.registerTool(
+    "rescan_btc_account",
+    {
+      description:
+        "READ-ONLY — refresh the cached on-chain `txCount` for every paired " +
+        "Bitcoin address under one Ledger account by re-querying the indexer. " +
+        "Pure indexer-side: NO Ledger / USB interaction. Use this after the " +
+        "user has received funds (so a previously-empty cached address now " +
+        "has history) or when the indexer was stale at the original " +
+        "`pair_ledger_btc` scan time. Updates the persisted cache, so " +
+        "subsequent `get_btc_account_balance` reflects the refresh without " +
+        "another rescan. Flags `needsExtend: true` when the trailing buffer " +
+        "address on any cached chain now has on-chain history — that's the " +
+        "signal that funds may exist past the original gap-limit window, " +
+        "and the caller should re-run `pair_ledger_btc` to extend the walked " +
+        "window with fresh on-device derivations.",
+      inputSchema: rescanBitcoinAccountInput.shape,
+    },
+    handler(rescanBitcoinAccount)
+  );
+
+  server.registerTool(
     "get_btc_account_balance",
     {
       description:
@@ -1856,9 +1879,12 @@ async function main() {
         "rolled-up totals (confirmed + mempool + total sats / BTC) and a " +
         "per-address breakdown including type, BIP-32 chain (0=receive, " +
         "1=change), and addressIndex. Skips empty cached entries (the trailing " +
-        "fresh-receive addresses) to keep fan-out tight. Re-run `pair_ledger_btc` " +
-        "if you suspect the cache is stale (e.g. recent receive past the gap " +
-        "window).",
+        "fresh-receive addresses) to keep fan-out tight. If the cache is " +
+        "stale (recent receive on a previously-empty cached address), call " +
+        "`rescan_btc_account` to refresh — pure indexer fetch, no Ledger " +
+        "needed. Only re-run `pair_ledger_btc` when funds may have landed " +
+        "PAST the originally-walked gap window (the rescan flags that case " +
+        "via `needsExtend: true`).",
       inputSchema: getBitcoinAccountBalanceInput.shape,
     },
     handler(getBitcoinAccountBalance)

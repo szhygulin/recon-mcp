@@ -397,6 +397,237 @@ describe("get_btc_account_balance (issue #189)", () => {
   });
 });
 
+describe("rescan_btc_account (issue #191)", () => {
+  beforeEach(() => {
+    indexerGetBalanceMock.mockReset();
+  });
+
+  it("refreshes stale txCount on cached entries without touching the device", async () => {
+    const { setPairedBtcAddress } = await import(
+      "../src/signing/btc-usb-signer.js"
+    );
+    // Cached state: an entry that was empty at original scan time.
+    setPairedBtcAddress({
+      address: SEGWIT_ADDR,
+      publicKey: FAKE_PUBKEY,
+      path: "84'/0'/0'/0/2",
+      appVersion: "2.2.3",
+      addressType: "segwit",
+      accountIndex: 0,
+      chain: 0,
+      addressIndex: 2,
+      txCount: 0,
+    });
+    // Indexer now reports 4 txs on it (user received funds).
+    indexerGetBalanceMock.mockImplementation(async (address: string) => ({
+      address,
+      confirmedSats: 100_000n,
+      mempoolSats: 0n,
+      totalSats: 100_000n,
+      txCount: 4,
+    }));
+
+    const { rescanBitcoinAccount } = await import(
+      "../src/modules/execution/index.js"
+    );
+    const out = await rescanBitcoinAccount({ accountIndex: 0 });
+    expect(out.addressesScanned).toBe(1);
+    expect(out.txCountChanges).toBe(1);
+    expect(out.fetchFailures).toBe(0);
+    expect(out.refreshed[0].previousTxCount).toBe(0);
+    expect(out.refreshed[0].txCount).toBe(4);
+    expect(out.refreshed[0].delta).toBe(4);
+
+    // Assert no USB activity — the rescan must NOT call openLedger.
+    expect(getWalletPublicKeyMock).not.toHaveBeenCalled();
+    expect(getAppAndVersionMock).not.toHaveBeenCalled();
+    expect(transportCloseMock).not.toHaveBeenCalled();
+
+    // Cache mutation persisted: subsequent get_btc_account_balance
+    // skips the indexer fan-out for entries with txCount > 0 and uses
+    // the now-refreshed value. We just check via getPairedBtcAddresses.
+    const { getPairedBtcAddresses } = await import(
+      "../src/signing/btc-usb-signer.js"
+    );
+    const cached = getPairedBtcAddresses();
+    expect(cached[0].txCount).toBe(4);
+  });
+
+  it("flags needsExtend when the trailing buffer empty becomes used", async () => {
+    const { setPairedBtcAddress } = await import(
+      "../src/signing/btc-usb-signer.js"
+    );
+    // Three cached segwit-receive entries: indices 0..2. The TRAILING
+    // empty (index 2) is what becomes used on rescan — that means funds
+    // may also exist past the original gap window.
+    setPairedBtcAddress({
+      address: "bc1qaaa1aaa1aaa1aaa1aaa1aaa1aaa1aaa1abcdef",
+      publicKey: FAKE_PUBKEY,
+      path: "84'/0'/0'/0/0",
+      appVersion: "2.2.3",
+      addressType: "segwit",
+      accountIndex: 0,
+      chain: 0,
+      addressIndex: 0,
+      txCount: 5,
+    });
+    setPairedBtcAddress({
+      address: "bc1qbbb1bbb1bbb1bbb1bbb1bbb1bbb1bbb1abcdef",
+      publicKey: FAKE_PUBKEY,
+      path: "84'/0'/0'/0/1",
+      appVersion: "2.2.3",
+      addressType: "segwit",
+      accountIndex: 0,
+      chain: 0,
+      addressIndex: 1,
+      txCount: 0,
+    });
+    const TRAILING = "bc1qccc1ccc1ccc1ccc1ccc1ccc1ccc1ccc1abcdef";
+    setPairedBtcAddress({
+      address: TRAILING,
+      publicKey: FAKE_PUBKEY,
+      path: "84'/0'/0'/0/2",
+      appVersion: "2.2.3",
+      addressType: "segwit",
+      accountIndex: 0,
+      chain: 0,
+      addressIndex: 2,
+      txCount: 0,
+    });
+    // Indexer reports the trailing empty (index 2) is now used.
+    indexerGetBalanceMock.mockImplementation(async (address: string) => ({
+      address,
+      confirmedSats: 0n,
+      mempoolSats: 0n,
+      totalSats: 0n,
+      txCount: address === TRAILING ? 1 : address.startsWith("bc1qaaa") ? 5 : 0,
+    }));
+
+    const { rescanBitcoinAccount } = await import(
+      "../src/modules/execution/index.js"
+    );
+    const out = await rescanBitcoinAccount({ accountIndex: 0 });
+    expect(out.needsExtend).toBe(true);
+    expect(out.extendChains).toEqual([
+      { addressType: "segwit", chain: 0, lastAddressIndex: 2 },
+    ]);
+    expect(out.note).toMatch(/Run `pair_ledger_btc/);
+  });
+
+  it("does NOT flag needsExtend when only an interior empty becomes used", async () => {
+    const { setPairedBtcAddress } = await import(
+      "../src/signing/btc-usb-signer.js"
+    );
+    // Index 0 (used), index 1 (interior empty), index 2 (trailing empty).
+    setPairedBtcAddress({
+      address: "bc1qaaa2aaa2aaa2aaa2aaa2aaa2aaa2aaa2abcdef",
+      publicKey: FAKE_PUBKEY,
+      path: "84'/0'/0'/0/0",
+      appVersion: "2.2.3",
+      addressType: "segwit",
+      accountIndex: 0,
+      chain: 0,
+      addressIndex: 0,
+      txCount: 5,
+    });
+    const INTERIOR = "bc1qbbb2bbb2bbb2bbb2bbb2bbb2bbb2bbb2abcdef";
+    setPairedBtcAddress({
+      address: INTERIOR,
+      publicKey: FAKE_PUBKEY,
+      path: "84'/0'/0'/0/1",
+      appVersion: "2.2.3",
+      addressType: "segwit",
+      accountIndex: 0,
+      chain: 0,
+      addressIndex: 1,
+      txCount: 0,
+    });
+    const TRAILING = "bc1qccc2ccc2ccc2ccc2ccc2ccc2ccc2ccc2abcdef";
+    setPairedBtcAddress({
+      address: TRAILING,
+      publicKey: FAKE_PUBKEY,
+      path: "84'/0'/0'/0/2",
+      appVersion: "2.2.3",
+      addressType: "segwit",
+      accountIndex: 0,
+      chain: 0,
+      addressIndex: 2,
+      txCount: 0,
+    });
+    // Interior gets activity; trailing stays empty.
+    indexerGetBalanceMock.mockImplementation(async (address: string) => ({
+      address,
+      confirmedSats: 0n,
+      mempoolSats: 0n,
+      totalSats: 0n,
+      txCount: address === INTERIOR ? 1 : address.startsWith("bc1qaaa") ? 5 : 0,
+    }));
+
+    const { rescanBitcoinAccount } = await import(
+      "../src/modules/execution/index.js"
+    );
+    const out = await rescanBitcoinAccount({ accountIndex: 0 });
+    expect(out.needsExtend).toBe(false);
+    expect(out.txCountChanges).toBe(1);
+  });
+
+  it("throws when no entries are cached for the requested accountIndex", async () => {
+    const { rescanBitcoinAccount } = await import(
+      "../src/modules/execution/index.js"
+    );
+    await expect(
+      rescanBitcoinAccount({ accountIndex: 99 }),
+    ).rejects.toThrow(/No paired Bitcoin entries cached/);
+  });
+
+  it("degrades gracefully when one indexer call fails", async () => {
+    const { setPairedBtcAddress } = await import(
+      "../src/signing/btc-usb-signer.js"
+    );
+    setPairedBtcAddress({
+      address: SEGWIT_ADDR,
+      publicKey: FAKE_PUBKEY,
+      path: "84'/0'/0'/0/0",
+      appVersion: "2.2.3",
+      addressType: "segwit",
+      accountIndex: 0,
+      chain: 0,
+      addressIndex: 0,
+      txCount: 7,
+    });
+    setPairedBtcAddress({
+      address: TAPROOT_ADDR,
+      publicKey: FAKE_PUBKEY,
+      path: "86'/0'/0'/0/0",
+      appVersion: "2.2.3",
+      addressType: "taproot",
+      accountIndex: 0,
+      chain: 0,
+      addressIndex: 0,
+      txCount: 3,
+    });
+    indexerGetBalanceMock.mockImplementation(async (address: string) => {
+      if (address === SEGWIT_ADDR) throw new Error("indexer 502");
+      return {
+        address,
+        confirmedSats: 0n,
+        mempoolSats: 0n,
+        totalSats: 0n,
+        txCount: 5,
+      };
+    });
+    const { rescanBitcoinAccount } = await import(
+      "../src/modules/execution/index.js"
+    );
+    const out = await rescanBitcoinAccount({ accountIndex: 0 });
+    expect(out.fetchFailures).toBe(1);
+    // Failed entry keeps its prior txCount.
+    const segwit = out.refreshed.find((r) => r.address === SEGWIT_ADDR);
+    expect(segwit?.txCount).toBe(7);
+    expect(segwit?.fetchOk).toBe(false);
+  });
+});
+
 describe("clearPairedBtcAccount", () => {
   it("drops only entries matching the given accountIndex", async () => {
     const { setPairedBtcAddress, clearPairedBtcAccount, getPairedBtcAddresses } =
