@@ -124,6 +124,12 @@ export interface SessionStatus {
     addressType: "legacy" | "p2sh-segwit" | "segwit" | "taproot";
     /** Null when the path doesn't match the standard 5-segment layout. */
     accountIndex: number | null;
+    /** BIP-32 chain: 0 = receive, 1 = change. Null for non-standard paths. */
+    chain?: 0 | 1 | null;
+    /** BIP-32 address index. Null for non-standard paths. */
+    addressIndex?: number | null;
+    /** Tx count from the indexer at last pair_ledger_btc scan. Snapshot only. */
+    txCount?: number;
   }>;
 }
 
@@ -253,6 +259,9 @@ export async function getSessionStatus(): Promise<SessionStatus> {
             appVersion: e.appVersion,
             addressType: e.addressType,
             accountIndex: e.accountIndex,
+            ...(e.chain !== undefined ? { chain: e.chain } : {}),
+            ...(e.addressIndex !== undefined ? { addressIndex: e.addressIndex } : {}),
+            ...(e.txCount !== undefined ? { txCount: e.txCount } : {}),
           })),
         }
       : {};

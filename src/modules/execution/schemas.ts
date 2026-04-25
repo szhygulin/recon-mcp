@@ -49,11 +49,27 @@ export const pairLedgerBitcoinInput = z.object({
     .optional()
     .describe(
       "Ledger Bitcoin account slot. One call enumerates ALL FOUR address types " +
-        "for the given index (legacy at `44'/0'/<n>'/0/0`, p2sh-segwit at " +
-        "`49'/0'/<n>'/0/0`, native segwit at `84'/0'/<n>'/0/0`, taproot at " +
-        "`86'/0'/<n>'/0/0`) so the user sees their full footprint per Ledger Live " +
-        "Bitcoin account. 0 = first Bitcoin account, 1 = second, etc. Omit for the " +
-        "default (index 0). Call again with a different index to expose more accounts."
+        "for the given index (legacy at `44'/0'/<n>'/...`, p2sh-segwit at " +
+        "`49'/0'/<n>'/...`, native segwit at `84'/0'/<n>'/...`, taproot at " +
+        "`86'/0'/<n>'/...`) AND walks both the receive (`/0/i`) and change " +
+        "(`/1/i`) chains using BIP44 gap-limit scanning so a previously-used " +
+        "wallet's later-index funds aren't missed. 0 = first Bitcoin account, " +
+        "1 = second, etc. Omit for the default (index 0). Call again with a " +
+        "different index to expose more accounts; calling with the same index " +
+        "refreshes the cache."
+    ),
+  gapLimit: z
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe(
+      "BIP44 gap limit — stop walking each (type, chain) after this many " +
+        "consecutive addresses with zero on-chain history. Default 20 (matches " +
+        "Electrum / Sparrow / Trezor Suite / Ledger Live). Lower values speed " +
+        "the scan up but risk missing funds across larger gaps; raise it for " +
+        "wallets that may have skipped indices. Capped at 100."
     ),
 });
 
@@ -1035,6 +1051,23 @@ export const getBitcoinFeeEstimatesInput = z.object({});
 
 export const getBitcoinBlockTipInput = z.object({});
 
+export const getBitcoinAccountBalanceInput = z.object({
+  accountIndex: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .describe(
+      "Ledger Bitcoin account slot to aggregate. Must have been paired via " +
+        "`pair_ledger_btc` first — the tool fans out across every cached " +
+        "USED address (txCount > 0 at scan time) for this accountIndex, sums " +
+        "their on-chain balances, and surfaces the per-address breakdown so the " +
+        "agent can show which legs hold the funds. Empty cached addresses are " +
+        "skipped to keep the response tight; if you suspect the cache is stale, " +
+        "re-run `pair_ledger_btc` first."
+    ),
+});
+
 export const prepareBitcoinNativeSendInput = z.object({
   wallet: bitcoinAddressSchema.describe(
     "Paired Bitcoin source address. Must already be in `pairings.bitcoin` " +
@@ -1102,6 +1135,9 @@ export type GetBitcoinBalanceArgs = z.infer<typeof getBitcoinBalanceInput>;
 export type GetBitcoinBalancesArgs = z.infer<typeof getBitcoinBalancesInput>;
 export type GetBitcoinFeeEstimatesArgs = z.infer<typeof getBitcoinFeeEstimatesInput>;
 export type GetBitcoinBlockTipArgs = z.infer<typeof getBitcoinBlockTipInput>;
+export type GetBitcoinAccountBalanceArgs = z.infer<
+  typeof getBitcoinAccountBalanceInput
+>;
 export const signBtcMessageInput = z.object({
   wallet: bitcoinAddressSchema.describe(
     "Paired Bitcoin source address. Must already be in `pairings.bitcoin` " +

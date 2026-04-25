@@ -89,6 +89,7 @@ import {
   getBitcoinBalances,
   getBitcoinFeeEstimates,
   getBitcoinBlockTip,
+  getBitcoinAccountBalance,
   getBitcoinTxHistory,
   prepareBitcoinNativeSend,
   signBtcMessage,
@@ -147,6 +148,7 @@ import {
   getBitcoinBalancesInput,
   getBitcoinFeeEstimatesInput,
   getBitcoinBlockTipInput,
+  getBitcoinAccountBalanceInput,
   getBitcoinTxHistoryInput,
   prepareBitcoinNativeSendInput,
   signBtcMessageInput,
@@ -1816,6 +1818,25 @@ async function main() {
       inputSchema: getBitcoinFeeEstimatesInput.shape,
     },
     handler(getBitcoinFeeEstimates)
+  );
+
+  server.registerTool(
+    "get_btc_account_balance",
+    {
+      description:
+        "READ-ONLY — sum the on-chain balance across every cached USED address " +
+        "(txCount > 0 at last scan) for one Ledger Bitcoin account index. " +
+        "Walks the pairing cache populated by `pair_ledger_btc`'s BIP44 gap-limit " +
+        "scan, fans out to the indexer for live balances, and returns both the " +
+        "rolled-up totals (confirmed + mempool + total sats / BTC) and a " +
+        "per-address breakdown including type, BIP-32 chain (0=receive, " +
+        "1=change), and addressIndex. Skips empty cached entries (the trailing " +
+        "fresh-receive addresses) to keep fan-out tight. Re-run `pair_ledger_btc` " +
+        "if you suspect the cache is stale (e.g. recent receive past the gap " +
+        "window).",
+      inputSchema: getBitcoinAccountBalanceInput.shape,
+    },
+    handler(getBitcoinAccountBalance)
   );
 
   server.registerTool(
