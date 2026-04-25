@@ -3,7 +3,7 @@
   "name": "io.github.szhygulin/vaultpilot-mcp",
   "title": "VaultPilot MCP",
   "description": "Safety first. Hardware-verified DeFi for AI agents — designed for when the AI can be compromised.",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "websiteUrl": "https://github.com/szhygulin/vaultpilot-mcp",
   "repository": {
     "url": "https://github.com/szhygulin/vaultpilot-mcp",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "vaultpilot-mcp",
-      "version": "0.8.1",
+      "version": "0.8.2",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {
