@@ -1099,7 +1099,28 @@ export const getBitcoinTxHistoryInput = z.object({
 export type GetBitcoinBalanceArgs = z.infer<typeof getBitcoinBalanceInput>;
 export type GetBitcoinBalancesArgs = z.infer<typeof getBitcoinBalancesInput>;
 export type GetBitcoinFeeEstimatesArgs = z.infer<typeof getBitcoinFeeEstimatesInput>;
+export const signBtcMessageInput = z.object({
+  wallet: bitcoinAddressSchema.describe(
+    "Paired Bitcoin source address. Must already be in `pairings.bitcoin` " +
+      "(call `pair_ledger_btc` first). Phase 1 message-signing supports legacy " +
+      "(`1...`), P2SH-wrapped (`3...`), and native segwit (`bc1q...`); taproot " +
+      "(`bc1p...`) is refused because BIP-322 — taproot's canonical scheme — " +
+      "is not yet exposed by the Ledger BTC app."
+  ),
+  message: z
+    .string()
+    .min(1)
+    .max(10_000)
+    .describe(
+      "UTF-8 message to sign. Typical Sign-In-with-Bitcoin payloads are a " +
+        "few hundred chars; capped at 10000 because the Ledger BTC app's " +
+        "on-device review window chunks the message into 16-char segments " +
+        "and a multi-KB string isn't realistically reviewable."
+    ),
+});
+
 export type GetBitcoinTxHistoryArgs = z.infer<typeof getBitcoinTxHistoryInput>;
 export type PrepareBitcoinNativeSendArgs = z.infer<typeof prepareBitcoinNativeSendInput>;
+export type SignBtcMessageArgs = z.infer<typeof signBtcMessageInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
 export type GetLedgerDeviceInfoArgs = z.infer<typeof getLedgerDeviceInfoInput>;

@@ -326,6 +326,102 @@ export async function signBtcPsbtOnLedger(args: {
   });
 }
 
+/**
+ * Sign an arbitrary message with the Bitcoin Signed Message format
+ * (BIP-137, ECDSA). Returns a base64-encoded compact signature in the
+ * shape `<headerByte><r><s>`, where the header byte encodes recovery id
+ * + address type:
+ *
+ *   - legacy (P2PKH, compressed key):           31..34 (= 27 + 4 + recid)
+ *   - P2SH-wrapped segwit (BIP-137 extension):  35..38 (= 35 + recid)
+ *   - native segwit P2WPKH (BIP-137 extension): 39..42 (= 39 + recid)
+ *   - taproot P2TR:                              NOT SUPPORTED (BIP-322
+ *     is the canonical scheme for taproot, and the Ledger BTC app does
+ *     not expose a BIP-322 path; refusing is more honest than emitting
+ *     a non-verifying ECDSA blob).
+ *
+ * The `expectedFrom` re-derivation guard mirrors `signBtcPsbtOnLedger`:
+ * if the device produces a different address for `path`, refuse to sign
+ * — same proof-of-identity invariant we apply to tx signing.
+ */
+export async function signBtcMessageOnLedger(args: {
+  expectedFrom: string;
+  path: string;
+  addressFormat: "legacy" | "p2sh" | "bech32" | "bech32m";
+  /** UTF-8 message bytes — the SDK takes the hex of the raw bytes. */
+  messageHex: string;
+  addressType: "legacy" | "p2sh-segwit" | "segwit" | "taproot";
+}): Promise<{
+  signature: string;
+  format: "BIP-137";
+}> {
+  if (args.addressType === "taproot") {
+    throw new Error(
+      "Taproot (P2TR) message signing requires BIP-322, which the Ledger BTC app " +
+        "does not yet expose. Sign with a paired segwit (`bc1q…`), P2SH-wrapped " +
+        "(`3…`), or legacy (`1…`) address instead. The 4 address types share a " +
+        "Ledger account — `pair_ledger_btc` derives all four — so picking a " +
+        "non-taproot address from the same Ledger wallet is one tool call away.",
+    );
+  }
+  return withBtcUsbLock(async () => {
+    const { app, transport, rawTransport } = await openLedger();
+    try {
+      const appVer = await getAppAndVersion(rawTransport);
+      if (
+        appVer.name !== "Bitcoin" &&
+        appVer.name !== "Bitcoin Test" &&
+        appVer.name !== "BTC"
+      ) {
+        throw new Error(
+          `Ledger reports the open app as "${appVer.name}" v${appVer.version}, but Bitcoin is required. ` +
+            `Open the Bitcoin app on your device and retry.`,
+        );
+      }
+      const derived = await app.getWalletPublicKey(args.path, {
+        format: args.addressFormat,
+      });
+      if (derived.bitcoinAddress !== args.expectedFrom) {
+        throw new Error(
+          `Ledger derived ${derived.bitcoinAddress} at ${args.path}, but the request asks ` +
+            `to sign with ${args.expectedFrom}. The device may have a different seed loaded, ` +
+            `the Bitcoin app version may have changed the derivation, or the cached pairing ` +
+            `is stale. Re-pair via \`pair_ledger_btc\` and retry.`,
+        );
+      }
+      const sig = await app.signMessage(args.path, args.messageHex);
+      // Address-type → BIP-137 header offset (compressed-key + segwit
+      // extensions). The Ledger SDK returns `v` as the recovery id (0 or
+      // 1); we add the address-type-specific base.
+      let base: number;
+      switch (args.addressType) {
+        case "legacy":
+          base = 31; // 27 + 4 (compressed)
+          break;
+        case "p2sh-segwit":
+          base = 35;
+          break;
+        case "segwit":
+          base = 39;
+          break;
+        default:
+          // Unreachable — taproot is rejected up-top.
+          throw new Error(`Unsupported addressType ${String(args.addressType)}`);
+      }
+      const recid = sig.v & 1;
+      const headerByte = base + recid;
+      const sigBuf = Buffer.concat([
+        Buffer.from([headerByte]),
+        Buffer.from(sig.r, "hex"),
+        Buffer.from(sig.s, "hex"),
+      ]);
+      return { signature: sigBuf.toString("base64"), format: "BIP-137" as const };
+    } finally {
+      await (transport as BtcLedgerTransport).close().catch(() => {});
+    }
+  });
+}
+
 // --- Pairing cache --------------------------------------------------------
 
 const pairedBtcByPath = new Map<string, PairedBitcoinEntry>();

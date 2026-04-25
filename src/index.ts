@@ -90,6 +90,7 @@ import {
   getBitcoinFeeEstimates,
   getBitcoinTxHistory,
   prepareBitcoinNativeSend,
+  signBtcMessage,
   getMarginfiPositions,
   getSolanaStakingPositions,
   getMarginfiDiagnostics,
@@ -146,6 +147,7 @@ import {
   getBitcoinFeeEstimatesInput,
   getBitcoinTxHistoryInput,
   prepareBitcoinNativeSendInput,
+  signBtcMessageInput,
   getMarginfiPositionsInput,
   getSolanaStakingPositionsInput,
   getMarginfiDiagnosticsInput,
@@ -869,12 +871,12 @@ async function main() {
         "HARD RULE — wallet enumeration: NEVER ask the user to paste a wallet address.",
         "If the user refers to their wallets collectively or positionally — \"my wallet\",",
         "\"my wallets\", \"all my accounts\", \"all my ledger accounts\", \"first account\",",
-        "\"account 2\", \"my TRON wallet\", etc. — call `get_ledger_status` FIRST and use the",
-        "returned `accounts` (EVM) / `tron[]` arrays. This applies to READ-ONLY queries",
-        "(balances, portfolio, history) as well as transaction flows. Only ask the user to",
-        "paste an address if `get_ledger_status` returns `paired: false` AND no TRON entries",
-        "are cached. Refusing to list paired addresses and asking for a paste is a UX",
-        "regression.",
+        "\"account 2\", \"my TRON wallet\", \"my BTC wallet\", etc. — call `get_ledger_status`",
+        "FIRST and use the returned `accounts` (EVM) / `tron[]` / `solana[]` / `bitcoin[]`",
+        "arrays. This applies to READ-ONLY queries (balances, portfolio, history) as well",
+        "as transaction flows. Only ask the user to paste an address if `get_ledger_status`",
+        "returns `paired: false` AND no non-EVM entries are cached. Refusing to list paired",
+        "addresses and asking for a paste is a UX regression.",
         "",
         "USE THIS SERVER WHEN the user asks about:",
         "- their crypto wallet, balances, tokens, ETH, ERC-20 holdings, or ENS name",
@@ -888,6 +890,15 @@ async function main() {
         "  and pending unfreezes — via `get_tron_staking` or folded into",
         "  `get_portfolio_summary` when a `tronAddress` is passed. TRON has no",
         "  lending/LP coverage in this server (not deployed there).",
+        "- their Bitcoin balances (BTC at any of the 4 standard mainnet address types —",
+        "  legacy `1...`, P2SH `3...`, native segwit `bc1q...`, taproot `bc1p...`) when",
+        "  the user supplies one or more BTC addresses via the `bitcoinAddress` /",
+        "  `bitcoinAddresses` arg on `get_portfolio_summary`, or via the standalone",
+        "  `get_btc_balance` / `get_btc_balances` tools. Bitcoin signing covers native",
+        "  segwit + taproot sends (`prepare_btc_send` → `send_transaction`) and legacy/",
+        "  P2SH/segwit message-signing (`sign_message_btc`, BIP-137; taproot signing",
+        "  requires BIP-322 which the Ledger BTC app does not yet expose). BRC-20 / Runes",
+        "  / Ordinals are out of scope in Phase 1.",
         "- their Solana balances (SOL + SPL tokens — USDC, USDT, JUP, BONK, JTO,",
         "  mSOL, jitoSOL — via Associated Token Accounts) when the user supplies a",
         "  base58 address (43-44 chars, no prefix) via the `solanaAddress` arg on",
@@ -1836,6 +1847,24 @@ async function main() {
       inputSchema: prepareBitcoinNativeSendInput.shape,
     },
     handler(prepareBitcoinNativeSend, { toolName: "prepare_btc_send" })
+  );
+
+  server.registerTool(
+    "sign_message_btc",
+    {
+      description:
+        "Sign a UTF-8 message with a paired Bitcoin address using the Bitcoin Signed " +
+        "Message format (BIP-137). Returns a base64-encoded compact signature with a " +
+        "header byte that matches the address-type convention (legacy / P2SH-wrapped / " +
+        "native segwit). The Ledger BTC app prompts the user to confirm the message " +
+        "text on-device before signing — same clear-sign UX as send-side flows. " +
+        "Useful for Sign-In-with-Bitcoin flows and proof-of-ownership challenges. " +
+        "Taproot (`bc1p…`) addresses are refused: BIP-322 (taproot's canonical message " +
+        "scheme) is not yet exposed by the Ledger BTC app; sign with one of your other " +
+        "paired address types from the same Ledger account instead.",
+      inputSchema: signBtcMessageInput.shape,
+    },
+    handler(signBtcMessage, { toolName: "sign_message_btc" })
   );
 
   server.registerTool(

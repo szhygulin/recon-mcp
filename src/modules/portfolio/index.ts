@@ -18,6 +18,7 @@ import { getSolanaStakingPositions as readSolanaStakingPositions } from "../posi
 import { getSolanaConnection } from "../solana/rpc.js";
 import type { GetPortfolioSummaryArgs } from "./schemas.js";
 import type {
+  BitcoinPortfolioSlice,
   LendingPositionUnion,
   MultiWalletPortfolioSummary,
   PortfolioCoverage,
@@ -32,6 +33,8 @@ import type {
   TronStakingSlice,
   UnpricedAsset,
 } from "../../types/index.js";
+import { getBitcoinBalances } from "../btc/balances.js";
+import { fetchBitcoinPrice } from "../btc/price.js";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
 
 function zeroNative(wallet: `0x${string}`, chain: SupportedChain): TokenAmount {
@@ -106,14 +109,30 @@ export async function getPortfolioSummary(
 
   const tronAddress = args.tronAddress;
   const solanaAddress = args.solanaAddress;
+  if (args.bitcoinAddress && args.bitcoinAddresses && args.bitcoinAddresses.length > 0) {
+    throw new Error(
+      "Pass `bitcoinAddress` (single) OR `bitcoinAddresses` (array), not both."
+    );
+  }
+  const bitcoinAddresses = args.bitcoinAddresses?.length
+    ? args.bitcoinAddresses
+    : args.bitcoinAddress
+    ? [args.bitcoinAddress]
+    : [];
 
   // Branch: single wallet returns the flat summary; multi-wallet aggregates.
-  // TRON and Solana are only folded into the single-wallet summary — a
-  // multi-wallet view with a single non-EVM address would be ambiguous
+  // TRON, Solana, and Bitcoin are only folded into the single-wallet summary —
+  // a multi-wallet view with a single non-EVM address would be ambiguous
   // ("which EVM wallet does it belong to?"), so the caller must use
   // single-wallet mode when pairing with a non-EVM address.
   if (wallets.length === 1) {
-    return buildWalletSummary(wallets[0], chains, tronAddress, solanaAddress);
+    return buildWalletSummary(
+      wallets[0],
+      chains,
+      tronAddress,
+      solanaAddress,
+      bitcoinAddresses,
+    );
   }
   if (tronAddress) {
     throw new Error(
@@ -123,6 +142,11 @@ export async function getPortfolioSummary(
   if (solanaAddress) {
     throw new Error(
       "`solanaAddress` can only be combined with a single EVM `wallet`. For multi-wallet portfolios, call `get_portfolio_summary` once per EVM wallet."
+    );
+  }
+  if (bitcoinAddresses.length > 0) {
+    throw new Error(
+      "`bitcoinAddress` / `bitcoinAddresses` can only be combined with a single EVM `wallet`. For multi-wallet portfolios, call `get_portfolio_summary` once per EVM wallet."
     );
   }
 
@@ -286,11 +310,95 @@ function mergeCoverage(entries: { covered: boolean; errored?: boolean; note?: st
   };
 }
 
+/**
+ * Fetch BTC balances for `addresses` and project into the slice the
+ * portfolio aggregator folds into `breakdown.bitcoin` + `bitcoinUsd`.
+ * Errors per-address are surfaced as `priceMissing: true`-equivalent
+ * dropped entries — the slice's `walletBalancesUsd` only sums entries
+ * that priced cleanly. Returns null when the indexer call itself
+ * fails for every address (caller flips coverage.bitcoin.errored).
+ */
+async function fetchBitcoinSlice(
+  addresses: string[],
+): Promise<{ slice: BitcoinPortfolioSlice; unpriced: UnpricedAsset[] } | null> {
+  // getBitcoinBalances returns per-address ok/err entries; `null` is reserved
+  // for catastrophic failure (every address errored).
+  let results: Awaited<ReturnType<typeof getBitcoinBalances>>;
+  try {
+    results = await getBitcoinBalances(addresses);
+  } catch {
+    return null;
+  }
+  const okBalances = results.filter((r) => r.ok);
+  if (okBalances.length === 0) return null;
+  const price = await fetchBitcoinPrice();
+  const unpriced: UnpricedAsset[] = [];
+  let walletBalancesUsd = 0;
+  const balances = results.map((r) => {
+    if (!r.ok) {
+      // Fail-soft: surface the failed address with zero balance + priceMissing
+      // so the caller still sees which address failed in `breakdown.bitcoin`
+      // without zero-padding the whole response.
+      return {
+        address: r.address,
+        addressType: "p2wpkh" as const,
+        confirmedSats: "0",
+        mempoolSats: "0",
+        totalSats: "0",
+        confirmedBtc: "0",
+        totalBtc: "0",
+        symbol: "BTC" as const,
+        decimals: 8 as const,
+        txCount: 0,
+        priceMissing: true,
+      };
+    }
+    const b = r.balance;
+    let valueUsd: number | undefined;
+    let priceMissing: boolean | undefined;
+    if (price !== undefined && b.confirmedSats > 0n) {
+      valueUsd = Number(b.confirmedBtc) * price;
+      walletBalancesUsd += valueUsd;
+    } else if (b.confirmedSats > 0n) {
+      // Non-zero balance but no price → flag for the unpriced-assets list.
+      priceMissing = true;
+      unpriced.push({
+        chain: "bitcoin",
+        symbol: "BTC",
+        amount: b.confirmedBtc,
+      });
+    }
+    return {
+      address: b.address,
+      addressType: b.addressType,
+      confirmedSats: b.confirmedSats.toString(),
+      mempoolSats: b.mempoolSats.toString(),
+      totalSats: b.totalSats.toString(),
+      confirmedBtc: b.confirmedBtc,
+      totalBtc: b.totalBtc,
+      symbol: b.symbol,
+      decimals: b.decimals,
+      txCount: b.txCount,
+      ...(valueUsd !== undefined ? { valueUsd: round(valueUsd, 2) } : {}),
+      ...(priceMissing ? { priceMissing: true } : {}),
+    };
+  });
+  return {
+    slice: {
+      addresses,
+      balances,
+      walletBalancesUsd: round(walletBalancesUsd, 2),
+    },
+    unpriced,
+  };
+}
+
 async function buildWalletSummary(
   wallet: `0x${string}`,
   chains: SupportedChain[],
   tronAddress?: string,
-  solanaAddress?: string
+  solanaAddress?: string,
+  bitcoinAddresses: string[] = [],
 ): Promise<PortfolioSummary> {
   // Each subquery is independent — one failing shouldn't kill the summary. We swap
   // Promise.all for per-task catchers that return empty payloads on error, so a flaky
@@ -314,6 +422,7 @@ async function buildWalletSummary(
     marginfi: false,
     kamino: false,
     solanaStaking: false,
+    bitcoin: false,
   };
   // Per-market Compound V3 failure detail, populated when at least one market
   // read errored. Surfaced in coverage.compound.note so the agent can tell
@@ -354,6 +463,7 @@ async function buildWalletSummary(
     marginfiPositionsRaw,
     kaminoPositionsRaw,
     solanaStakingRaw,
+    bitcoinFetch,
   ] = await Promise.all([
       Promise.all(
         chains.map((c) =>
@@ -520,7 +630,24 @@ async function buildWalletSummary(
         : (Promise.resolve(null) as Promise<Awaited<
             ReturnType<typeof readSolanaStakingPositions>
           > | null>),
+      // Bitcoin reads are only attempted when the caller passed at least
+      // one address. Errors are independent of EVM/TRON/Solana coverage —
+      // a flaky mempool.space call doesn't drop the rest of the summary.
+      bitcoinAddresses.length > 0
+        ? fetchBitcoinSlice(bitcoinAddresses).catch(() => {
+            errors.bitcoin = true;
+            return null as Awaited<ReturnType<typeof fetchBitcoinSlice>>;
+          })
+        : (Promise.resolve(null) as Promise<Awaited<
+            ReturnType<typeof fetchBitcoinSlice>
+          > | null>),
     ]);
+  if (bitcoinAddresses.length > 0 && bitcoinFetch === null) {
+    // fetchBitcoinSlice returns null when every per-address read errored
+    // (or the indexer call itself threw). Distinct from "not attempted":
+    // surface as coverage.bitcoin.errored.
+    errors.bitcoin = true;
+  }
   const morphoPositions = morphoByChain.flatMap((r) => r.positions);
 
   // Filter zero native balances out.
@@ -538,6 +665,9 @@ async function buildWalletSummary(
   const tronBalancesUsd = tronSlice?.walletBalancesUsd ?? 0;
   const tronStakingUsd = tronStakingSlice?.totalStakedUsd ?? 0;
   const solanaBalancesUsd = solanaSlice?.walletBalancesUsd ?? 0;
+  const bitcoinSlice = bitcoinFetch?.slice;
+  const bitcoinBalancesUsd = bitcoinSlice?.walletBalancesUsd ?? 0;
+  const bitcoinUnpriced = bitcoinFetch?.unpriced ?? [];
   // Project the reader's full MarginfiPosition into the thin slice the
   // types module exposes. Dropping bank/mint keeps the portfolio JSON
   // compact — callers who want the full per-bank detail call
@@ -643,7 +773,8 @@ async function buildWalletSummary(
   const walletBalancesUsd = round(
     [...native, ...erc20].reduce((sum, t) => sum + (t.valueUsd ?? 0), 0) +
       tronBalancesUsd +
-      solanaBalancesUsd,
+      solanaBalancesUsd +
+      bitcoinBalancesUsd,
     2
   );
   const lendingNetUsd = round(
@@ -656,8 +787,8 @@ async function buildWalletSummary(
     2
   );
   // totalUsd folds every accounted-for slice: EVM balances + TRON balances +
-  // Solana balances are already rolled into walletBalancesUsd; TRON staking
-  // and Solana staking are surfaced separately. EVM-only slices
+  // Solana balances + BTC balances are already rolled into walletBalancesUsd;
+  // TRON staking and Solana staking are surfaced separately. EVM-only slices
   // (lending/LP/staking) are added here.
   const totalUsd = round(
     walletBalancesUsd +
@@ -720,6 +851,7 @@ async function buildWalletSummary(
     ...evmUnpricedDetail,
     ...tronUnpricedDetail,
     ...solanaUnpricedDetail,
+    ...bitcoinUnpriced,
   ];
   const unpricedAssets = unpricedAssetsDetail.length;
   const coverage: PortfolioCoverage = {
@@ -767,6 +899,20 @@ async function buildWalletSummary(
             : { covered: true },
           tronStaking: errors.tronStaking
             ? { covered: false, errored: true, note: "TRON staking fetch failed (TronGrid getReward/accounts) — frozen + rewards not included in totals." }
+            : { covered: true },
+        }
+      : {}),
+    ...(bitcoinAddresses.length > 0
+      ? {
+          bitcoin: errors.bitcoin
+            ? {
+                covered: false,
+                errored: true,
+                note:
+                  "Bitcoin indexer fetch failed — BTC balances not included in totals. " +
+                  "Check `bitcoinIndexerUrl` config or BITCOIN_INDEXER_URL env var; " +
+                  "mempool.space's free public API is the default.",
+              }
             : { covered: true },
         }
       : {}),
@@ -840,6 +986,7 @@ async function buildWalletSummary(
     ...(solanaStakingSlice && solanaStakingSlice.totalSolEquivalent > 0
       ? { solanaStakingUsd: round(solanaStakingUsd, 2) }
       : {}),
+    ...(bitcoinSlice ? { bitcoinUsd: round(bitcoinBalancesUsd, 2) } : {}),
     breakdown: {
       native,
       erc20,
@@ -847,6 +994,7 @@ async function buildWalletSummary(
       lp: lp.positions,
       staking: staking.positions,
       ...(tronBreakdown ? { tron: tronBreakdown } : {}),
+      ...(bitcoinSlice ? { bitcoin: bitcoinSlice } : {}),
       ...(solanaSlice
         ? {
             solana: {
