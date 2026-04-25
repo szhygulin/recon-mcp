@@ -900,7 +900,10 @@ export interface RenderableSolanaPrepareResult {
     | "native_stake_withdraw"
     | "lifi_solana_swap"
     | "kamino_init_user"
-    | "kamino_supply";
+    | "kamino_supply"
+    | "kamino_borrow"
+    | "kamino_withdraw"
+    | "kamino_repay";
   from: string;
   description: string;
   decoded: { functionName: string; args: Record<string, string> };
@@ -954,6 +957,12 @@ function solanaActionLabel(action: RenderableSolanaPrepareResult["action"]): str
       return "Kamino account init (create LUT + userMetadata + obligation)";
     case "kamino_supply":
       return "Kamino supply";
+    case "kamino_borrow":
+      return "Kamino borrow";
+    case "kamino_withdraw":
+      return "Kamino withdraw";
+    case "kamino_repay":
+      return "Kamino repay";
   }
 }
 
@@ -1351,7 +1360,11 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
     tx.action === "native_stake_withdraw";
   const isLifiSolana = tx.action === "lifi_solana_swap";
   const isKamino =
-    tx.action === "kamino_init_user" || tx.action === "kamino_supply";
+    tx.action === "kamino_init_user" ||
+    tx.action === "kamino_supply" ||
+    tx.action === "kamino_borrow" ||
+    tx.action === "kamino_withdraw" ||
+    tx.action === "kamino_repay";
   const marginfiActionLabel =
     tx.action === "marginfi_init"
       ? "account init"

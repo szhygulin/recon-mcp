@@ -107,6 +107,10 @@ import type {
   PrepareTronLifiSwapArgs,
   PrepareKaminoInitUserArgs,
   PrepareKaminoSupplyArgs,
+  PrepareKaminoBorrowArgs,
+  PrepareKaminoWithdrawArgs,
+  PrepareKaminoRepayArgs,
+  GetKaminoPositionsArgs,
   GetMarginfiPositionsArgs,
   GetSolanaStakingPositionsArgs,
   PreviewSendArgs,
@@ -499,6 +503,50 @@ export async function prepareKaminoSupply(
     amount: args.amount,
   });
   return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareKaminoBorrow(
+  args: PrepareKaminoBorrowArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildKaminoBorrow } = await import("../solana/kamino-actions.js");
+  const prepared = await buildKaminoBorrow({
+    wallet: args.wallet,
+    mint: args.mint,
+    amount: args.amount,
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareKaminoWithdraw(
+  args: PrepareKaminoWithdrawArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildKaminoWithdraw } = await import("../solana/kamino-actions.js");
+  const prepared = await buildKaminoWithdraw({
+    wallet: args.wallet,
+    mint: args.mint,
+    amount: args.amount,
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareKaminoRepay(
+  args: PrepareKaminoRepayArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildKaminoRepay } = await import("../solana/kamino-actions.js");
+  const prepared = await buildKaminoRepay({
+    wallet: args.wallet,
+    mint: args.mint,
+    amount: args.amount,
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function getKaminoPositions(args: GetKaminoPositionsArgs) {
+  const { getKaminoPositions: reader } = await import(
+    "../positions/kamino.js"
+  );
+  const conn = getSolanaConnection();
+  return { positions: await reader(conn, args.wallet) };
 }
 
 export async function getMarginfiPositions(args: GetMarginfiPositionsArgs) {
@@ -1894,7 +1942,10 @@ export interface SolanaVerificationArtifact {
     | "native_stake_withdraw"
     | "lifi_solana_swap"
     | "kamino_init_user"
-    | "kamino_supply";
+    | "kamino_supply"
+    | "kamino_borrow"
+    | "kamino_withdraw"
+    | "kamino_repay";
   from: string;
   messageBase64: string;
   recentBlockhash: string;
@@ -2016,6 +2067,9 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
       "lifi_solana_swap",
       "kamino_init_user",
       "kamino_supply",
+      "kamino_borrow",
+      "kamino_withdraw",
+      "kamino_repay",
     ]);
     const ledgerMessageHash = blindSignActions.has(tx.action)
       ? solanaLedgerMessageHash(tx.messageBase64)

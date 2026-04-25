@@ -13,6 +13,7 @@ import { getTronBalances } from "../tron/balances.js";
 import { getTronStaking } from "../tron/staking.js";
 import { getSolanaBalances } from "../solana/balances.js";
 import { getMarginfiPositions as readMarginfiPositions } from "../positions/marginfi.js";
+import { getKaminoPositions as readKaminoPositions } from "../positions/kamino.js";
 import { getSolanaStakingPositions as readSolanaStakingPositions } from "../positions/solana-staking.js";
 import { getSolanaConnection } from "../solana/rpc.js";
 import type { GetPortfolioSummaryArgs } from "./schemas.js";
@@ -22,6 +23,7 @@ import type {
   PortfolioCoverage,
   PortfolioSummary,
   SolanaMarginfiPositionSlice,
+  SolanaKaminoPositionSlice,
   SolanaPortfolioSlice,
   SolanaStakingPositionSlice,
   SupportedChain,
@@ -310,6 +312,7 @@ async function buildWalletSummary(
     tronStaking: false,
     solana: false,
     marginfi: false,
+    kamino: false,
     solanaStaking: false,
   };
   // Per-market Compound V3 failure detail, populated when at least one market
@@ -349,6 +352,7 @@ async function buildWalletSummary(
     tronStakingSlice,
     solanaSlice,
     marginfiPositionsRaw,
+    kaminoPositionsRaw,
     solanaStakingRaw,
   ] = await Promise.all([
       Promise.all(
@@ -486,6 +490,17 @@ async function buildWalletSummary(
         : (Promise.resolve([]) as Promise<
             Awaited<ReturnType<typeof readMarginfiPositions>>
           >),
+      // Kamino positions ride the same gate. The reader short-circuits when
+      // the wallet has no Kamino userMetadata (1 RPC lookup, then return [])
+      // so the cost of the idle case is essentially free.
+      solanaAddress
+        ? readKaminoPositions(getSolanaConnection(), solanaAddress).catch(() => {
+            errors.kamino = true;
+            return [] as Awaited<ReturnType<typeof readKaminoPositions>>;
+          })
+        : (Promise.resolve([]) as Promise<
+            Awaited<ReturnType<typeof readKaminoPositions>>
+          >),
       // Solana staking rides the same gate. The consolidated reader fans
       // out to three sub-readers (Marinade SDK, Jito stake pool, native
       // stake-program enumeration) in parallel. A failure is independent
@@ -549,10 +564,34 @@ async function buildWalletSummary(
       warnings: pos.warnings,
     }),
   );
-  const solanaLendingUsd = marginfiSlices.reduce(
-    (s, p) => s + p.netValueUsd,
-    0,
+  // Project the Kamino reader's full KaminoPosition into the thin slice.
+  // Mirror of marginfiSlices: drop reserve/mint/obligation-internal fields
+  // that the portfolio JSON doesn't need.
+  const kaminoSlices: SolanaKaminoPositionSlice[] = kaminoPositionsRaw.map(
+    (pos) => ({
+      protocol: "kamino",
+      chain: "solana",
+      obligation: pos.obligation,
+      supplied: pos.supplied.map((b) => ({
+        symbol: b.symbol,
+        amount: b.amount,
+        valueUsd: b.valueUsd,
+      })),
+      borrowed: pos.borrowed.map((b) => ({
+        symbol: b.symbol,
+        amount: b.amount,
+        valueUsd: b.valueUsd,
+      })),
+      totalSuppliedUsd: pos.totalSuppliedUsd,
+      totalBorrowedUsd: pos.totalBorrowedUsd,
+      netValueUsd: pos.netValueUsd,
+      healthFactor: pos.healthFactor,
+      warnings: pos.warnings,
+    }),
   );
+  const solanaLendingUsd =
+    marginfiSlices.reduce((s, p) => s + p.netValueUsd, 0) +
+    kaminoSlices.reduce((s, p) => s + p.netValueUsd, 0);
 
   // Solana staking slice — shrink the consolidated reader's shape into the
   // portfolio's thin projection. Dropping the wallet/protocol/chain fields
@@ -743,6 +782,13 @@ async function buildWalletSummary(
                 note: "MarginFi position fetch failed — lending positions not included in totals. SDK or oracle RPC error; balances still loaded if coverage.solana is covered.",
               }
             : { covered: true },
+          kamino: errors.kamino
+            ? {
+                covered: false,
+                errored: true,
+                note: "Kamino position fetch failed — lending positions not included in totals. Kamino market load or obligation read failed; balances + MarginFi still loaded if their coverage flags are covered.",
+              }
+            : { covered: true },
           solanaStaking: errors.solanaStaking
             ? {
                 covered: false,
@@ -788,7 +834,7 @@ async function buildWalletSummary(
     ...(tronBreakdown ? { tronUsd: tronUsdTotal } : {}),
     ...(tronStakingSlice ? { tronStakingUsd: round(tronStakingUsd, 2) } : {}),
     ...(solanaSlice ? { solanaUsd: round(solanaBalancesUsd, 2) } : {}),
-    ...(marginfiSlices.length > 0
+    ...(marginfiSlices.length > 0 || kaminoSlices.length > 0
       ? { solanaLendingUsd: round(solanaLendingUsd, 2) }
       : {}),
     ...(solanaStakingSlice && solanaStakingSlice.totalSolEquivalent > 0
@@ -808,7 +854,19 @@ async function buildWalletSummary(
               ...(marginfiSlices.length > 0
                 ? {
                     marginfi: marginfiSlices,
-                    marginfiNetUsd: round(solanaLendingUsd, 2),
+                    marginfiNetUsd: round(
+                      marginfiSlices.reduce((s, p) => s + p.netValueUsd, 0),
+                      2,
+                    ),
+                  }
+                : {}),
+              ...(kaminoSlices.length > 0
+                ? {
+                    kamino: kaminoSlices,
+                    kaminoNetUsd: round(
+                      kaminoSlices.reduce((s, p) => s + p.netValueUsd, 0),
+                      2,
+                    ),
                   }
                 : {}),
               ...(solanaStakingSlice &&

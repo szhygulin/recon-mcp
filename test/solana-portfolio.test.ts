@@ -68,6 +68,15 @@ const SOL_WALLET = "5rJ3dKM5K8hYkHcH67z3kjRtGkGuGh3aVi9fFpq9ZuDi";
 // aggregator doesn't try to decode a real Marinade state or Jito pool.
 const marinadeStateStub = { mSolPrice: 1 };
 const getMarinadeStateMock = vi.fn(async () => marinadeStateStub);
+// Stub the Kamino position reader at module boundary so the portfolio
+// aggregator's Kamino fan-out never reaches into the real SDK (Kamino's
+// transitive zstddec dep loads a wasm via `fetch(...)` that breaks under
+// vitest's Response shim). Mirror the existing
+// `../src/modules/positions/index.js` mock pattern.
+vi.mock("../src/modules/positions/kamino.js", () => ({
+  getKaminoPositions: async () => [],
+}));
+
 vi.mock("@marinade.finance/marinade-ts-sdk", () => {
   class MarinadeConfig {}
   class Marinade {
@@ -294,5 +303,71 @@ describe("get_portfolio_summary with solanaAddress", () => {
     expect(res.coverage.solanaStaking?.covered).toBe(true);
     expect(res.breakdown.solana?.staking).toBeUndefined();
     expect(res.solanaStakingUsd).toBeUndefined();
+  });
+
+  it("folds Kamino positions into breakdown.solana.kamino + solanaLendingUsd when present", async () => {
+    connectionStub.getBalance.mockResolvedValue(1_000_000_000);
+    connectionStub.getTokenAccountsByOwner.mockResolvedValue({ value: [] });
+
+    // Override the default empty Kamino mock for this test only — return
+    // one synthetic position with $1500 supplied / $300 borrowed.
+    const kaminoMod = await import("../src/modules/positions/kamino.js");
+    vi.spyOn(kaminoMod, "getKaminoPositions").mockResolvedValue([
+      {
+        protocol: "kamino",
+        chain: "solana",
+        wallet: SOL_WALLET,
+        obligation: "ObligationFakeAddress11111111111111111111111",
+        supplied: [{ reserve: "ReserveSol", mint: "SolMint", symbol: "SOL", amount: "10", valueUsd: 1500 }],
+        borrowed: [{ reserve: "ReserveUsdc", mint: "UsdcMint", symbol: "USDC", amount: "300", valueUsd: 300 }],
+        totalSuppliedUsd: 1500,
+        totalBorrowedUsd: 300,
+        netValueUsd: 1200,
+        healthFactor: 4,
+        warnings: [],
+      },
+    ]);
+
+    const { getPortfolioSummary } = await import("../src/modules/portfolio/index.js");
+    const res = await getPortfolioSummary({
+      wallet: EVM_WALLET,
+      chains: ["ethereum"],
+      solanaAddress: SOL_WALLET,
+    });
+
+    expect("breakdown" in res).toBe(true);
+    if (!("breakdown" in res)) return;
+    const solana = res.breakdown.solana;
+    expect(solana?.kamino).toBeDefined();
+    expect(solana?.kamino?.length).toBe(1);
+    expect(solana?.kamino?.[0].protocol).toBe("kamino");
+    expect(solana?.kamino?.[0].netValueUsd).toBe(1200);
+    expect(solana?.kaminoNetUsd).toBe(1200);
+    expect(res.solanaLendingUsd).toBe(1200);
+    expect(res.coverage.kamino?.covered).toBe(true);
+    expect(res.coverage.kamino?.errored).toBeUndefined();
+  });
+
+  it("marks coverage.kamino as errored when the reader fails — balance + MarginFi coverage unaffected", async () => {
+    connectionStub.getBalance.mockResolvedValue(1_000_000_000);
+    connectionStub.getTokenAccountsByOwner.mockResolvedValue({ value: [] });
+
+    const kaminoMod = await import("../src/modules/positions/kamino.js");
+    vi.spyOn(kaminoMod, "getKaminoPositions").mockRejectedValue(
+      new Error("Kamino market load failed"),
+    );
+
+    const { getPortfolioSummary } = await import("../src/modules/portfolio/index.js");
+    const res = await getPortfolioSummary({
+      wallet: EVM_WALLET,
+      chains: ["ethereum"],
+      solanaAddress: SOL_WALLET,
+    });
+
+    expect("breakdown" in res).toBe(true);
+    if (!("breakdown" in res)) return;
+    expect(res.coverage.kamino?.errored).toBe(true);
+    expect(res.coverage.solana?.covered).toBe(true); // balance fetch survived
+    expect(res.breakdown.solana?.kamino).toBeUndefined();
   });
 });
