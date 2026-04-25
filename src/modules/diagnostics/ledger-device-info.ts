@@ -148,6 +148,51 @@ function hintForOpenError(msg: string): string {
 }
 
 /**
+ * Compute a one-line, error-message-appendable hint based on the current
+ * device state, given the expected app name (e.g. `"Solana"`, `"Tron"`).
+ *
+ * Designed for catch-blocks in `pair_ledger_solana` / `pair_ledger_tron`
+ * (and future signing flows) so a generic `mapLedgerError` message like
+ * *"Ledger is connected but the Tron app isn't open"* can be enriched
+ * with what's *actually* open right now: *"...your Bitcoin app is open
+ * — switch to Tron."*
+ *
+ * Returns `undefined` (caller appends nothing) when:
+ *   - The probe itself fails (no point making one error message about
+ *     a different probe's failure).
+ *   - The device isn't connected — `mapLedgerError` already handles
+ *     that case with its own "plug in / unlock" guidance.
+ *   - The expected app IS already open — the original error must be
+ *     about something else (locked, USB glitch, …) and a "wrong app"
+ *     hint would be misleading.
+ *
+ * Otherwise returns a single sentence describing what to do.
+ */
+export async function getDeviceStateHint(
+  expectedApp: string,
+): Promise<string | undefined> {
+  let info: LedgerDeviceInfo;
+  try {
+    info = await getLedgerDeviceInfo();
+  } catch {
+    return undefined;
+  }
+  if (!info.deviceConnected || !info.openApp) return undefined;
+  if (info.openApp.name === expectedApp) return undefined;
+  if (info.openApp.isDashboard) {
+    return (
+      `Device is on the dashboard right now — open the ${expectedApp} ` +
+      `app on-device (scroll with the side buttons, both buttons to select).`
+    );
+  }
+  return (
+    `Device probe says the ${info.openApp.name} app is open — switch to ` +
+    `the ${expectedApp} app on-device (scroll with the side buttons, both ` +
+    `buttons to select), then retry.`
+  );
+}
+
+/**
  * Probe the currently-connected Ledger's app state. Opens a raw USB HID
  * transport, issues GET_APP_AND_VERSION, closes the transport. One USB
  * roundtrip; safe to call multiple times.

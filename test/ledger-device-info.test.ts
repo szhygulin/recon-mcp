@@ -188,3 +188,62 @@ describe("getLedgerDeviceInfo (integration with mocked transport)", () => {
     expect(info.openApp?.name).toBe("Ethereum");
   });
 });
+
+describe("getDeviceStateHint (error-message enrichment)", () => {
+  it("returns undefined when the device isn't connected — mapLedgerError already handles it", async () => {
+    openRawLedgerTransport.mockRejectedValue(new Error("No such device"));
+    const { getDeviceStateHint } = await import(
+      "../src/modules/diagnostics/ledger-device-info.js"
+    );
+    expect(await getDeviceStateHint("Solana")).toBeUndefined();
+  });
+
+  it("returns undefined when the expected app is already open", async () => {
+    openRawLedgerTransport.mockResolvedValue({
+      send: vi.fn().mockResolvedValue(buildResponse("Solana", "1.10.2")),
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    const { getDeviceStateHint } = await import(
+      "../src/modules/diagnostics/ledger-device-info.js"
+    );
+    expect(await getDeviceStateHint("Solana")).toBeUndefined();
+  });
+
+  it("returns a 'switch app' hint when a different chain app is open", async () => {
+    openRawLedgerTransport.mockResolvedValue({
+      send: vi.fn().mockResolvedValue(buildResponse("Bitcoin", "2.3.0")),
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    const { getDeviceStateHint } = await import(
+      "../src/modules/diagnostics/ledger-device-info.js"
+    );
+    const hint = await getDeviceStateHint("Solana");
+    expect(hint).toContain("Bitcoin app is open");
+    expect(hint).toContain("switch to");
+    expect(hint).toContain("Solana");
+  });
+
+  it("returns a 'dashboard' hint when the device is on the dashboard", async () => {
+    openRawLedgerTransport.mockResolvedValue({
+      send: vi.fn().mockResolvedValue(buildResponse("BOLOS", "2.2.0")),
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    const { getDeviceStateHint } = await import(
+      "../src/modules/diagnostics/ledger-device-info.js"
+    );
+    const hint = await getDeviceStateHint("Tron");
+    expect(hint).toMatch(/on the dashboard/i);
+    expect(hint).toContain("Tron");
+  });
+
+  it("returns undefined silently when the probe itself throws (no error-on-error)", async () => {
+    openRawLedgerTransport.mockResolvedValue({
+      send: vi.fn().mockRejectedValue(new Error("USB busy")),
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+    const { getDeviceStateHint } = await import(
+      "../src/modules/diagnostics/ledger-device-info.js"
+    );
+    expect(await getDeviceStateHint("Solana")).toBeUndefined();
+  });
+});

@@ -47,6 +47,7 @@ import {
   type PreparedSolanaTx,
 } from "../solana/actions.js";
 import { getSolanaConnection } from "../solana/rpc.js";
+import { getDeviceStateHint } from "../diagnostics/ledger-device-info.js";
 import { assertTransactionSafe } from "../../signing/pre-sign-check.js";
 import {
   eip1559PreSignHash,
@@ -173,7 +174,21 @@ export async function pairLedgerTron(args: PairLedgerTronArgs = {}): Promise<{
 }> {
   const accountIndex = args.accountIndex ?? 0;
   const path = tronPathForAccountIndex(accountIndex);
-  const result = await getTronLedgerAddress(path);
+  let result;
+  try {
+    result = await getTronLedgerAddress(path);
+  } catch (e) {
+    // Enrich the error with device-state probe data (which app is open
+    // RIGHT NOW). The probe runs only on the failure path so successful
+    // pairs don't pay the extra USB round-trip. If the probe itself
+    // fails — likely because the same USB-HID resource is still busy —
+    // we silently fall through to the original error message.
+    const hint = await getDeviceStateHint("Tron");
+    if (hint && e instanceof Error) {
+      throw new Error(`${e.message} ${hint}`, { cause: e });
+    }
+    throw e;
+  }
   setPairedTronAddress(result);
   return {
     address: result.address,
@@ -208,7 +223,17 @@ export async function pairLedgerSolana(
 }> {
   const accountIndex = args.accountIndex ?? 0;
   const path = solanaPathForAccountIndex(accountIndex);
-  const result = await getSolanaLedgerAddress(path);
+  let result;
+  try {
+    result = await getSolanaLedgerAddress(path);
+  } catch (e) {
+    // Same enrichment pattern as pairLedgerTron — see comment there.
+    const hint = await getDeviceStateHint("Solana");
+    if (hint && e instanceof Error) {
+      throw new Error(`${e.message} ${hint}`, { cause: e });
+    }
+    throw e;
+  }
   setPairedSolanaAddress(result);
   return {
     address: result.address,
