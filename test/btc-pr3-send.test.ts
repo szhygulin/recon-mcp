@@ -19,7 +19,17 @@ import { setConfigDirForTesting } from "../src/config/user-config.js";
 // (Using bitcoinjs-lib's network constants + a fake leaf pubkey is enough
 // — we don't broadcast or sign for real.)
 const SEGWIT_ADDR = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+// Compressed (33-byte) form. The signer's pubkey buffer for the SDK's
+// knownAddressDerivations map MUST be in this shape regardless of what
+// Ledger returned, so the SDK's downstream P2WPKH/P2TR derivation
+// arithmetic doesn't choke. Issue #211.
 const SEGWIT_PUBKEY = "03a34b99f22c790c4e36b2b3c2c35a36db06226e41c692fc82b8b56ac1c540c5bd";
+// Uncompressed (65-byte) form of the same on-curve point — what Ledger
+// `getWalletPublicKey` actually returns. Tests stub the device with this
+// to exercise the compress-on-the-way-in path.
+const SEGWIT_PUBKEY_UNCOMPRESSED =
+  "04a34b99f22c790c4e36b2b3c2c35a36db06226e41c692fc82b8b56ac1c540c5bd" +
+  "5b8dec5235a0fa8722476c7709c02559e3aa73aa03918ba2d492eea75abea235";
 const TAPROOT_ADDR =
   "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4z63cgcfr0xj0qg";
 // A well-formed P2WPKH derived from a deterministic 20-byte pubkey hash
@@ -265,9 +275,13 @@ describe("sendBitcoinTransaction", () => {
       name: "Bitcoin",
       version: "2.2.0",
     });
+    // Mirror what Ledger BTC v2.4.6 actually returns: SEC1 uncompressed
+    // (65 bytes, 0x04 || X || Y). Issue #211 — the signer must compress
+    // before threading into knownAddressDerivations or the SDK throws
+    // "Invalid pubkey length: 65" before any device prompt.
     getWalletPublicKeyMock.mockResolvedValueOnce({
       bitcoinAddress: SEGWIT_ADDR,
-      publicKey: SEGWIT_PUBKEY,
+      publicKey: SEGWIT_PUBKEY_UNCOMPRESSED,
       chainCode: "0".repeat(64),
     });
     signPsbtBufferMock.mockResolvedValueOnce({
@@ -360,6 +374,62 @@ describe("sendBitcoinTransaction", () => {
         confirmed: true,
       }),
     ).rejects.toThrow(/derived .* but the prepared tx lists/);
+  });
+});
+
+// Issue #211 regression. Ledger BTC v2.4.6 returns SEC1-uncompressed
+// pubkeys (65 bytes); the SDK's PSBT machinery downstream of
+// knownAddressDerivations chokes on anything other than the 33-byte
+// compressed form. Verify the compressor in isolation so failures
+// surface here instead of as "Invalid pubkey length: 65" mid-flow.
+describe("compressPubkey", () => {
+  const COMPRESSED =
+    "03a34b99f22c790c4e36b2b3c2c35a36db06226e41c692fc82b8b56ac1c540c5bd";
+  const UNCOMPRESSED =
+    "04a34b99f22c790c4e36b2b3c2c35a36db06226e41c692fc82b8b56ac1c540c5bd" +
+    "5b8dec5235a0fa8722476c7709c02559e3aa73aa03918ba2d492eea75abea235";
+  // Even-Y test vector — secp256k1 generator point G.
+  const G_COMPRESSED =
+    "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+  const G_UNCOMPRESSED =
+    "0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798" +
+    "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8";
+
+  it("compresses a 65-byte uncompressed pubkey with odd Y to 0x03 prefix", async () => {
+    const { compressPubkey } = await import(
+      "../src/signing/btc-usb-signer.js"
+    );
+    const out = compressPubkey(Buffer.from(UNCOMPRESSED, "hex"));
+    expect(out.length).toBe(33);
+    expect(out.toString("hex")).toBe(COMPRESSED);
+  });
+
+  it("compresses a 65-byte uncompressed pubkey with even Y to 0x02 prefix", async () => {
+    const { compressPubkey } = await import(
+      "../src/signing/btc-usb-signer.js"
+    );
+    const out = compressPubkey(Buffer.from(G_UNCOMPRESSED, "hex"));
+    expect(out.toString("hex")).toBe(G_COMPRESSED);
+  });
+
+  it("is idempotent on already-compressed input", async () => {
+    const { compressPubkey } = await import(
+      "../src/signing/btc-usb-signer.js"
+    );
+    const buf = Buffer.from(COMPRESSED, "hex");
+    expect(compressPubkey(buf).toString("hex")).toBe(COMPRESSED);
+  });
+
+  it("rejects unexpected pubkey shapes", async () => {
+    const { compressPubkey } = await import(
+      "../src/signing/btc-usb-signer.js"
+    );
+    expect(() =>
+      compressPubkey(Buffer.from("00".repeat(33), "hex")),
+    ).toThrow(/Unexpected SEC1 pubkey shape/);
+    expect(() => compressPubkey(Buffer.alloc(64))).toThrow(
+      /Unexpected SEC1 pubkey shape/,
+    );
   });
 });
 
