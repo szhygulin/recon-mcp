@@ -171,6 +171,9 @@
       "@coral-xyz/anchor": "^0.28.0",
       "@coral-xyz/borsh": "^0.28.0",
       "bs58": "^5.0.0"
+    },
+    "@ledgerhq/hw-app-btc": {
+      "bs58": "^5.0.0"
     }
   },
   "engines": {
