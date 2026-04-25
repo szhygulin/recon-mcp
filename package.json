@@ -2,7 +2,7 @@
   "name": "vaultpilot-mcp",
   "version": "0.8.1",
   "mcpName": "io.github.szhygulin/vaultpilot-mcp",
-  "description": "DeFi for AI agents, designed for when the AI can be compromised. Agent proposes, you approve.",
+  "description": "Safety first. Hardware-verified DeFi for AI agents — designed for when the AI can be compromised.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

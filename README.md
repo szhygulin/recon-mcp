@@ -5,7 +5,7 @@
 [![node](https://img.shields.io/node/v/vaultpilot-mcp.svg)](package.json)
 [![vaultpilot-mcp MCP server](https://glama.ai/mcp/servers/szhygulin/vaultpilot-mcp/badges/score.svg)](https://glama.ai/mcp/servers/szhygulin/vaultpilot-mcp)
 
-**Hardware-verified DeFi for AI agents. The agent proposes, you approve on your Ledger — designed for when the AI can be compromised.**
+**Safety first. Hardware-verified DeFi for AI agents. The agent proposes, you approve on your Ledger — designed for when the AI can be compromised.**
 
 ![VaultPilot MCP demo](./demo.gif)
 
