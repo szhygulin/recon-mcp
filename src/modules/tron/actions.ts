@@ -497,6 +497,145 @@ export async function buildTronTokenSend(
   return issueTronHandle(tx);
 }
 
+// ----- TRC-20 approve -----
+
+export interface BuildTronTrc20ApproveArgs {
+  from: string;
+  /** Base58 TRC-20 contract address. Any TRC-20 is accepted. */
+  token: string;
+  /** Base58 spender (typically the LiFi Diamond on TRON for prepare_tron_lifi_swap flows). */
+  spender: string;
+  amount: string;
+  /** Required when `token` is not in the canonical TRC-20 set. */
+  decimals?: number;
+  feeLimitTrx?: string;
+}
+
+/**
+ * Build a TRC-20 `approve(spender, amount)` call. Same TronGrid pipeline
+ * as `buildTronTokenSend` (triggersmartcontract → preflight constant call
+ * → bandwidth check → raw_data verify) but with selector `095ea7b3`
+ * instead of `a9059cbb`.
+ *
+ * Why this exists: `prepare_tron_lifi_swap` requires the user to have
+ * already approved the LiFi Diamond on TRON (TU3ymitEKCWQFtASkEeHaPb8NfZcJtCHLt)
+ * to pull TRC-20 tokens. This builder lets the agent prepare that approve
+ * tx directly. We deliberately do NOT support `amount: "max"` /
+ * unbounded approvals — those are a known TRC-20 griefing vector
+ * (allowance survives across versions of the spender contract; a
+ * later upgrade could authorize new behaviors against the unbounded
+ * grant). Pass exactly the amount you intend to swap.
+ */
+export async function buildTronTrc20Approve(
+  args: BuildTronTrc20ApproveArgs,
+): Promise<UnsignedTronTx> {
+  if (!isTronAddress(args.from)) {
+    throw new Error(`"from" is not a valid TRON mainnet address: ${args.from}`);
+  }
+  if (!isTronAddress(args.token)) {
+    throw new Error(`"token" is not a valid TRC-20 base58 address: ${args.token}`);
+  }
+  if (!isTronAddress(args.spender)) {
+    throw new Error(`"spender" is not a valid TRON base58 address: ${args.spender}`);
+  }
+
+  // Decimals: canonical lookup OR caller-supplied. We REFUSE to default —
+  // an off-by-power-of-ten allowance would silently authorize a
+  // 10^12-fold larger spend than intended, and there's no UX recovery
+  // from that on a Ledger blind-sign flow.
+  const canonicalSymbol = SYMBOL_BY_CONTRACT[args.token];
+  let decimals: number;
+  let symbolForDescription: string;
+  if (canonicalSymbol) {
+    decimals = TOKEN_DECIMALS[canonicalSymbol];
+    symbolForDescription = canonicalSymbol;
+  } else {
+    if (args.decimals === undefined) {
+      throw new Error(
+        `Token ${args.token} is not in the canonical TRC-20 set (USDT/USDC/USDD/TUSD). ` +
+          `Pass an explicit \`decimals\` argument — we refuse to guess decimals on approve ` +
+          `because an off-by-power-of-ten allowance silently authorizes a vastly larger ` +
+          `spend than intended.`,
+      );
+    }
+    decimals = args.decimals;
+    symbolForDescription = `TRC-20 ${args.token}`;
+  }
+
+  const amountBase = parseUnits(args.amount, decimals);
+  if (amountBase <= 0n) {
+    throw new Error(`Amount must be greater than 0 (got "${args.amount}").`);
+  }
+
+  const feeLimitSun = args.feeLimitTrx
+    ? parseUnits(args.feeLimitTrx, TRX_DECIMALS)
+    : DEFAULT_FEE_LIMIT_SUN;
+
+  // approve(address spender, uint256 amount) — same param shape as
+  // transfer, so the existing encoder works without any change.
+  const parameter = encodeTrc20TransferParam(args.spender, amountBase);
+  const body = {
+    owner_address: args.from,
+    contract_address: args.token,
+    function_selector: "approve(address,uint256)",
+    parameter,
+    fee_limit: Number(feeLimitSun),
+    call_value: 0,
+    visible: true,
+  };
+  const apiKey = resolveTronApiKey(readUserConfig());
+  const { energyUsed } = await preflightConstantContract(body, apiKey);
+  const estimatedEnergySun = energyUsed * ENERGY_PRICE_SUN;
+  const res = await trongridPost<TrongridTriggerResponse>(
+    "/wallet/triggersmartcontract",
+    body,
+    apiKey,
+  );
+  if (!res.result?.result) {
+    throw new Error(
+      `TronGrid triggersmartcontract failed: ${res.result?.message ?? "unknown error"}`,
+    );
+  }
+  const ttx = res.transaction;
+  if (!ttx?.txID || !ttx.raw_data_hex) {
+    throw new Error("TronGrid triggersmartcontract returned no transaction — unexpected shape.");
+  }
+
+  assertTronRawDataMatches(ttx.raw_data_hex, {
+    kind: "trc20_approve",
+    from: args.from,
+    contract: args.token,
+    parameterHex: parameter,
+    feeLimitSun,
+    callValue: 0n,
+  });
+  await assertBandwidthSufficient(args.from, ttx.raw_data_hex, apiKey);
+
+  const tx: UnsignedTronTx = {
+    chain: "tron",
+    action: "trc20_approve",
+    from: args.from,
+    txID: ttx.txID,
+    rawData: ttx.raw_data,
+    rawDataHex: ttx.raw_data_hex,
+    description: `Approve ${args.amount} ${symbolForDescription} for spender ${args.spender}`,
+    decoded: {
+      functionName: "approve(address,uint256)",
+      args: {
+        spender: args.spender,
+        amount: args.amount,
+        symbol: symbolForDescription,
+        contract: args.token,
+        decimals: String(decimals),
+      },
+    },
+    feeLimitSun: feeLimitSun.toString(),
+    estimatedEnergyUsed: energyUsed.toString(),
+    estimatedEnergyCostSun: estimatedEnergySun.toString(),
+  };
+  return issueTronHandle(tx);
+}
+
 // ----- VoteWitness (cast/replace all votes atomically) -----
 
 export interface TronVoteEntry {

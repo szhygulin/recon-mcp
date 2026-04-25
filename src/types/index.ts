@@ -694,6 +694,7 @@ export interface UnsignedTronTx {
   action:
     | "native_send"
     | "trc20_send"
+    | "trc20_approve"
     | "claim_rewards"
     | "freeze"
     | "unfreeze"

@@ -165,6 +165,7 @@ import { listTronWitnesses } from "./modules/tron/witnesses.js";
 import {
   buildTronNativeSend,
   buildTronTokenSend,
+  buildTronTrc20Approve,
   buildTronClaimRewards,
   buildTronFreeze,
   buildTronUnfreeze,
@@ -175,6 +176,7 @@ import {
   getTronStakingInput,
   prepareTronNativeSendInput,
   prepareTronTokenSendInput,
+  prepareTronTrc20ApproveInput,
   prepareTronClaimRewardsInput,
   prepareTronFreezeInput,
   prepareTronUnfreezeInput,
@@ -1630,8 +1632,9 @@ async function main() {
         "(TU3ymitEKCWQFtASkEeHaPb8NfZcJtCHLt) and the owner_address is the user's wallet, " +
         "(3) decodes the inner ABI calldata's BridgeData tuple and cross-checks " +
         "destinationChainId + receiver against the user's request — refuses on any " +
-        "mismatch. TRC-20 source flows REQUIRE a prior approve to the LiFi Diamond — this " +
-        "tool does NOT prepare the approve; insufficient allowance reverts on-chain. " +
+        "mismatch. TRC-20 source flows REQUIRE a prior approve to the LiFi Diamond — call " +
+        "`prepare_tron_trc20_approve` first with `spender: \"TU3ymitEKCWQFtASkEeHaPb8NfZcJtCHLt\"` " +
+        "and the amount you intend to swap; insufficient allowance reverts the swap on-chain. " +
         "BLIND-SIGN on Ledger (LiFi Diamond not in TRON app's clear-sign allowlist) — " +
         "enable \"Allow blind signing\" in the on-device Solana app Settings; the device " +
         "shows the txID, which the user matches against the txID in the prepare receipt. " +
@@ -2059,6 +2062,18 @@ async function main() {
       inputSchema: prepareTronTokenSendInput.shape,
     },
     handler(buildTronTokenSend, { toolName: "prepare_tron_token_send" })
+  );
+
+  server.registerTool(
+    "prepare_tron_trc20_approve",
+    {
+      description:
+        "Build an unsigned TRC-20 approve(spender, amount) tx — sets allowance so a third party can pull tokens via transferFrom. Primary use: authorize the LiFi Diamond on TRON (TU3ymitEKCWQFtASkEeHaPb8NfZcJtCHLt) before running prepare_tron_lifi_swap with a TRC-20 source token (LiFi's quote response assumes the approve already exists; insufficient allowance reverts the swap on-chain). " +
+        "Accepts ANY TRC-20 contract — not just the canonical set. Decimals are auto-resolved for canonical USDT/USDC/USDD/TUSD; for any other TRC-20 you MUST pass `decimals` explicitly. We REFUSE to default decimals on approve because an off-by-power-of-ten allowance silently authorizes a 10^12-fold larger spend than intended, with no UX recovery on a Ledger blind-sign flow. " +
+        "amount is a human decimal string (\"100\" = 100 tokens at the resolved decimals). \"max\" / unbounded approvals are NOT supported — pass exactly the amount you intend to swap. Returns a preview + opaque handle for `send_transaction`.",
+      inputSchema: prepareTronTrc20ApproveInput.shape,
+    },
+    handler(buildTronTrc20Approve, { toolName: "prepare_tron_trc20_approve" })
   );
 
   server.registerTool(

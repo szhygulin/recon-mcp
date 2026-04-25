@@ -149,6 +149,14 @@ export type TronRawDataExpectation =
       callValue?: bigint;
     }
   | {
+      kind: "trc20_approve";
+      from: string;
+      contract: string;
+      parameterHex: string;
+      feeLimitSun?: bigint;
+      callValue?: bigint;
+    }
+  | {
       kind: "vote";
       from: string;
       votes: ReadonlyArray<{ address: string; count: number }>;
@@ -216,7 +224,23 @@ export function assertTronRawDataMatches(
     case "native_send":
       return verifyTransfer(type, inner, expected);
     case "trc20_send":
-      return verifyTriggerSmartContract(type, inner, expected, feeLimit);
+      return verifyTriggerSmartContract(
+        type,
+        inner,
+        expected,
+        feeLimit,
+        "a9059cbb",
+        "transfer(address,uint256)",
+      );
+    case "trc20_approve":
+      return verifyTriggerSmartContract(
+        type,
+        inner,
+        expected,
+        feeLimit,
+        "095ea7b3",
+        "approve(address,uint256)",
+      );
     case "vote":
       return verifyVote(type, inner, expected);
     case "freeze":
@@ -284,8 +308,10 @@ function verifyTransfer(
 function verifyTriggerSmartContract(
   type: number,
   inner: FieldMap,
-  e: Extract<TronRawDataExpectation, { kind: "trc20_send" }>,
-  actualFeeLimit: bigint
+  e: Extract<TronRawDataExpectation, { kind: "trc20_send" | "trc20_approve" }>,
+  actualFeeLimit: bigint,
+  expectedSelector: string,
+  selectorLabel: string,
 ): void {
   expectType(type, CONTRACT_TYPE.TriggerSmartContract, "TriggerSmartContract");
   expectAddress(
@@ -310,15 +336,15 @@ function verifyTriggerSmartContract(
   const dataBytes = optionalBytes(inner, 4) ?? new Uint8Array();
   const dataHex = toHex(dataBytes).toLowerCase();
   // Builder's `parameterHex` is the ABI param payload WITHOUT the 4-byte
-  // selector. TronGrid prepends `a9059cbb` (transfer(address,uint256)) to
-  // produce the full calldata. Compare on the suffix.
+  // selector. TronGrid prepends the function selector to produce the full
+  // calldata. Compare on selector + suffix to catch BOTH selector swap
+  // (transfer ↔ approve) and parameter tampering.
   const expectedParam = e.parameterHex.toLowerCase();
-  const transferSelector = "a9059cbb";
-  const expectedFullData = transferSelector + expectedParam;
+  const expectedFullData = expectedSelector + expectedParam;
   if (dataHex !== expectedFullData) {
     throw new Error(
-      `TRON rawData verify: TriggerSmartContract.data mismatch — got 0x${dataHex}, ` +
-        `expected 0x${expectedFullData}. Refusing to sign.`
+      `TRON rawData verify: TriggerSmartContract.data mismatch (expected ${selectorLabel}) — ` +
+        `got 0x${dataHex}, expected 0x${expectedFullData}. Refusing to sign.`
     );
   }
   if (e.feeLimitSun !== undefined && actualFeeLimit !== e.feeLimitSun) {
