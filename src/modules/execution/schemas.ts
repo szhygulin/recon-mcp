@@ -1104,11 +1104,11 @@ export const rescanBitcoinAccountInput = z.object({
         "`txCount` of every cached address under this account and updates " +
         "the persisted cache — useful after the user has received funds or " +
         "the indexer was stale at original scan time. Pure indexer-side: no " +
-        "Ledger / USB interaction. If the LAST cached address on a chain " +
-        "(originally an empty buffer) now has on-chain history, the response " +
-        "flags `needsExtend: true` — the gap-limit window may now miss funds " +
-        "past it, and the caller should re-run `pair_ledger_btc` (which DOES " +
-        "use the device) to extend the walked window."
+        "Ledger / USB interaction. Returns: `needsExtend: true` when the " +
+        "trailing empty address on any cached chain now has history (re-pair " +
+        "to extend the walked window); `unverifiedChains: [...]` when the " +
+        "tail probe ITSELF rejected (transient indexer hiccup, status " +
+        "indeterminate — re-run `rescan_btc_account` rather than re-pairing)."
     ),
 });
 

@@ -1870,11 +1870,16 @@ async function main() {
         "has history) or when the indexer was stale at the original " +
         "`pair_ledger_btc` scan time. Updates the persisted cache, so " +
         "subsequent `get_btc_account_balance` reflects the refresh without " +
-        "another rescan. Flags `needsExtend: true` when the trailing buffer " +
-        "address on any cached chain now has on-chain history — that's the " +
-        "signal that funds may exist past the original gap-limit window, " +
-        "and the caller should re-run `pair_ledger_btc` to extend the walked " +
-        "window with fresh on-device derivations.",
+        "another rescan. Three-state extend signal: `needsExtend: true` " +
+        "(trailing buffer address on any cached chain has on-chain history " +
+        "— re-run `pair_ledger_btc` to extend the walked window); " +
+        "`unverifiedChains: [...]` (tail probe REJECTED for that chain — " +
+        "indeterminate, usually a transient indexer hiccup, re-run " +
+        "`rescan_btc_account` rather than re-pairing); neither field present " +
+        "→ all walked chains confirmed healthy. Indexer fan-out is bounded " +
+        "to `BITCOIN_INDEXER_PARALLELISM` concurrent requests (default 8) " +
+        "to stay under mempool.space's free-tier rate limits; transient " +
+        "429s and network errors are retried once internally.",
       inputSchema: rescanBitcoinAccountInput.shape,
     },
     handler(rescanBitcoinAccount)

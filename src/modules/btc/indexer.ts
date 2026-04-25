@@ -261,20 +261,86 @@ function summarizeTx(tx: EsploraTx, address: string): BitcoinTxHistoryEntry {
   };
 }
 
+/**
+ * Single retry policy for transient indexer failures (issue #199):
+ *
+ *   - HTTP 429 → honor `Retry-After` header (seconds, capped at 5s) or
+ *     fall back to a small jittered backoff. Mempool.space's free
+ *     public API throttles bursts; without a retry the burst-then-fail
+ *     dynamic of `rescan_btc_account`'s 100+-way fan-out drops ~40%
+ *     of probes.
+ *   - Network errors / timeouts → retry once with a small jittered
+ *     backoff. Doesn't help against a sustained outage but smooths
+ *     the common "one packet dropped" case.
+ *   - HTTP 5xx → NOT retried. A real upstream error should surface to
+ *     the caller, not get silently masked. Callers can rerun the
+ *     whole rescan if they want a second attempt.
+ */
+const ESPLORA_RETRY_BASE_MS = 400;
+const ESPLORA_RETRY_JITTER_MS = 400;
+const ESPLORA_MAX_RETRY_AFTER_MS = 5_000;
+
+function parseRetryAfterMs(headerValue: string | null): number | null {
+  if (!headerValue) return null;
+  const seconds = Number(headerValue);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(ESPLORA_MAX_RETRY_AFTER_MS, seconds * 1000);
+  }
+  // HTTP-date form is also valid for Retry-After; we ignore it (the
+  // delta could be huge or negative under clock skew). Falls back to
+  // the default backoff in the caller.
+  return null;
+}
+
+function jitteredBackoffMs(): number {
+  return ESPLORA_RETRY_BASE_MS + Math.floor(Math.random() * ESPLORA_RETRY_JITTER_MS);
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 class EsploraIndexer implements BitcoinIndexer {
   constructor(private readonly baseUrl: string) {}
 
   private async getJson<T>(path: string): Promise<T> {
-    const res = await fetchWithTimeout(`${this.baseUrl}${path}`, {
+    const url = `${this.baseUrl}${path}`;
+    const init: RequestInit = {
       method: "GET",
       headers: { Accept: "application/json" },
-    });
-    if (!res.ok) {
-      throw new Error(
-        `Bitcoin indexer ${path} returned ${res.status} ${res.statusText}`,
-      );
+    };
+    // Up to 2 attempts total: original + 1 retry on 429 / network.
+    let lastNetworkError: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let res: Response;
+      try {
+        res = await fetchWithTimeout(url, init);
+      } catch (err) {
+        // Network error / abort — retry once.
+        lastNetworkError = err;
+        if (attempt === 0) {
+          await sleep(jitteredBackoffMs());
+          continue;
+        }
+        throw err;
+      }
+      if (res.status === 429 && attempt === 0) {
+        const retryAfterMs =
+          parseRetryAfterMs(res.headers.get("Retry-After")) ?? jitteredBackoffMs();
+        // Drain the body so the underlying connection can be reused.
+        await res.text().catch(() => "");
+        await sleep(retryAfterMs);
+        continue;
+      }
+      if (!res.ok) {
+        throw new Error(
+          `Bitcoin indexer ${path} returned ${res.status} ${res.statusText}`,
+        );
+      }
+      return (await res.json()) as T;
     }
-    return (await res.json()) as T;
+    // Both attempts failed with network errors.
+    throw lastNetworkError instanceof Error
+      ? lastNetworkError
+      : new Error(`Bitcoin indexer ${path} failed after retry`);
   }
 
   async getBalance(address: string): Promise<BitcoinAddressBalance> {
