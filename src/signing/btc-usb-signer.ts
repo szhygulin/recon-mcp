@@ -5,6 +5,7 @@ import {
   openLedger,
   getAppAndVersion,
   type BtcAddressFormat,
+  type BtcLedgerApp,
   type BtcLedgerTransport,
 } from "./btc-usb-loader.js";
 import { getConfigPath, patchUserConfig, readUserConfig } from "../config/user-config.js";
@@ -68,6 +69,20 @@ export function btcPathForAccountIndex(
   accountIndex: number,
   addressType: BtcAddressType,
 ): string {
+  return btcLeafPath(accountIndex, addressType, 0, 0);
+}
+
+/**
+ * Build a full BIP-32 leaf path for a specific (account, type, chain,
+ * index) tuple. Used by gap-limit scanning to walk both the receive
+ * chain (chain=0) and change chain (chain=1) at non-zero indices.
+ */
+export function btcLeafPath(
+  accountIndex: number,
+  addressType: BtcAddressType,
+  chain: 0 | 1,
+  addressIndex: number,
+): string {
   if (
     !Number.isInteger(accountIndex) ||
     accountIndex < 0 ||
@@ -77,29 +92,45 @@ export function btcPathForAccountIndex(
       `Invalid Bitcoin accountIndex ${accountIndex} — must be an integer in [0, ${MAX_BTC_ACCOUNT_INDEX}].`,
     );
   }
+  if (chain !== 0 && chain !== 1) {
+    throw new Error(`Invalid BIP-32 chain ${chain} — must be 0 (receive) or 1 (change).`);
+  }
+  if (!Number.isInteger(addressIndex) || addressIndex < 0) {
+    throw new Error(
+      `Invalid BIP-32 addressIndex ${addressIndex} — must be a non-negative integer.`,
+    );
+  }
   const { purpose } = TYPE_META[addressType];
-  return `${purpose}'/0'/${accountIndex}'/0/0`;
+  return `${purpose}'/0'/${accountIndex}'/${chain}/${addressIndex}`;
 }
 
-const BTC_PATH_RE = /^(44|49|84|86)'\/0'\/(\d+)'\/0\/0$/;
+const BTC_PATH_RE = /^(44|49|84|86)'\/0'\/(\d+)'\/(0|1)\/(\d+)$/;
 
 /**
- * Parse the address type + account index out of a BTC BIP-44 path.
- * Returns null when the path doesn't match the standard 5-segment
- * `<purpose>'/0'/<account>'/0/0` shape — a custom path we'd cache but
- * couldn't index.
+ * Parse the address type, account index, BIP-32 chain (0 = receive,
+ * 1 = change), and address index out of a BTC BIP-44 path. Returns
+ * null when the path doesn't match the standard 5-segment shape —
+ * custom paths get cached but can't be indexed.
  */
 export function parseBtcPath(
   path: string,
-): { addressType: BtcAddressType; accountIndex: number } | null {
+): {
+  addressType: BtcAddressType;
+  accountIndex: number;
+  chain: 0 | 1;
+  addressIndex: number;
+} | null {
   const m = BTC_PATH_RE.exec(path);
   if (!m) return null;
   const purpose = Number(m[1]);
   const accountIndex = Number(m[2]);
+  const chain = Number(m[3]) as 0 | 1;
+  const addressIndex = Number(m[4]);
   if (!Number.isInteger(accountIndex)) return null;
+  if (!Number.isInteger(addressIndex)) return null;
   for (const t of BTC_ADDRESS_TYPES) {
     if (TYPE_META[t].purpose === purpose) {
-      return { addressType: t, accountIndex };
+      return { addressType: t, accountIndex, chain, addressIndex };
     }
   }
   return null;
@@ -132,6 +163,8 @@ interface DerivedAddress {
   appVersion: string;
   addressType: BtcAddressType;
   accountIndex: number;
+  chain: 0 | 1;
+  addressIndex: number;
 }
 
 /**
@@ -161,19 +194,215 @@ export async function getBtcLedgerAddress(
       const { format } = TYPE_META[addressType];
       const out = await app.getWalletPublicKey(path, { format });
       const parsed = parseBtcPath(path);
-      const accountIndex = parsed?.accountIndex ?? 0;
       return {
         address: out.bitcoinAddress,
         publicKey: out.publicKey,
         path,
         appVersion: appVer.version,
         addressType,
-        accountIndex,
+        accountIndex: parsed?.accountIndex ?? 0,
+        chain: parsed?.chain ?? 0,
+        addressIndex: parsed?.addressIndex ?? 0,
       };
     } finally {
       await (transport as BtcLedgerTransport).close().catch(() => {});
     }
   });
+}
+
+/**
+ * BIP44 gap-limit default. Standard across Electrum / Sparrow / Trezor
+ * Suite / Ledger Live: stop walking a chain after 20 consecutive
+ * addresses with zero on-chain history. Issue #189.
+ */
+export const DEFAULT_BTC_GAP_LIMIT = 20;
+/** Hard cap on `gapLimit` to bound USB roundtrips. */
+export const MAX_BTC_GAP_LIMIT = 100;
+
+/**
+ * Caller-supplied callback that fetches the current on-chain tx count
+ * for an address. Injected (rather than hard-wired to the indexer) so
+ * `scanBtcAccount` stays usable from tests with mocked tx-count
+ * responses, and so the hot-path indexer module isn't a runtime
+ * dependency of this file's import graph (keeps the USB signer
+ * independent of the HTTP indexer abstraction).
+ */
+export type BtcAddressTxCountFetcher = (
+  address: string,
+) => Promise<number>;
+
+/**
+ * Result of a single (type, chain) walk: the addresses we derived,
+ * and how many of them ended the run with txCount === 0 (the gap
+ * window that ultimately tripped the stop condition).
+ */
+export interface ScanChainResult {
+  /**
+   * Every derived address along this chain, in walk order. Includes
+   * the trailing gap of empties that triggered the stop — the LAST
+   * empty is the wallet's "next fresh receive address" for receive
+   * chains, useful for UX. All except the trailing gap have
+   * `txCount > 0`.
+   */
+  addresses: DerivedAddress[];
+  /** Tx counts aligned 1:1 with `addresses`. */
+  txCounts: number[];
+  /** True when the chain returned all-zeros immediately (no usage). */
+  empty: boolean;
+}
+
+/**
+ * BIP44 gap-limit scan for one account index. Walks each address-type
+ * (44'/49'/84'/86') across both BIP-32 chains (receive=0, change=1),
+ * stopping each chain after `gapLimit` consecutive empty addresses.
+ *
+ * Optimization: when the receive chain (chain=0) returns all-empty for
+ * a given type, the change chain is skipped — change addresses can
+ * only have history if at least one corresponding receive saw a spend,
+ * and "no receives" → "no spends" → "no change history". Saves ~half
+ * the USB roundtrips on a fresh wallet.
+ *
+ * Performance: a fresh wallet (every chain empty) takes
+ * `4 types × gapLimit` derivations = 80 with the default gap of 20.
+ * A heavily-used wallet does that plus `numUsed` extra calls per
+ * chain. USB calls are serialized via `withBtcUsbLock`; the indexer
+ * txCount probe is awaited inline rather than batched because the
+ * stop decision is per-call.
+ */
+export async function scanBtcAccount(args: {
+  accountIndex: number;
+  gapLimit?: number;
+  fetchTxCount: BtcAddressTxCountFetcher;
+}): Promise<{
+  appVersion: string;
+  entries: Array<DerivedAddress & { txCount: number }>;
+}> {
+  const accountIndex = args.accountIndex;
+  const gapLimit = args.gapLimit ?? DEFAULT_BTC_GAP_LIMIT;
+  if (
+    !Number.isInteger(gapLimit) ||
+    gapLimit < 1 ||
+    gapLimit > MAX_BTC_GAP_LIMIT
+  ) {
+    throw new Error(
+      `Invalid gapLimit ${gapLimit} — must be an integer in [1, ${MAX_BTC_GAP_LIMIT}].`,
+    );
+  }
+  return withBtcUsbLock(async () => {
+    const { app, transport, rawTransport } = await openLedger();
+    try {
+      const appVer = await getAppAndVersion(rawTransport);
+      if (
+        appVer.name !== "Bitcoin" &&
+        appVer.name !== "Bitcoin Test" &&
+        appVer.name !== "BTC"
+      ) {
+        throw new Error(
+          `Ledger reports the open app as "${appVer.name}" v${appVer.version}, but Bitcoin is required. ` +
+            `Open the Bitcoin app on your device and retry.`,
+        );
+      }
+
+      const all: Array<DerivedAddress & { txCount: number }> = [];
+      for (const addressType of BTC_ADDRESS_TYPES) {
+        const receive = await scanChain({
+          app,
+          accountIndex,
+          addressType,
+          chain: 0,
+          gapLimit,
+          appVersion: appVer.version,
+          fetchTxCount: args.fetchTxCount,
+        });
+        for (let i = 0; i < receive.addresses.length; i++) {
+          all.push({ ...receive.addresses[i], txCount: receive.txCounts[i] });
+        }
+        // No receives ever → no change can exist. Skip the change-chain
+        // walk entirely (saves up to `gapLimit` USB roundtrips per type).
+        if (receive.empty) continue;
+        const change = await scanChain({
+          app,
+          accountIndex,
+          addressType,
+          chain: 1,
+          gapLimit,
+          appVersion: appVer.version,
+          fetchTxCount: args.fetchTxCount,
+        });
+        for (let i = 0; i < change.addresses.length; i++) {
+          all.push({ ...change.addresses[i], txCount: change.txCounts[i] });
+        }
+      }
+      return { appVersion: appVer.version, entries: all };
+    } finally {
+      await (transport as BtcLedgerTransport).close().catch(() => {});
+    }
+  });
+}
+
+/**
+ * Walk a single (type, chain) starting at index 0 until `gapLimit`
+ * consecutive empty addresses are observed. Returns every address we
+ * derived along the way, including the trailing empty window — the
+ * trailing FIRST empty is the wallet's next fresh address for that
+ * chain, useful for receive UX.
+ *
+ * Helper for `scanBtcAccount`; not exported because the caller already
+ * holds the USB lock + open transport.
+ */
+async function scanChain(args: {
+  app: { getWalletPublicKey: BtcLedgerApp["getWalletPublicKey"] };
+  accountIndex: number;
+  addressType: BtcAddressType;
+  chain: 0 | 1;
+  gapLimit: number;
+  appVersion: string;
+  fetchTxCount: BtcAddressTxCountFetcher;
+}): Promise<ScanChainResult> {
+  const { format } = TYPE_META[args.addressType];
+  const addresses: DerivedAddress[] = [];
+  const txCounts: number[] = [];
+  let consecutiveEmpty = 0;
+  let addressIndex = 0;
+  while (consecutiveEmpty < args.gapLimit) {
+    const path = btcLeafPath(
+      args.accountIndex,
+      args.addressType,
+      args.chain,
+      addressIndex,
+    );
+    const out = await args.app.getWalletPublicKey(path, { format });
+    let txCount: number;
+    try {
+      txCount = await args.fetchTxCount(out.bitcoinAddress);
+    } catch {
+      // Indexer hiccup — treat as zero so the scan can make forward
+      // progress. The user can re-pair to refresh; we don't want a
+      // single flaky HTTP call to abort a 100-call scan.
+      txCount = 0;
+    }
+    addresses.push({
+      address: out.bitcoinAddress,
+      publicKey: out.publicKey,
+      path,
+      appVersion: args.appVersion,
+      addressType: args.addressType,
+      accountIndex: args.accountIndex,
+      chain: args.chain,
+      addressIndex,
+    });
+    txCounts.push(txCount);
+    if (txCount === 0) {
+      consecutiveEmpty++;
+    } else {
+      consecutiveEmpty = 0;
+    }
+    addressIndex++;
+  }
+  // `empty` = chain returned ZERO used addresses; equivalent to "the
+  // first `gapLimit` entries are all zero-tx" and `addresses.length === gapLimit`.
+  const empty = txCounts.every((c) => c === 0);
+  return { addresses, txCounts, empty };
 }
 
 /**
@@ -212,6 +441,8 @@ export async function deriveBtcLedgerAccount(
           appVersion: appVer.version,
           addressType,
           accountIndex,
+          chain: 0,
+          addressIndex: 0,
         });
       }
       return { appVersion: appVer.version, entries };
@@ -432,6 +663,19 @@ function ensurePairedBtcHydrated(): void {
   pairedBtcHydrated = true;
   const persisted = readUserConfig()?.pairings?.bitcoin ?? [];
   for (const entry of persisted) {
+    // Backfill chain/addressIndex from the path for pre-#189 entries
+    // (which only ever had chain=0, addressIndex=0). Keeps callers
+    // from having to handle the absence at every read site.
+    if (entry.chain === undefined || entry.addressIndex === undefined) {
+      const parsed = parseBtcPath(entry.path);
+      if (parsed) {
+        entry.chain = parsed.chain;
+        entry.addressIndex = parsed.addressIndex;
+      } else {
+        entry.chain = null;
+        entry.addressIndex = null;
+      }
+    }
     pairedBtcByPath.set(entry.path, entry);
   }
 }
@@ -445,15 +689,25 @@ function persistPairedBtc(): void {
 export function getPairedBtcAddresses(): PairedBitcoinEntry[] {
   ensurePairedBtcHydrated();
   return Array.from(pairedBtcByPath.values()).sort((a, b) => {
-    // Sort by accountIndex first, then by purpose so each account's four
-    // address types appear together (legacy → p2sh-segwit → segwit →
-    // taproot, the BIP-44 purpose order).
+    // Sort by accountIndex → addressType (BIP-44 purpose order:
+    // legacy 44 → p2sh 49 → segwit 84 → taproot 86) → chain (receive
+    // before change) → addressIndex. Keeps each account's full
+    // footprint contiguous and ordered the way most wallets display it.
     if (a.accountIndex !== b.accountIndex) {
       if (a.accountIndex === null) return 1;
       if (b.accountIndex === null) return -1;
       return a.accountIndex - b.accountIndex;
     }
-    return BTC_ADDRESS_TYPES.indexOf(a.addressType) - BTC_ADDRESS_TYPES.indexOf(b.addressType);
+    const typeOrder =
+      BTC_ADDRESS_TYPES.indexOf(a.addressType) -
+      BTC_ADDRESS_TYPES.indexOf(b.addressType);
+    if (typeOrder !== 0) return typeOrder;
+    const aChain = a.chain ?? -1;
+    const bChain = b.chain ?? -1;
+    if (aChain !== bChain) return aChain - bChain;
+    const aIdx = a.addressIndex ?? -1;
+    const bIdx = b.addressIndex ?? -1;
+    return aIdx - bIdx;
   });
 }
 
@@ -476,10 +730,31 @@ export function setPairedBtcAddress(
     appVersion: entry.appVersion,
     addressType: entry.addressType,
     accountIndex: entry.accountIndex,
+    ...(entry.chain !== undefined ? { chain: entry.chain } : {}),
+    ...(entry.addressIndex !== undefined ? { addressIndex: entry.addressIndex } : {}),
+    ...(entry.txCount !== undefined ? { txCount: entry.txCount } : {}),
   };
   pairedBtcByPath.set(entry.path, full);
   persistPairedBtc();
   return full;
+}
+
+/**
+ * Drop every cached entry whose `accountIndex` matches. Used by
+ * `pair_ledger_btc` before re-scanning so an account that previously
+ * extended further than the current gap-limit window doesn't leave
+ * stale (and now-incorrect) entries in the cache.
+ */
+export function clearPairedBtcAccount(accountIndex: number): void {
+  ensurePairedBtcHydrated();
+  let changed = false;
+  for (const [path, entry] of pairedBtcByPath) {
+    if (entry.accountIndex === accountIndex) {
+      pairedBtcByPath.delete(path);
+      changed = true;
+    }
+  }
+  if (changed) persistPairedBtc();
 }
 
 export function clearPairedBtcAddresses(): void {

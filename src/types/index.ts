@@ -1197,10 +1197,18 @@ export interface PairedTronEntry {
 
 /**
  * Bitcoin pairing entry. Bitcoin has 4 standard mainnet address types,
- * each on its own BIP-44 purpose (BIP-44 / BIP-49 / BIP-84 / BIP-86),
- * so a single account index produces 4 entries — one per type. The
- * `addressType` discriminator tells callers which path generated this
- * address without re-parsing the path.
+ * each on its own BIP-44 purpose (BIP-44 / BIP-49 / BIP-84 / BIP-86).
+ *
+ * Pre-#189 a single account index produced exactly 4 entries — one per
+ * type, all on the receive chain at index 0. After gap-limit scanning
+ * lands, an account index produces N entries per (type, chain) — every
+ * used address plus the first unused on each chain, for both receive
+ * (chain=0) and change (chain=1). The `chain` + `addressIndex` fields
+ * disambiguate the path without re-parsing.
+ *
+ * Backwards compat: old cached entries (pre-#189) had only the
+ * `<purpose>'/0'/<account>'/0/0` leaf. Hydrate-time backfill parses the
+ * path so `chain`/`addressIndex` are always present after load.
  */
 export interface PairedBitcoinEntry {
   address: string;
@@ -1217,6 +1225,21 @@ export interface PairedBitcoinEntry {
   addressType: "legacy" | "p2sh-segwit" | "segwit" | "taproot";
   /** Null when the path doesn't match the standard 5-segment layout. */
   accountIndex: number | null;
+  /**
+   * BIP-32 chain: 0 = external/receive, 1 = internal/change. Null when
+   * the path doesn't match the standard 5-segment layout.
+   */
+  chain?: 0 | 1 | null;
+  /** BIP-32 address index (final path segment). Null when non-standard. */
+  addressIndex?: number | null;
+  /**
+   * Last known on-chain tx count from the indexer at scan time. Optional
+   * + a snapshot — goes stale immediately after pairing but useful for
+   * the agent to tell at-a-glance which addresses have history. Refresh
+   * by calling `pair_ledger_btc` again, or `get_btc_account_balance`
+   * for a live read.
+   */
+  txCount?: number;
 }
 
 export interface UserConfig {

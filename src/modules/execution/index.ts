@@ -126,6 +126,7 @@ import type {
   GetBitcoinBalancesArgs,
   GetBitcoinFeeEstimatesArgs,
   GetBitcoinBlockTipArgs,
+  GetBitcoinAccountBalanceArgs,
   GetBitcoinTxHistoryArgs,
   PrepareBitcoinNativeSendArgs,
   SignBtcMessageArgs,
@@ -263,21 +264,49 @@ export async function pairLedgerTron(args: PairLedgerTronArgs = {}): Promise<{
  */
 export async function pairLedgerBitcoin(args: PairLedgerBitcoinArgs = {}): Promise<{
   accountIndex: number;
+  gapLimit: number;
   appVersion: string;
   addresses: Array<{
     addressType: "legacy" | "p2sh-segwit" | "segwit" | "taproot";
     address: string;
     path: string;
+    chain: 0 | 1;
+    addressIndex: number;
+    txCount: number;
   }>;
+  summary: {
+    totalDerived: number;
+    used: number;
+    unused: number;
+  };
   instructions: string;
 }> {
   const accountIndex = args.accountIndex ?? 0;
-  const { deriveBtcLedgerAccount, setPairedBtcAddress } = await import(
-    "../../signing/btc-usb-signer.js"
-  );
+  const {
+    scanBtcAccount,
+    setPairedBtcAddress,
+    clearPairedBtcAccount,
+    DEFAULT_BTC_GAP_LIMIT,
+  } = await import("../../signing/btc-usb-signer.js");
+  const gapLimit = args.gapLimit ?? DEFAULT_BTC_GAP_LIMIT;
+
+  // The indexer's getBalance() returns txCount alongside the balance —
+  // reuse it as the gap-limit probe so we don't add a second HTTP API
+  // surface. One round trip per derived address.
+  const { getBitcoinIndexer } = await import("../btc/indexer.js");
+  const indexer = getBitcoinIndexer();
+  const fetchTxCount = async (addr: string): Promise<number> => {
+    const bal = await indexer.getBalance(addr);
+    return bal.txCount;
+  };
+
   let derived;
   try {
-    derived = await deriveBtcLedgerAccount(accountIndex);
+    derived = await scanBtcAccount({
+      accountIndex,
+      gapLimit,
+      fetchTxCount,
+    });
   } catch (e) {
     // Same enrichment pattern as pairLedgerTron / pairLedgerSolana —
     // probe which app is currently open so the agent can tell the user
@@ -288,6 +317,11 @@ export async function pairLedgerBitcoin(args: PairLedgerBitcoinArgs = {}): Promi
     }
     throw e;
   }
+  // Drop any stale entries for this accountIndex BEFORE persisting the
+  // fresh scan — protects against the case where a prior scan walked
+  // further than this one (e.g. funds moved out, gap window now stops
+  // earlier) and would otherwise leave dangling cached paths.
+  clearPairedBtcAccount(accountIndex);
   for (const entry of derived.entries) {
     setPairedBtcAddress({
       address: entry.address,
@@ -296,23 +330,40 @@ export async function pairLedgerBitcoin(args: PairLedgerBitcoinArgs = {}): Promi
       appVersion: entry.appVersion,
       addressType: entry.addressType,
       accountIndex: entry.accountIndex,
+      chain: entry.chain,
+      addressIndex: entry.addressIndex,
+      txCount: entry.txCount,
     });
   }
+  const used = derived.entries.filter((e) => e.txCount > 0).length;
   return {
     accountIndex,
+    gapLimit,
     appVersion: derived.appVersion,
     addresses: derived.entries.map((e) => ({
       addressType: e.addressType,
       address: e.address,
       path: e.path,
+      chain: e.chain,
+      addressIndex: e.addressIndex,
+      txCount: e.txCount,
     })),
+    summary: {
+      totalDerived: derived.entries.length,
+      used,
+      unused: derived.entries.length - used,
+    },
     instructions:
-      "Bitcoin account paired. All four standard mainnet address types " +
-      "(legacy / p2sh-segwit / segwit / taproot) for this index are now cached. " +
-      "Use `get_btc_balance` / `get_btc_balances` / `get_btc_tx_history` against " +
-      "any of the four addresses. Send + message-signing flows ship in Phase 1 PR3/PR4. " +
-      "Keep the Ledger plugged in with the Bitcoin app open — every device call " +
-      "re-opens USB and re-verifies the path → address mapping.",
+      "Bitcoin account paired with BIP44 gap-limit scanning. Both the receive " +
+      "(/0/i) and change (/1/i) chains were walked across all four address types " +
+      "until " +
+      gapLimit +
+      " consecutive empty addresses were observed. Every address with on-chain " +
+      "history is cached, plus the next fresh receive address per chain. Use " +
+      "`get_btc_account_balance({ accountIndex })` to sum across the cached set " +
+      "for this account, or `get_btc_balance` against any single cached address. " +
+      "Re-run `pair_ledger_btc` to refresh the cache; previously-cached entries " +
+      "for this accountIndex are dropped before the new scan persists.",
   };
 }
 
@@ -671,6 +722,118 @@ export async function getBitcoinBlockTip(_args: GetBitcoinBlockTipArgs) {
   void _args;
   const { getBitcoinIndexer } = await import("../btc/indexer.js");
   return getBitcoinIndexer().getBlockTip();
+}
+
+/**
+ * Aggregate the on-chain balance across every CACHED used-address for
+ * one Ledger BTC account index. Walks the in-memory + persisted
+ * pairing cache (populated by `pair_ledger_btc`'s gap-limit scan),
+ * filters to entries with `txCount > 0` (skip the trailing fresh
+ * receive addresses to keep fan-out tight), fans out to the indexer's
+ * per-address `getBalance`, and surfaces both the rolled-up totals and
+ * the per-leg breakdown so the agent can show which addresses hold
+ * what.
+ */
+export async function getBitcoinAccountBalance(
+  args: GetBitcoinAccountBalanceArgs,
+) {
+  const { getPairedBtcAddresses } = await import(
+    "../../signing/btc-usb-signer.js"
+  );
+  const all = getPairedBtcAddresses();
+  const forAccount = all.filter(
+    (e) => e.accountIndex === args.accountIndex,
+  );
+  if (forAccount.length === 0) {
+    throw new Error(
+      `No paired Bitcoin entries cached for accountIndex=${args.accountIndex}. ` +
+        `Run \`pair_ledger_btc({ accountIndex: ${args.accountIndex} })\` first ` +
+        `to populate the cache.`,
+    );
+  }
+  // Used = ever observed on-chain history at scan time. Empty (txCount===0)
+  // entries are kept in the cache for receive-UX (next fresh address) but
+  // skipped here to avoid 80 unneeded indexer hits per call.
+  const used = forAccount.filter((e) => (e.txCount ?? 0) > 0);
+  if (used.length === 0) {
+    return {
+      accountIndex: args.accountIndex,
+      addressesQueried: 0,
+      addressesCached: forAccount.length,
+      totalConfirmedSats: "0",
+      totalConfirmedBtc: "0",
+      totalMempoolSats: "0",
+      totalSats: "0",
+      breakdown: [] as Array<{
+        address: string;
+        addressType: string;
+        chain: 0 | 1 | null;
+        addressIndex: number | null;
+        path: string;
+        confirmedSats: string;
+        mempoolSats: string;
+        totalSats: string;
+      }>,
+      note:
+        "All cached addresses for this account had zero on-chain history at " +
+        "scan time. If you've recently received funds, re-run pair_ledger_btc " +
+        "to refresh the gap-limit scan.",
+    };
+  }
+  const { getBitcoinBalance } = await import("../btc/balances.js");
+  const results = await Promise.allSettled(
+    used.map((e) => getBitcoinBalance(e.address)),
+  );
+  let totalConfirmed = 0n;
+  let totalMempool = 0n;
+  const breakdown: Array<{
+    address: string;
+    addressType: string;
+    chain: 0 | 1 | null;
+    addressIndex: number | null;
+    path: string;
+    confirmedSats: string;
+    mempoolSats: string;
+    totalSats: string;
+  }> = [];
+  for (let i = 0; i < used.length; i++) {
+    const entry = used[i];
+    const r = results[i];
+    if (r.status !== "fulfilled") continue;
+    totalConfirmed += r.value.confirmedSats;
+    totalMempool += r.value.mempoolSats;
+    breakdown.push({
+      address: entry.address,
+      addressType: entry.addressType,
+      chain: entry.chain ?? null,
+      addressIndex: entry.addressIndex ?? null,
+      path: entry.path,
+      confirmedSats: r.value.confirmedSats.toString(),
+      mempoolSats: r.value.mempoolSats.toString(),
+      totalSats: r.value.totalSats.toString(),
+    });
+  }
+  // Format BTC string from bigint sats (8 decimals, trailing zeros stripped).
+  const SATS_PER_BTC = 100_000_000n;
+  const fmt = (sats: bigint): string => {
+    const negative = sats < 0n;
+    const abs = negative ? -sats : sats;
+    const whole = abs / SATS_PER_BTC;
+    const frac = abs - whole * SATS_PER_BTC;
+    const fracStr = frac.toString().padStart(8, "0").replace(/0+$/, "") || "0";
+    const body = fracStr === "0" ? whole.toString() : `${whole.toString()}.${fracStr}`;
+    return negative ? `-${body}` : body;
+  };
+  return {
+    accountIndex: args.accountIndex,
+    addressesQueried: breakdown.length,
+    addressesCached: forAccount.length,
+    totalConfirmedSats: totalConfirmed.toString(),
+    totalConfirmedBtc: fmt(totalConfirmed),
+    totalMempoolSats: totalMempool.toString(),
+    totalSats: (totalConfirmed + totalMempool).toString(),
+    breakdown,
+  };
 }
 
 export async function getBitcoinTxHistory(args: GetBitcoinTxHistoryArgs) {
