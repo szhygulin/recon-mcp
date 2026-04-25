@@ -75,7 +75,7 @@ describe("decodeCalldata — LiFi bridge fallback", () => {
     const data = makeBridgeCalldata(bd);
 
     const out = decodeCalldata("ethereum", LIFI_DIAMOND, data, "0");
-    expect(out.source).toBe("local-abi");
+    expect(out.source).toBe("local-abi-partial");
     expect(out.functionName).toBe("lifiBridge");
     expect(out.signature).toBe("lifiBridge(BridgeData) — facet: across");
 
@@ -107,7 +107,7 @@ describe("decodeCalldata — LiFi bridge fallback", () => {
     const data = makeBridgeCalldata(bd);
 
     const out = decodeCalldata("ethereum", LIFI_DIAMOND, data, "0");
-    expect(out.source).toBe("local-abi");
+    expect(out.source).toBe("local-abi-partial");
 
     const named = Object.fromEntries(out.args.map((a) => [a.name, a]));
     expect(named.bridge.value).toBe("wormhole");
@@ -164,7 +164,7 @@ describe("decodeCalldata — LiFi bridge fallback", () => {
     // decode succeeds for "valid" first to guard against test infrastructure
     // confusion.
     const out = decodeCalldata("ethereum", LIFI_DIAMOND, makeBridgeCalldata(bd), "0");
-    expect(out.source).toBe("local-abi");
+    expect(out.source).toBe("local-abi-partial");
     expect(out.functionName).toBe("lifiBridge");
   });
 

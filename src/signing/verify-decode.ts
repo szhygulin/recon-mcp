@@ -166,9 +166,13 @@ export async function verifyEvmCalldata(
     };
   }
   const localDecode = tx.verification?.humanDecode;
+  // Only `"local-abi"` carries a canonical function name that's safe to
+  // compare against 4byte. `"local-abi-partial"` (LiFi bridge facets) ships
+  // a synthetic label by design — name-equality would always fail.
   const localFunctionName =
     localDecode && localDecode.source === "local-abi" ? localDecode.functionName : undefined;
   const localSignature = localDecode?.signature;
+  const isPartialLocal = localDecode?.source === "local-abi-partial";
 
   let signatures: string[];
   try {
@@ -309,6 +313,16 @@ export async function verifyEvmCalldata(
       `swiss-knife decoder link (rendered in the VERIFY block above) is the out-of-band browser-side check ` +
       `for that threat. For all other threat models 4byte's independent data provenance is a legitimate ` +
       `selector→name anchor — it's specifically WHY this cross-check exists.`
+    : isPartialLocal
+    ? `✓ Cross-check passed via 4byte.directory. The local ABI surfaced a PARTIAL decode (a positional ` +
+      `decode of a known shared sub-tuple — e.g. LiFi's universal BridgeData — because the specific ` +
+      `selector / facet ABI isn't in the server's registry); the canonical name is 4byte's "${chosen.signature}". ` +
+      `Name-equality is intentionally skipped here (the local label is synthetic and would always disagree), ` +
+      `but the re-encode check still anchors the args: 4byte's signature decoded these calldata bytes and ` +
+      `re-encoded them back losslessly, so the LOCAL decode's surfaced fields above (bridge name, receiver, ` +
+      `sendingAssetId, minAmount, destinationChainId for a LiFi bridge) faithfully describe the bytes that ` +
+      `will be signed. Compromised-MCP caveat: same as the full-decode case — use the swiss-knife decoder ` +
+      `link in the VERIFY block above for an out-of-band browser-side check.`
     : `✓ Cross-check passed via 4byte.directory. 4byte is a public selector registry built from unrelated ` +
       `on-chain traffic — a DATA SOURCE separate from the server's local ABI (though the server fetched ` +
       `the registry via HTTP). The calldata decodes cleanly against signature "${chosen.signature}", and ` +

@@ -917,6 +917,45 @@ describe("verifyEvmCalldata — independent cross-check via 4byte.directory", ()
     expect(result.independentSignature).toBe("transfer(address,uint256)");
     expect(result.independentFunctionName).toBe("transfer");
   });
+
+  it("treats source='local-abi-partial' as opt-out of the function-name comparison (fixes LiFi bridge false-positive mismatch)", async () => {
+    // The LiFi Diamond ships dozens of bridge facets (across, wormhole,
+    // mayan, …) keyed by per-facet selectors that aren't in our local ABI.
+    // We surface a positional decode of the universal BridgeData tuple and
+    // mark it `source: "local-abi-partial"` with a synthetic
+    // `functionName: "lifiBridge"`. 4byte resolves the same selector to the
+    // canonical facet name (e.g. `swapAndStartBridgeTokensViaAcrossV4`).
+    // Pre-fix: cross-check reported MISMATCH because names differ —
+    // refused legitimate bridge calldata. Fix: name-equality is intentionally
+    // skipped for partial sources; re-encode lossless still anchors the args.
+    const { verifyEvmCalldata } = await import("../src/signing/verify-decode.js");
+    const tx = issueHandles(usdcTransferTx(1_000_000n));
+    const partialTx = {
+      ...tx,
+      verification: {
+        ...tx.verification!,
+        humanDecode: {
+          ...tx.verification!.humanDecode,
+          functionName: "lifiBridge",
+          signature: "lifiBridge(BridgeData) — facet: across",
+          source: "local-abi-partial" as const,
+        },
+      },
+    };
+    const result = await verifyEvmCalldata(
+      partialTx,
+      // 4byte's canonical name for the selector; deliberately != "lifiBridge".
+      mockFetch(["transfer(address,uint256)"]),
+    );
+    expect(result.status).toBe("match");
+    expect(result.localFunctionName).toBeUndefined();
+    expect(result.independentFunctionName).toBe("transfer");
+    expect(result.summary).toMatch(/PARTIAL decode/);
+    expect(result.summary).toMatch(/Name-equality is intentionally skipped/);
+    expect(result.summary).toMatch(/swiss-knife/);
+    expect(result.summary).not.toMatch(/MISMATCH/);
+    expect(result.summary).not.toMatch(/DO NOT SEND/);
+  });
 });
 
 describe("verifyTxDecode (MCP handler) — routes by handle origin", () => {

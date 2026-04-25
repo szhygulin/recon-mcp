@@ -304,7 +304,14 @@ function decodeLifiBridge(
     functionName: "lifiBridge",
     signature: `lifiBridge(BridgeData) — facet: ${bridgeData.bridge}`,
     args,
-    source: "local-abi",
+    // Partial because the LiFi Diamond ships dozens of bridge-facet selectors
+    // (startBridgeTokensViaAcrossV4, swapAndStartBridgeTokensViaWormhole, …)
+    // and our local ABI doesn't enumerate them — we only decode the universal
+    // first `BridgeData` tuple. The `lifiBridge` label is synthetic; 4byte
+    // resolves the same selector to the canonical facet name. Marking this
+    // as partial tells the cross-check to NOT compare names (would always
+    // mismatch by design); arg-level corroboration via re-encode still runs.
+    source: "local-abi-partial",
   };
 }
 

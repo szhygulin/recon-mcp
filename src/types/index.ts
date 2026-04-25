@@ -928,8 +928,13 @@ export interface HumanDecode {
   /** Full signature like `supply(address,uint256,address,uint16)`. */
   signature?: string;
   args: DecodedArg[];
-  /** `"local-abi"` when decoded from our ABI registry, `"native"` for pure ETH sends, `"none"` when unknown destination. */
-  source: "local-abi" | "native" | "none";
+  /**
+   * - `"local-abi"`: full decode against an ABI in our static registry — `functionName` is the canonical on-chain name and is corroborable against 4byte.directory's selector→name mapping.
+   * - `"local-abi-partial"`: the destination is in our registry but the specific selector/facet isn't (e.g. LiFi Diamond bridge facets) — we surfaced a positional decode of a known shared sub-tuple, but `functionName` is synthetic and MUST NOT be cross-checked against 4byte (a name-equality check would always fail by design).
+   * - `"native"`: pure native-value transfer, no calldata.
+   * - `"none"`: unknown destination, no decode possible.
+   */
+  source: "local-abi" | "local-abi-partial" | "native" | "none";
 }
 
 /**
