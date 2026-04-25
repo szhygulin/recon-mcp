@@ -20,9 +20,11 @@ import { resetBitcoinIndexer } from "../src/modules/btc/indexer.js";
 // Real mainnet addresses, one per type (lengths must hit the regex bounds).
 const P2PKH_ADDR = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"; // Satoshi block 0 coinbase
 const P2SH_ADDR = "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy"; // BIP-13 example
-const SEGWIT_ADDR = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"; // BIP-173 P2WPKH example
+const P2WPKH_ADDR = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"; // BIP-173 P2WPKH example, 42 chars
+const P2WSH_ADDR =
+  "bc1qwzrryqr3ja8w7hnja2spmkgfdcgvqwp5swz4af4ngsjecfz0w0pqud7k38"; // 62-char witness-script-hash, observed in issue #182
 const TAPROOT_ADDR =
-  "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4z63cgcfr0xj0qg"; // Variable-length taproot from BIP-350
+  "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4z63cgcfr0xj0qg"; // BIP-350 taproot, exactly 62 chars (v1 SegWit always carries a 32-byte program)
 const TESTNET_ADDR = "tb1qar0srrr7xfkvy5l643lydnw9re59gtzzwfllgu";
 
 describe("address validation", () => {
@@ -36,12 +38,38 @@ describe("address validation", () => {
     expect(detectBitcoinAddressType(P2SH_ADDR)).toBe("p2sh");
   });
 
-  it("detects native segwit (P2WPKH)", () => {
-    expect(detectBitcoinAddressType(SEGWIT_ADDR)).toBe("p2wpkh");
+  it("detects native segwit P2WPKH (42-char bc1q…, 20-byte program)", () => {
+    expect(detectBitcoinAddressType(P2WPKH_ADDR)).toBe("p2wpkh");
   });
 
-  it("detects taproot (P2TR)", () => {
+  it("detects native segwit P2WSH (62-char bc1q…, 32-byte program — issue #182)", () => {
+    // Pre-fix this returned "p2wpkh" silently; multisig addresses were
+    // labeled as single-sig.
+    expect(detectBitcoinAddressType(P2WSH_ADDR)).toBe("p2wsh");
+  });
+
+  it("detects taproot (P2TR, exactly 62 chars)", () => {
     expect(detectBitcoinAddressType(TAPROOT_ADDR)).toBe("p2tr");
+  });
+
+  it("rejects v0 bech32 with impossible witness-program length (issue #182)", () => {
+    // BIP-141 v0 SegWit only allows 20-byte (P2WPKH) or 32-byte (P2WSH)
+    // programs → 42 or 62 chars total. Anything in between (e.g. 50 chars
+    // of data → 54 total) is structurally invalid even if checksum-valid.
+    // Pre-fix the loose `{38,58}` range silently accepted these.
+    const tooShort = "bc1q" + "p".repeat(37); // 41 chars total
+    const inBetween = "bc1q" + "p".repeat(50); // 54 chars total
+    const tooLong = "bc1q" + "p".repeat(59); // 63 chars total
+    expect(detectBitcoinAddressType(tooShort)).toBeNull();
+    expect(detectBitcoinAddressType(inBetween)).toBeNull();
+    expect(detectBitcoinAddressType(tooLong)).toBeNull();
+  });
+
+  it("rejects taproot of impossible length (issue #182)", () => {
+    // v1 SegWit is always a 32-byte witness program → exactly 62 chars.
+    // Pre-fix the loose `{38,58}` range silently accepted shorter values.
+    const tooShort = "bc1p" + "p".repeat(38); // 42 chars total — pre-fix would have accepted
+    expect(detectBitcoinAddressType(tooShort)).toBeNull();
   });
 
   it("rejects testnet bech32 (tb1...) — Phase 1 is mainnet-only", () => {
@@ -385,14 +413,14 @@ describe("balances — getBitcoinBalance / getBitcoinBalances", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { getBitcoinBalances } = await import("../src/modules/btc/balances.js");
-    const results = await getBitcoinBalances([TAPROOT_ADDR, SEGWIT_ADDR]);
+    const results = await getBitcoinBalances([TAPROOT_ADDR, P2WPKH_ADDR]);
     expect(results.length).toBe(2);
     expect(results[0].ok).toBe(true);
     if (!results[0].ok) throw new Error("unreachable");
     expect(results[0].balance.confirmedSats).toBe(50_000n);
     expect(results[1].ok).toBe(false);
     if (results[1].ok) throw new Error("unreachable");
-    expect(results[1].address).toBe(SEGWIT_ADDR);
+    expect(results[1].address).toBe(P2WPKH_ADDR);
     expect(results[1].error).toMatch(/500/);
   });
 

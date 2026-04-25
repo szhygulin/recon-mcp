@@ -669,7 +669,7 @@ export interface BitcoinPortfolioSlice {
    */
   balances: Array<{
     address: string;
-    addressType: "p2pkh" | "p2sh" | "p2wpkh" | "p2tr";
+    addressType: "p2pkh" | "p2sh" | "p2wpkh" | "p2wsh" | "p2tr";
     confirmedSats: string;
     mempoolSats: string;
     totalSats: string;
