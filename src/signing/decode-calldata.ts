@@ -1,4 +1,5 @@
 import {
+  decodeAbiParameters,
   decodeFunctionData,
   formatUnits,
   getAddress,
@@ -12,7 +13,11 @@ import { morphoBlueAbi } from "../abis/morpho-blue.js";
 import { stETHAbi, lidoWithdrawalQueueAbi } from "../abis/lido.js";
 import { eigenStrategyManagerAbi } from "../abis/eigenlayer-strategy-manager.js";
 import { uniswapPositionManagerAbi } from "../abis/uniswap-position-manager.js";
-import { lifiDiamondAbi } from "../abis/lifi-diamond.js";
+import {
+  lifiDiamondAbi,
+  LIFI_BRIDGE_DATA_TUPLE,
+  NON_EVM_RECEIVER_SENTINEL,
+} from "../abis/lifi-diamond.js";
 import { wethAbi } from "../abis/weth.js";
 import { CONTRACTS, NATIVE_SYMBOL, TOKEN_META } from "../config/contracts.js";
 import type {
@@ -120,6 +125,187 @@ function classifyDestination(chain: SupportedChain, to: `0x${string}`): Destinat
   return null;
 }
 
+/**
+ * Map a `BridgeData.destinationChainId` integer to a human chain name. Both
+ * EVM and known non-EVM (LiFi-encoded) chain IDs are recognized; everything
+ * else returns `chain <id>` so the user still sees a number rather than
+ * a missing field.
+ *
+ * The LiFi-internal IDs for non-EVM chains come from
+ * `@lifi/types/chains/base.ChainId` — kept in sync via the same constant
+ * surfaced in `src/modules/swap/lifi.ts:LIFI_SOLANA_CHAIN_ID`. Hardcoding
+ * here avoids a layered import (decoder doesn't depend on the swap module).
+ */
+function describeBridgeChainId(id: bigint): string {
+  switch (id) {
+    case 1n:
+      return "ethereum (1)";
+    case 10n:
+      return "optimism (10)";
+    case 137n:
+      return "polygon (137)";
+    case 8453n:
+      return "base (8453)";
+    case 42161n:
+      return "arbitrum (42161)";
+    case 56n:
+      return "bsc (56)";
+    case 43114n:
+      return "avalanche (43114)";
+    case 100n:
+      return "gnosis (100)";
+    case 1151111081099710n:
+      return "solana (1151111081099710)";
+    case 20000000000001n:
+      return "bitcoin (20000000000001)";
+    case 9270000000000000n:
+      return "sui (9270000000000000)";
+    default:
+      return `chain ${id.toString()}`;
+  }
+}
+
+/**
+ * Decoded shape of the universal LiFi `BridgeData` tuple. Field-for-field
+ * mirror of `LIFI_BRIDGE_DATA_TUPLE`. Returned only when decode succeeds —
+ * caller falls back to `source: "none"` on parse failure.
+ */
+interface DecodedLifiBridgeData {
+  transactionId: `0x${string}`;
+  bridge: string;
+  integrator: string;
+  referrer: `0x${string}`;
+  sendingAssetId: `0x${string}`;
+  receiver: `0x${string}`;
+  minAmount: bigint;
+  destinationChainId: bigint;
+  hasSourceSwaps: boolean;
+  hasDestinationCall: boolean;
+}
+
+/**
+ * Try to extract a `BridgeData` tuple from a LiFi Diamond call's calldata
+ * irrespective of which `startBridgeTokensVia*` (or `swapAndStartBridgeTokensVia*`)
+ * facet was invoked. The tuple is the first argument of every bridge facet
+ * the Diamond exposes, so a single decode handles all of them — Across,
+ * Amarok, Stargate, Wormhole, Mayan, deBridge, Allbridge, Squid, etc.
+ *
+ * Returns null when the calldata is too short, the selector is in the swap
+ * ABI (= already handled), or the abi-parameters decode throws. The caller
+ * (decodeCalldata) treats null as "fall through to swiss-knife".
+ *
+ * Implementation note: viem's `decodeAbiParameters` decodes the first
+ * matching parameter at the start of the buffer and ignores trailing bytes,
+ * so we don't need to know the bridge-specific second argument's shape.
+ */
+function tryDecodeLifiBridgeData(
+  data: `0x${string}`,
+): DecodedLifiBridgeData | null {
+  // Selector + at least one offset word (= bridge data offset). We don't
+  // bother with a tighter bound — viem will throw if the buffer is malformed.
+  if (data.length < 10 + 64) return null;
+  const argsHex = ("0x" + data.slice(10)) as `0x${string}`;
+  try {
+    const [tuple] = decodeAbiParameters([LIFI_BRIDGE_DATA_TUPLE], argsHex) as [
+      DecodedLifiBridgeData,
+    ];
+    // Sanity-check the bridge name — if decode succeeded on garbage we'd
+    // typically see an empty string or non-printable characters. A real
+    // LiFi bridge name is always a known protocol label (Across, Amarok,
+    // Wormhole, Mayan, etc.) — short, ASCII, printable.
+    if (
+      typeof tuple.bridge !== "string" ||
+      tuple.bridge.length === 0 ||
+      tuple.bridge.length > 64 ||
+      // eslint-disable-next-line no-control-regex
+      /[\x00-\x1f]/.test(tuple.bridge)
+    ) {
+      return null;
+    }
+    return tuple;
+  } catch {
+    return null;
+  }
+}
+
+function decodeLifiBridge(
+  chain: SupportedChain,
+  data: `0x${string}`,
+): HumanDecode | null {
+  const bridgeData = tryDecodeLifiBridgeData(data);
+  if (!bridgeData) return null;
+
+  const sendingMeta =
+    TOKEN_META[chain][bridgeData.sendingAssetId.toLowerCase()];
+  const sendingHuman = sendingMeta
+    ? `${getAddress(bridgeData.sendingAssetId)} (${sendingMeta.symbol})`
+    : getAddress(bridgeData.sendingAssetId);
+  const minAmountHuman = sendingMeta
+    ? `${formatUnits(bridgeData.minAmount, sendingMeta.decimals)} ${sendingMeta.symbol}`
+    : undefined;
+
+  const receiverIsNonEvm =
+    bridgeData.receiver.toLowerCase() === NON_EVM_RECEIVER_SENTINEL;
+  // For non-EVM destinations, the encoded `receiver` is just LiFi's
+  // sentinel — surfacing it as the destination would be misleading. Show
+  // the sentinel verbatim (so the user can confirm the bridge is intended
+  // to go non-EVM) plus a structured note pointing at the bridge-specific
+  // data the Solana destination is actually packed into.
+  const receiverValue = getAddress(bridgeData.receiver);
+  const receiverHuman = receiverIsNonEvm
+    ? `${receiverValue} — LiFi non-EVM sentinel: actual destination address is encoded in the bridge-specific data (NOT decoded by this server). Verify against the swiss-knife decode link.`
+    : undefined;
+
+  const args: DecodedArg[] = [
+    {
+      name: "bridge",
+      type: "string",
+      value: bridgeData.bridge,
+    },
+    {
+      name: "sendingAssetId",
+      type: "address",
+      value: getAddress(bridgeData.sendingAssetId),
+      ...(sendingMeta ? { valueHuman: sendingHuman } : {}),
+    },
+    {
+      name: "receiver",
+      type: "address",
+      value: receiverValue,
+      ...(receiverHuman ? { valueHuman: receiverHuman } : {}),
+    },
+    {
+      name: "minAmount",
+      type: "uint256",
+      value: bridgeData.minAmount.toString(),
+      ...(minAmountHuman ? { valueHuman: minAmountHuman } : {}),
+    },
+    {
+      name: "destinationChainId",
+      type: "uint256",
+      value: bridgeData.destinationChainId.toString(),
+      valueHuman: describeBridgeChainId(bridgeData.destinationChainId),
+    },
+    {
+      name: "hasSourceSwaps",
+      type: "bool",
+      value: String(bridgeData.hasSourceSwaps),
+    },
+    {
+      name: "hasDestinationCall",
+      type: "bool",
+      value: String(bridgeData.hasDestinationCall),
+    },
+  ];
+
+  return {
+    functionName: "lifiBridge",
+    signature: `lifiBridge(BridgeData) — facet: ${bridgeData.bridge}`,
+    args,
+    source: "local-abi",
+  };
+}
+
 function nativeDecode(chain: SupportedChain, value: string): HumanDecode {
   let valueHuman: string;
   try {
@@ -197,6 +383,16 @@ export function decodeCalldata(
   try {
     decoded = decodeFunctionData({ abi: dest.abi, data });
   } catch {
+    // LiFi Diamond-specific fallback: bridge facets aren't in
+    // `lifiDiamondAbi` (one selector per facet, dozens total), but the
+    // first argument is the universal `BridgeData` tuple — so we can
+    // still surface bridge name / receiver / destinationChainId /
+    // sendingAssetId / minAmount via a positional decode that ignores
+    // the facet-specific second argument.
+    if (dest.kind === "lifi-diamond") {
+      const bridgeDecode = decodeLifiBridge(chain, data);
+      if (bridgeDecode) return bridgeDecode;
+    }
     return { functionName: "unknown", args: [], source: "none" };
   }
 
