@@ -332,3 +332,73 @@ export function _isSendableAddressType(
 ): type is "p2wpkh" | "p2tr" {
   return type === "p2wpkh" || type === "p2tr";
 }
+
+/**
+ * Sign a UTF-8 message with the paired Bitcoin address using the
+ * Bitcoin Signed Message format (BIP-137). The Ledger BTC app prompts
+ * the user to confirm the message text on-device before producing the
+ * signature — same clear-sign UX as send-side flows.
+ *
+ * Taproot is refused (BIP-322 not yet exposed by Ledger). Legacy /
+ * P2SH-wrapped / native segwit all return base64-encoded compact
+ * signatures with header bytes that match the address-type convention
+ * Sparrow / Electrum / Bitcoin Core's `verifymessage` accept.
+ *
+ * The returned `format: "BIP-137"` field tells the verifier which scheme
+ * to use; useful for cross-wallet verification flows where the verifier
+ * needs to know whether to expect BIP-137 or BIP-322.
+ */
+export interface SignBitcoinMessageArgs {
+  wallet: string;
+  message: string;
+}
+
+export interface SignedBitcoinMessage {
+  address: string;
+  message: string;
+  signature: string;
+  format: "BIP-137";
+  addressType: PairedBtcAddressType;
+}
+
+export async function signBitcoinMessage(
+  args: SignBitcoinMessageArgs,
+): Promise<SignedBitcoinMessage> {
+  assertBitcoinAddress(args.wallet);
+  if (typeof args.message !== "string" || args.message.length === 0) {
+    throw new Error("`message` must be a non-empty string.");
+  }
+  if (args.message.length > 10_000) {
+    throw new Error(
+      `Message length ${args.message.length} exceeds the 10000-char ceiling. Sign-In-` +
+        `with-Bitcoin-style flows are typically a few hundred chars; rejecting the long ` +
+        `tail because the Ledger BTC app's on-device review surface chunks the message ` +
+        `into 16-char windows and a multi-KB string is not realistically reviewable.`,
+    );
+  }
+  const paired = getPairedBtcByAddress(args.wallet);
+  if (!paired) {
+    throw new Error(
+      `Bitcoin address ${args.wallet} is not paired. Run \`pair_ledger_btc\` to register ` +
+        `the four standard address types and retry with one of the resulting addresses.`,
+    );
+  }
+  const { signBtcMessageOnLedger } = await import(
+    "../../signing/btc-usb-signer.js"
+  );
+  const messageHex = Buffer.from(args.message, "utf-8").toString("hex");
+  const result = await signBtcMessageOnLedger({
+    expectedFrom: args.wallet,
+    path: paired.path,
+    addressFormat: ADDRESS_FORMAT_BY_TYPE[paired.addressType],
+    messageHex,
+    addressType: paired.addressType,
+  });
+  return {
+    address: args.wallet,
+    message: args.message,
+    signature: result.signature,
+    format: result.format,
+    addressType: paired.addressType,
+  };
+}

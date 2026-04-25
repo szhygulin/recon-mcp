@@ -143,6 +143,13 @@ export interface PortfolioCoverage {
    * Solana address was queried.
    */
   solanaStaking?: CoverageStatus;
+  /**
+   * Bitcoin balance fetch coverage. `covered:false, errored:false` means
+   * no Bitcoin address(es) were queried (treated like the TRON / Solana
+   * "not attempted" semantics); errored:true means the indexer call
+   * failed and BTC totals are missing.
+   */
+  bitcoin?: CoverageStatus;
   /** Number of token balances whose USD valuation could not be resolved. */
   unpricedAssets: number;
   /**
@@ -163,7 +170,7 @@ export interface PortfolioCoverage {
  * cross-chain set without needing per-chain buckets.
  */
 export interface UnpricedAsset {
-  chain: SupportedChain | "tron" | "solana";
+  chain: SupportedChain | "tron" | "solana" | "bitcoin";
   symbol: string;
   /** Human-readable balance (already-decimals-applied), e.g. "705.141". */
   amount: string;
@@ -639,6 +646,46 @@ export interface TronWitnessList {
   availableVotes?: number;
 }
 
+/**
+ * Bitcoin slice of a portfolio summary. Parallel to `TronPortfolioSlice`
+ * + `SolanaPortfolioSlice`. Bitcoin has no fungible token model in
+ * Phase 1 (BRC-20 / Runes / Ordinals deferred), so the slice carries
+ * only per-address native balances + the rolled-up USD totals.
+ *
+ * Multi-address: every BTC address the caller passed via
+ * `bitcoinAddress` (single) or `bitcoinAddresses` (array) is surfaced
+ * here. This mirrors `get_btc_balances` shape so callers who already
+ * use that tool see the same per-address projection inside the
+ * portfolio response.
+ */
+export interface BitcoinPortfolioSlice {
+  /** All addresses queried for this slice — at least one. */
+  addresses: string[];
+  /**
+   * Per-address breakdown. Each entry carries confirmed + mempool +
+   * total sats, the BTC-decimal projection, the address type, and the
+   * USD valuation. Identical shape to `BitcoinBalance` from the
+   * `btc/balances.ts` reader.
+   */
+  balances: Array<{
+    address: string;
+    addressType: "p2pkh" | "p2sh" | "p2wpkh" | "p2tr";
+    confirmedSats: string;
+    mempoolSats: string;
+    totalSats: string;
+    confirmedBtc: string;
+    totalBtc: string;
+    symbol: "BTC";
+    decimals: 8;
+    txCount: number;
+    valueUsd?: number;
+    /** True when DefiLlama returned no price; balance is excluded from totals. */
+    priceMissing?: boolean;
+  }>;
+  /** Rolled-up USD value across all addresses (uses confirmed balance). */
+  walletBalancesUsd: number;
+}
+
 /** Per-wallet slice of a multi-wallet portfolio, or a stand-alone single-wallet summary. */
 export interface PortfolioSummary {
   wallet: `0x${string}`;
@@ -682,6 +729,12 @@ export interface PortfolioSummary {
    * wallet holds at least some Solana staking.
    */
   solanaStakingUsd?: number;
+  /**
+   * Bitcoin totals (sum across every address passed via `bitcoinAddress` /
+   * `bitcoinAddresses`). Present only when the caller supplied at least
+   * one BTC address. Folded into `totalUsd`.
+   */
+  bitcoinUsd?: number;
   breakdown: {
     native: TokenAmount[];
     erc20: TokenAmount[];
@@ -692,6 +745,8 @@ export interface PortfolioSummary {
     tron?: TronPortfolioSlice;
     /** Solana slice — absent when no Solana address was queried. */
     solana?: SolanaPortfolioSlice;
+    /** Bitcoin slice — absent when no BTC address(es) were queried. */
+    bitcoin?: BitcoinPortfolioSlice;
   };
   coverage: PortfolioCoverage;
 }

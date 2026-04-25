@@ -126,6 +126,7 @@ import type {
   GetBitcoinFeeEstimatesArgs,
   GetBitcoinTxHistoryArgs,
   PrepareBitcoinNativeSendArgs,
+  SignBtcMessageArgs,
   GetMarginfiPositionsArgs,
   GetSolanaStakingPositionsArgs,
   PreviewSendArgs,
@@ -677,6 +678,11 @@ export async function prepareBitcoinNativeSend(
     ...(args.rbf !== undefined ? { rbf: args.rbf } : {}),
     ...(args.allowHighFee !== undefined ? { allowHighFee: args.allowHighFee } : {}),
   });
+}
+
+export async function signBtcMessage(args: SignBtcMessageArgs) {
+  const { signBitcoinMessage } = await import("../btc/actions.js");
+  return signBitcoinMessage({ wallet: args.wallet, message: args.message });
 }
 
 export async function getMarginfiPositions(args: GetMarginfiPositionsArgs) {
