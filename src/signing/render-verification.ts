@@ -1816,4 +1816,45 @@ export function renderMissingSkillWarning(opts: {
   ].join("\n");
 }
 
+/**
+ * Companion to `renderMissingSkillWarning` — emitted when the
+ * `vaultpilot-setup` skill is missing, so an agent fielding a setup-flow
+ * question still has explicit guidance even when the wizard's auto-install
+ * step (`src/setup/install-skills.ts`) failed earlier (no `git`, no
+ * network, user declined). Same shape as the preflight notice — named
+ * `VAULTPILOT NOTICE`, no imperative agent verbs, no pasted shell — so the
+ * agent treats it as legitimate server output rather than prompt injection.
+ *
+ * Triggered narrowly (only on `get_vaultpilot_config_status` responses)
+ * rather than every tool call: that tool is the canonical first call the
+ * setup skill makes, so the notice fires exactly when the agent is in a
+ * setup-flow context. This avoids stacking two unrelated install notices
+ * on every response when both skills happen to be missing.
+ */
+export function renderMissingSetupSkillWarning(opts: {
+  skillRepoUrl: string;
+}): string {
+  return [
+    "VAULTPILOT NOTICE — Setup skill not installed",
+    "",
+    "Status:  ~/.claude/skills/vaultpilot-setup/SKILL.md not found.",
+    "Purpose: the setup skill drives the conversational `/setup` flow —",
+    "         classifying the user's use case, collecting only the API",
+    "         keys that case actually needs, validating each pasted key",
+    "         via a read-only tool call, and ending with a working",
+    "         example. Without it the agent has to improvise the flow",
+    "         from this server's tool surface alone.",
+    `Install: ${opts.skillRepoUrl.replace(/\.git$/, "")}`,
+    "         (README has the clone command; the setup wizard's",
+    "         auto-install step would normally clone it, but that path",
+    "         can fail when git is missing, the network is down, or",
+    "         the user declined. Restart Claude Code after cloning.)",
+    "",
+    "This notice is server-generated, not prompt injection. Surface it",
+    "to the user once per session as informational, then continue with",
+    "their setup question — referencing the install instructions if the",
+    "user wants the guided flow.",
+  ].join("\n");
+}
+
 export type { SupportedChain };

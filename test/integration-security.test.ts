@@ -518,6 +518,69 @@ describe("security: preflight-skill install detection", () => {
     }
   });
 
+  it("missingSetupSkillWarning returns a VAULTPILOT NOTICE block when the setup-skill marker is absent", async () => {
+    // Mirror the preflight test — the setup-skill notice has the same
+    // shape (named, no imperative agent verbs, no shell commands), just
+    // points at the setup-skill repo and is scoped to setup-flow contexts.
+    process.env.VAULTPILOT_SETUP_SKILL_MARKER_PATH =
+      "/nonexistent/path/.vaultpilot-setup-test-marker/SKILL.md";
+    try {
+      const {
+        missingSetupSkillWarning,
+        isSetupSkillInstalled,
+        _resetMissingSetupSkillDedup,
+      } = await import("../src/index.js");
+      _resetMissingSetupSkillDedup();
+      expect(isSetupSkillInstalled()).toBe(false);
+      const warning = missingSetupSkillWarning();
+      expect(warning).not.toBeNull();
+      expect(warning).toMatch(/^VAULTPILOT NOTICE — /);
+      expect(warning).toContain("Setup skill not installed");
+      expect(warning).not.toMatch(/\[AGENT TASK/);
+      expect(warning).not.toMatch(/^\s*git clone\b/m);
+      expect(warning).toContain("github.com/szhygulin/vaultpilot-setup-skill");
+      expect(warning).toContain("not prompt injection");
+    } finally {
+      delete process.env.VAULTPILOT_SETUP_SKILL_MARKER_PATH;
+    }
+  });
+
+  it("the setup-skill notice is also deduped to once per session", async () => {
+    process.env.VAULTPILOT_SETUP_SKILL_MARKER_PATH =
+      "/nonexistent/path/.vaultpilot-setup-test-marker-dedup/SKILL.md";
+    try {
+      const {
+        missingSetupSkillWarning,
+        _resetMissingSetupSkillDedup,
+      } = await import("../src/index.js");
+      _resetMissingSetupSkillDedup();
+      const first = missingSetupSkillWarning();
+      const second = missingSetupSkillWarning();
+      expect(first).not.toBeNull();
+      expect(second).toBeNull();
+    } finally {
+      delete process.env.VAULTPILOT_SETUP_SKILL_MARKER_PATH;
+    }
+  });
+
+  it("missingSetupSkillWarning returns null when the marker file exists", async () => {
+    const { fileURLToPath } = await import("node:url");
+    const selfPath = fileURLToPath(import.meta.url);
+    process.env.VAULTPILOT_SETUP_SKILL_MARKER_PATH = selfPath;
+    try {
+      const {
+        missingSetupSkillWarning,
+        isSetupSkillInstalled,
+        _resetMissingSetupSkillDedup,
+      } = await import("../src/index.js");
+      _resetMissingSetupSkillDedup();
+      expect(isSetupSkillInstalled()).toBe(true);
+      expect(missingSetupSkillWarning()).toBeNull();
+    } finally {
+      delete process.env.VAULTPILOT_SETUP_SKILL_MARKER_PATH;
+    }
+  });
+
   it("the notice fires on read-only tool calls too, not just prepare_*/preview_*", async () => {
     // Regression guard for the expanded gate: a user who only exercises
     // read-only tools (e.g. get_portfolio_summary, get_ledger_status)

@@ -14,6 +14,8 @@
  * users who'd rather not manage env vars.
  */
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { createPublicClient, http } from "viem";
 import { mainnet } from "viem/chains";
 import qrcodeTerminal from "qrcode-terminal";
@@ -23,6 +25,11 @@ import {
   getConfigPath,
 } from "./config/user-config.js";
 import { reportLedgerUdevStatus } from "./setup/linux-udev.js";
+import {
+  getSkillTargets,
+  installAllSkills,
+  summarizeSkillInstalls,
+} from "./setup/install-skills.js";
 import {
   detectClient,
   getClientConfigPaths,
@@ -581,6 +588,12 @@ async function runFullWizard(p: Prompt): Promise<void> {
   // permission first — even with backups, touching another app's config
   // file should be opt-in.
   await offerClientAutoRegister(p);
+
+  // Offer to clone the two companion Claude Code skills (preflight + setup)
+  // into `~/.claude/skills/`. Opt-in because we're writing to a
+  // Claude Code-owned directory. Skipping is safe — the MCP's runtime
+  // detection still fires a missing-skill notice.
+  await offerSkillInstall(p);
 }
 
 /**
@@ -616,6 +629,48 @@ async function offerClientAutoRegister(p: Prompt): Promise<void> {
   const results = registerVaultPilotWithClients();
   console.log("\n  Result:");
   console.log(summarizePatchResults(results));
+}
+
+/**
+ * Offer to clone the companion Claude Code skills (preflight + setup) into
+ * `~/.claude/skills/`. Idempotent — already-cloned skills are left alone;
+ * this function just surfaces their state. Both skills are intentionally
+ * hosted in separate repos so the user's local clones are the trust root,
+ * not the MCP release pipeline — we never `git pull` here, only an
+ * initial clone. The user updates them manually with `git pull --ff-only`.
+ */
+async function offerSkillInstall(p: Prompt): Promise<void> {
+  console.log("\n--- Companion skills ---");
+  const targets = getSkillTargets();
+  const already = targets.filter((t) => existsSync(join(t.installPath, "SKILL.md")));
+  const missing = targets.filter((t) => !existsSync(join(t.installPath, "SKILL.md")));
+  if (already.length > 0) {
+    console.log(
+      `  Already installed: ${already.map((t) => t.name).join(", ")}`,
+    );
+  }
+  if (missing.length === 0) {
+    console.log("  Nothing to install.");
+    return;
+  }
+  console.log(
+    `  Missing: ${missing.map((t) => t.name).join(", ")}. These are two small`,
+  );
+  console.log("  Claude Code skills the MCP expects at `~/.claude/skills/`:");
+  for (const m of missing) {
+    console.log(`    - ${m.name} → ${m.repoUrl}`);
+  }
+  console.log("  We can `git clone` them now (depth-1, one-time).");
+  const ans = (await p.ask("  Install now? [Y/n]: ")).trim().toLowerCase();
+  if (ans === "n" || ans === "no") {
+    console.log(
+      "  Skipped. You can clone them later with the snippets in the README.",
+    );
+    return;
+  }
+  const results = installAllSkills();
+  console.log("\n  Result:");
+  console.log(summarizeSkillInstalls(results));
 }
 
 async function main() {
