@@ -104,6 +104,38 @@ function mSolToBaseUnits(mSolDecimal: string): bigint {
 }
 
 /**
+ * Resolve `BN` from `@coral-xyz/anchor` under Node's ESM-from-CJS
+ * interop. Anchor 0.30.x registers BN via `Object.defineProperty`
+ * getters that `cjs-module-lexer` skips when an ESM module dynamically
+ * imports the package, so the obvious `const { BN } = await import(...)`
+ * resolves BN to `undefined` at runtime. `anchorMod.default` is the
+ * full module.exports object (getters intact), so the fallback works.
+ *
+ * Empirically AnchorProvider / Program / utils ARE detected as named
+ * exports — only BN and web3 fall through the cracks. The defensive
+ * named-first ordering keeps test mocks and future anchor releases
+ * with proper "exports" field both working without code change. See
+ * issue #178.
+ */
+type AnchorBNCtor = typeof import("@coral-xyz/anchor").BN;
+
+async function loadAnchorBN(): Promise<AnchorBNCtor> {
+  const mod = await import("@coral-xyz/anchor");
+  const fromNamed: AnchorBNCtor | undefined = (mod as { BN?: AnchorBNCtor }).BN;
+  if (typeof fromNamed === "function") return fromNamed;
+  const fromDefault: AnchorBNCtor | undefined = (mod as {
+    default?: { BN?: AnchorBNCtor };
+  }).default?.BN;
+  if (typeof fromDefault === "function") return fromDefault;
+  throw new Error(
+    "Could not resolve BN from @coral-xyz/anchor — neither the named export " +
+      "nor the default-namespace fallback returned a constructor. Anchor's " +
+      "package shape may have changed; see issue #178 for the original interop " +
+      "diagnosis.",
+  );
+}
+
+/**
  * Construct the Marinade SDK in read-only-constructor mode. The SDK
  * needs `publicKey` to derive the associated mSOL token account and
  * encode the deposit/unstake authority field — but never invokes a
@@ -181,7 +213,16 @@ export async function buildMarinadeStake(
   const marinade = await loadMarinadeForWallet(ctx.fromPubkey);
   // Bring in BN from the SDK's transitive dep tree — Marinade's SDK
   // accepts only its own BN type, not bigint.
-  const { BN } = await import("@coral-xyz/anchor");
+  //
+  // Anchor v0.30.x's CJS entry registers BN via `Object.defineProperty(
+  // exports, "BN", { get: ... })`, which Node's cjs-module-lexer doesn't
+  // pick up when this ESM module dynamically imports it — `anchorMod.BN`
+  // ends up `undefined`. The `default` namespace carries the full
+  // module.exports object with the working getter, so we fall back to
+  // that. The named-first ordering keeps test mocks (which expose BN as
+  // a real named export) and any future "exports" field on anchor
+  // working without code change. See issue #178.
+  const BN = await loadAnchorBN();
   const result = await marinade.deposit(new BN(lamports.toString()));
   const actionIxs = result.transaction.instructions;
 
@@ -223,7 +264,9 @@ export async function buildMarinadeUnstakeImmediate(
   const ctx = await loadNonceContext(p.wallet);
 
   const marinade = await loadMarinadeForWallet(ctx.fromPubkey);
-  const { BN } = await import("@coral-xyz/anchor");
+  // See `buildMarinadeStake` for the rationale behind the named/default
+  // fallback (issue #178).
+  const BN = await loadAnchorBN();
   const result = await marinade.liquidUnstake(new BN(baseUnits.toString()));
   const actionIxs = result.transaction.instructions;
 
