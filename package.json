@@ -131,6 +131,7 @@
   "license": "MIT",
   "dependencies": {
     "@kamino-finance/klend-sdk": "^7.3.22",
+    "@ledgerhq/hw-app-btc": "^10.21.1",
     "@ledgerhq/hw-app-solana": "^7.10.1",
     "@ledgerhq/hw-app-trx": "^6.34.1",
     "@ledgerhq/hw-transport-node-hid": "^6.32.1",

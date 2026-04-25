@@ -60,6 +60,7 @@ import {
   pairLedgerLive,
   pairLedgerTron,
   pairLedgerSolana,
+  pairLedgerBitcoin,
   prepareSolanaNativeSend,
   prepareSolanaSplSend,
   prepareSolanaNonceInit,
@@ -114,6 +115,7 @@ import {
   pairLedgerLiveInput,
   pairLedgerTronInput,
   pairLedgerSolanaInput,
+  pairLedgerBitcoinInput,
   prepareSolanaNativeSendInput,
   prepareSolanaSplSendInput,
   prepareSolanaNonceInitInput,
@@ -1358,6 +1360,21 @@ async function main() {
       inputSchema: pairLedgerSolanaInput.shape,
     },
     handler(pairLedgerSolana)
+  );
+
+  server.registerTool(
+    "pair_ledger_btc",
+    {
+      description:
+        "Pair the host's directly-connected Ledger device for Bitcoin signing. REQUIREMENTS: Ledger plugged in over USB, device unlocked, the 'Bitcoin' app open on-screen. Ledger Live's WalletConnect relay does NOT expose `bip122` accounts to dApps, so Bitcoin signing goes over USB HID via `@ledgerhq/hw-app-btc` (same USB path as Solana / TRON). " +
+        "ONE CALL ENUMERATES ALL FOUR ADDRESS TYPES for the requested `accountIndex` (default 0): " +
+        "legacy P2PKH (`44'/0'/<n>'/0/0` → `1...`), P2SH-wrapped segwit (`49'/0'/<n>'/0/0` → `3...`), " +
+        "native segwit P2WPKH (`84'/0'/<n>'/0/0` → `bc1q...`), and taproot P2TR (`86'/0'/<n>'/0/0` → `bc1p...`). " +
+        "All four are cached so `get_ledger_status` can report them under the `bitcoin: [...]` section. " +
+        "Call again with a different `accountIndex` to expose additional accounts. Read-only on the device — the Ledger BTC app does not prompt during `getWalletPublicKey` by default. Phase 1 is mainnet-only.",
+      inputSchema: pairLedgerBitcoinInput.shape,
+    },
+    handler(pairLedgerBitcoin)
   );
 
   server.registerTool(

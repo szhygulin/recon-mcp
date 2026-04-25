@@ -40,6 +40,23 @@ export const pairLedgerSolanaInput = z.object({
     ),
 });
 
+export const pairLedgerBitcoinInput = z.object({
+  accountIndex: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .optional()
+    .describe(
+      "Ledger Bitcoin account slot. One call enumerates ALL FOUR address types " +
+        "for the given index (legacy at `44'/0'/<n>'/0/0`, p2sh-segwit at " +
+        "`49'/0'/<n>'/0/0`, native segwit at `84'/0'/<n>'/0/0`, taproot at " +
+        "`86'/0'/<n>'/0/0`) so the user sees their full footprint per Ledger Live " +
+        "Bitcoin account. 0 = first Bitcoin account, 1 = second, etc. Omit for the " +
+        "default (index 0). Call again with a different index to expose more accounts."
+    ),
+});
+
 const solanaAddressSchema = z
   .string()
   .regex(SOLANA_ADDRESS)
@@ -817,6 +834,7 @@ export const getVerificationArtifactInput = z.object({
 
 export type PairLedgerTronArgs = z.infer<typeof pairLedgerTronInput>;
 export type PairLedgerSolanaArgs = z.infer<typeof pairLedgerSolanaInput>;
+export type PairLedgerBitcoinArgs = z.infer<typeof pairLedgerBitcoinInput>;
 export type PrepareSolanaNativeSendArgs = z.infer<typeof prepareSolanaNativeSendInput>;
 export type PrepareSolanaSplSendArgs = z.infer<typeof prepareSolanaSplSendInput>;
 export type PrepareSolanaNonceInitArgs = z.infer<typeof prepareSolanaNonceInitInput>;

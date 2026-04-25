@@ -6,6 +6,7 @@ import {
 } from "./walletconnect.js";
 import { getPairedTronAddresses } from "./tron-usb-signer.js";
 import { getPairedSolanaAddresses } from "./solana-usb-signer.js";
+import { getPairedBtcAddresses } from "./btc-usb-signer.js";
 import type { SupportedChain } from "../types/index.js";
 
 export interface SessionAccount {
@@ -106,6 +107,22 @@ export interface SessionStatus {
     path: string;
     appVersion: string;
     /** Null when the path is not in the standard `44'/501'/<n>'` layout. */
+    accountIndex: number | null;
+  }>;
+  /**
+   * Bitcoin pairings — typically four entries per accountIndex, one per
+   * address type (legacy / p2sh-segwit / segwit / taproot). Same
+   * USB-HID rationale as Solana / TRON: Ledger Live's WalletConnect
+   * relay doesn't expose `bip122`. Ordered by accountIndex then by
+   * address-type purpose. Absent/empty → agent should call
+   * `pair_ledger_btc` before any Bitcoin tool.
+   */
+  bitcoin?: Array<{
+    address: string;
+    path: string;
+    appVersion: string;
+    addressType: "legacy" | "p2sh-segwit" | "segwit" | "taproot";
+    /** Null when the path doesn't match the standard 5-segment layout. */
     accountIndex: number | null;
   }>;
 }
@@ -226,6 +243,19 @@ export async function getSessionStatus(): Promise<SessionStatus> {
           })),
         }
       : {};
+  const btcPaired = getPairedBtcAddresses();
+  const btcSection =
+    btcPaired.length > 0
+      ? {
+          bitcoin: btcPaired.map((e) => ({
+            address: e.address,
+            path: e.path,
+            appVersion: e.appVersion,
+            addressType: e.addressType,
+            accountIndex: e.accountIndex,
+          })),
+        }
+      : {};
   if (!session)
     return {
       paired: false,
@@ -235,6 +265,7 @@ export async function getSessionStatus(): Promise<SessionStatus> {
       pairingInstructions: ledgerLivePairingInstructions(undefined),
       ...tronSection,
       ...solanaSection,
+      ...btcSection,
     };
   const accountDetails = await getConnectedAccountsDetailed();
   const accounts = accountDetails.map((a) => a.address);
@@ -264,5 +295,6 @@ export async function getSessionStatus(): Promise<SessionStatus> {
       : {}),
     ...tronSection,
     ...solanaSection,
+    ...btcSection,
   };
 }

@@ -1074,6 +1074,30 @@ export interface PairedTronEntry {
   accountIndex: number | null;
 }
 
+/**
+ * Bitcoin pairing entry. Bitcoin has 4 standard mainnet address types,
+ * each on its own BIP-44 purpose (BIP-44 / BIP-49 / BIP-84 / BIP-86),
+ * so a single account index produces 4 entries — one per type. The
+ * `addressType` discriminator tells callers which path generated this
+ * address without re-parsing the path.
+ */
+export interface PairedBitcoinEntry {
+  address: string;
+  publicKey: string;
+  path: string;
+  appVersion: string;
+  /**
+   * Discriminator for the four standard mainnet address shapes:
+   *   - "legacy"      → BIP-44 P2PKH (`1...`)
+   *   - "p2sh-segwit" → BIP-49 P2SH-wrapped segwit (`3...`)
+   *   - "segwit"      → BIP-84 native segwit P2WPKH (`bc1q...`)
+   *   - "taproot"     → BIP-86 P2TR (`bc1p...`)
+   */
+  addressType: "legacy" | "p2sh-segwit" | "segwit" | "taproot";
+  /** Null when the path doesn't match the standard 5-segment layout. */
+  accountIndex: number | null;
+}
+
 export interface UserConfig {
   rpc: {
     provider: RpcProvider;
@@ -1125,5 +1149,11 @@ export interface UserConfig {
   pairings?: {
     solana?: PairedSolanaEntry[];
     tron?: PairedTronEntry[];
+    /**
+     * Bitcoin pairings — typically four entries per accountIndex, one
+     * per address type (legacy / p2sh-segwit / segwit / taproot). Same
+     * write-through-to-disk semantics as the Solana / TRON slices.
+     */
+    bitcoin?: PairedBitcoinEntry[];
   };
 }

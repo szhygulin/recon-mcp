@@ -77,6 +77,7 @@ import { getTokenPrice } from "../../data/prices.js";
 import type {
   PairLedgerTronArgs,
   PairLedgerSolanaArgs,
+  PairLedgerBitcoinArgs,
   PrepareAaveSupplyArgs,
   PrepareAaveWithdrawArgs,
   PrepareAaveBorrowArgs,
@@ -233,6 +234,75 @@ export async function pairLedgerTron(args: PairLedgerTronArgs = {}): Promise<{
  * device address at path `44'/501'/<accountIndex>'` (default 0 = first
  * Ledger Live Solana account).
  */
+/**
+ * Pair the host's directly-connected Ledger device for Bitcoin signing.
+ * Same USB-HID rationale as `pair_ledger_solana` and `pair_ledger_tron`:
+ * Ledger Live's WalletConnect relay does not expose `bip122` accounts
+ * to dApps, so Bitcoin signing happens over USB HID. The Ledger must be
+ * plugged in, unlocked, with the Bitcoin app open.
+ *
+ * One call enumerates ALL FOUR address types (legacy / p2sh-segwit /
+ * segwit / taproot) for the given account index — the user sees their
+ * full footprint per Ledger Live Bitcoin account in a single round-trip.
+ * Each derivation is just `getWalletPublicKey` (read-only); no on-device
+ * confirmation is requested by default. Subsequent calls with different
+ * `accountIndex` values expose more accounts.
+ */
+export async function pairLedgerBitcoin(args: PairLedgerBitcoinArgs = {}): Promise<{
+  accountIndex: number;
+  appVersion: string;
+  addresses: Array<{
+    addressType: "legacy" | "p2sh-segwit" | "segwit" | "taproot";
+    address: string;
+    path: string;
+  }>;
+  instructions: string;
+}> {
+  const accountIndex = args.accountIndex ?? 0;
+  const { deriveBtcLedgerAccount, setPairedBtcAddress } = await import(
+    "../../signing/btc-usb-signer.js"
+  );
+  let derived;
+  try {
+    derived = await deriveBtcLedgerAccount(accountIndex);
+  } catch (e) {
+    // Same enrichment pattern as pairLedgerTron / pairLedgerSolana —
+    // probe which app is currently open so the agent can tell the user
+    // to switch to Bitcoin.
+    const hint = await getDeviceStateHint("Bitcoin");
+    if (hint && e instanceof Error) {
+      throw new Error(`${e.message} ${hint}`, { cause: e });
+    }
+    throw e;
+  }
+  for (const entry of derived.entries) {
+    setPairedBtcAddress({
+      address: entry.address,
+      publicKey: entry.publicKey,
+      path: entry.path,
+      appVersion: entry.appVersion,
+      addressType: entry.addressType,
+      accountIndex: entry.accountIndex,
+    });
+  }
+  return {
+    accountIndex,
+    appVersion: derived.appVersion,
+    addresses: derived.entries.map((e) => ({
+      addressType: e.addressType,
+      address: e.address,
+      path: e.path,
+    })),
+    instructions:
+      "Bitcoin account paired. All four standard mainnet address types " +
+      "(legacy / p2sh-segwit / segwit / taproot) for this index are now cached. " +
+      "Use `get_btc_balance` / `get_btc_balances` / `get_btc_tx_history` against " +
+      "any of the four addresses. Send + message-signing flows ship in Phase 1 PR3/PR4. " +
+      "Keep the Ledger plugged in with the Bitcoin app open — every device call " +
+      "re-opens USB and re-verifies the path → address mapping.",
+  };
+}
+
 export async function pairLedgerSolana(
   args: PairLedgerSolanaArgs = {},
 ): Promise<{
