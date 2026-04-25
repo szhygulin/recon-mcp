@@ -320,6 +320,15 @@ export const getSolanaSetupStatusInput = z.object({
  */
 export const getVaultPilotConfigStatusInput = z.object({});
 
+/**
+ * No args — `get_ledger_device_info` opens a USB HID transport to the
+ * connected Ledger, issues the dashboard-level GET_APP_AND_VERSION APDU
+ * (CLA=0xb0 INS=0x01), and returns the name/version of the currently-
+ * open app. Read-only, one USB round-trip, closes the transport before
+ * returning.
+ */
+export const getLedgerDeviceInfoInput = z.object({});
+
 export const getMarginfiPositionsInput = z.object({
   wallet: solanaAddressSchema.describe(
     "Solana wallet to enumerate MarginFi positions for. Probes the first 4 MarginfiAccount " +
@@ -624,3 +633,4 @@ export type GetMarginfiPositionsArgs = z.infer<typeof getMarginfiPositionsInput>
 export type GetSolanaStakingPositionsArgs = z.infer<typeof getSolanaStakingPositionsInput>;
 export type GetSolanaSetupStatusArgs = z.infer<typeof getSolanaSetupStatusInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
+export type GetLedgerDeviceInfoArgs = z.infer<typeof getLedgerDeviceInfoInput>;

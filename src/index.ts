@@ -45,6 +45,7 @@ import { getPortfolioSummary } from "./modules/portfolio/index.js";
 import { getPortfolioSummaryInput } from "./modules/portfolio/schemas.js";
 
 import { getVaultPilotConfigStatus } from "./modules/diagnostics/index.js";
+import { getLedgerDeviceInfo } from "./modules/diagnostics/ledger-device-info.js";
 
 import { getTransactionHistory } from "./modules/history/index.js";
 import { getTransactionHistoryInput } from "./modules/history/schemas.js";
@@ -116,6 +117,7 @@ import {
   getMarginfiDiagnosticsInput,
   getSolanaSetupStatusInput,
   getVaultPilotConfigStatusInput,
+  getLedgerDeviceInfoInput,
   getLedgerStatusInput,
   prepareAaveSupplyInput,
   prepareAaveWithdrawInput,
@@ -1471,6 +1473,26 @@ async function main() {
       inputSchema: getVaultPilotConfigStatusInput.shape,
     },
     handler(getVaultPilotConfigStatus)
+  );
+
+  server.registerTool(
+    "get_ledger_device_info",
+    {
+      description:
+        "READ-ONLY — probe the connected Ledger device over USB HID and report which app is " +
+        "currently open (name + version), plus an actionable hint for the agent to relay. Uses " +
+        "the dashboard-level GET_APP_AND_VERSION APDU so it works whether the user is on the " +
+        "dashboard or inside a chain app — you get 'BOLOS' / 'OS' for the dashboard and e.g. " +
+        "'Solana' 1.10.2 / 'Ethereum' 1.13.0 / 'Tron' 0.2.0 / 'Bitcoin' 2.3.0 when an app is " +
+        "open. `deviceConnected: false` is returned cleanly (with a hint) when no Ledger is " +
+        "plugged in or the udev rules are missing on Linux; the tool never throws. Call this " +
+        "BEFORE `pair_ledger_solana` / `pair_ledger_tron` so you can replace " +
+        "'open the Solana app and enable blind-signing' with a context-aware instruction like " +
+        "'I see your Bitcoin app is open — switch to Solana (device → right button → Solana → " +
+        "both buttons)'. One USB round-trip; no chain RPC calls.",
+      inputSchema: getLedgerDeviceInfoInput.shape,
+    },
+    handler(getLedgerDeviceInfo)
   );
 
   server.registerTool(
