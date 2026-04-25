@@ -3,7 +3,7 @@
   "name": "io.github.szhygulin/vaultpilot-mcp",
   "title": "VaultPilot MCP",
   "description": "DeFi for AI agents, designed for when the AI can be compromised. Agent proposes, you approve.",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "websiteUrl": "https://github.com/szhygulin/vaultpilot-mcp",
   "repository": {
     "url": "https://github.com/szhygulin/vaultpilot-mcp",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "vaultpilot-mcp",
-      "version": "0.8.0",
+      "version": "0.8.1",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {

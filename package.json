@@ -1,6 +1,6 @@
 {
   "name": "vaultpilot-mcp",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "mcpName": "io.github.szhygulin/vaultpilot-mcp",
   "description": "DeFi for AI agents, designed for when the AI can be compromised. Agent proposes, you approve.",
   "type": "module",
@@ -173,7 +173,8 @@
       "bs58": "^5.0.0"
     },
     "@ledgerhq/hw-app-btc": {
-      "bs58": "^5.0.0"
+      "bs58": "^5.0.0",
+      "base-x": "^3.0.0"
     }
   },
   "engines": {
