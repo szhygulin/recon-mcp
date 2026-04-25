@@ -12,6 +12,7 @@ import { setConfigDirForTesting } from "../src/config/user-config.js";
  * mempool.space + DefiLlama price are mocked at the indexer +
  * `fetchBitcoinPrice` boundaries. Ledger BTC SDK is mocked through the
  * loader (mirrors `btc-pr3-send.test.ts`).
+ * bump
  */
 
 const SEGWIT_ADDR = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
