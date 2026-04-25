@@ -301,6 +301,75 @@ export const prepareMarinadeUnstakeImmediateInput = z.object({
     ),
 });
 
+/**
+ * Native Solana stake-program write actions. Stake account is deterministic
+ * per (wallet, validator) — the same `(wallet, validator)` pair always
+ * yields the same stake-account address. To exit a position, run
+ * `prepare_native_stake_deactivate` (one-epoch cooldown), then
+ * `prepare_native_stake_withdraw` once the cooldown lapses.
+ */
+export const prepareNativeStakeDelegateInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana wallet that funds the stake account and becomes its staker + " +
+      "withdrawer authority. Must have an initialized durable-nonce account " +
+      "(prepare_solana_nonce_init) and enough SOL to cover the stake amount + " +
+      "rent-exempt seed (~0.00228 SOL) + tx fee. Refuses if a stake account " +
+      "already exists at the deterministic address for this (wallet, validator)."
+  ),
+  validator: solanaAddressSchema.describe(
+    "Vote-account address (NOT validator identity) of the validator to delegate " +
+      "to. Solana's stake program delegates to vote accounts, which validators " +
+      "publish alongside their identity. Use a Solana explorer to find the " +
+      "vote account for a chosen validator."
+  ),
+  amountSol: z
+    .string()
+    .max(50)
+    .describe(
+      'Human-readable SOL amount to stake (e.g. "1.5"). Decimals are SOL-native ' +
+        '(9). The actual lamports moved from the wallet are this value PLUS the ' +
+        'stake account rent-exempt minimum (~0.00228 SOL); the rent-exempt floor ' +
+        'is reclaimable on full withdraw after deactivation.'
+    ),
+});
+
+export const prepareNativeStakeDeactivateInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana wallet — must be the stake account's staker authority (the wallet " +
+      "that originally created the stake)."
+  ),
+  stakeAccount: solanaAddressSchema.describe(
+    "Base58 stake account address to deactivate. Discovery: call " +
+      "get_solana_staking_positions; the wallet's native stake accounts are " +
+      "listed under `native[].stakePubkey`. Deactivation takes one epoch " +
+      "(~2-3 days); the stake earns no rewards during the cooldown but stays " +
+      "non-withdrawable until it lapses."
+  ),
+});
+
+export const prepareNativeStakeWithdrawInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana wallet — must be the stake account's withdrawer authority + " +
+      "receives the SOL. (For stakes created via prepare_native_stake_delegate, " +
+      "wallet === staker === withdrawer; no authority handoff is supported in " +
+      "this server.)"
+  ),
+  stakeAccount: solanaAddressSchema.describe(
+    "Base58 stake account address to withdraw from. Stake must be inactive " +
+      "(one full epoch after prepare_native_stake_deactivate). On-chain reverts " +
+      "if the stake is still cooling down — the simulation gate catches it."
+  ),
+  amountSol: z
+    .string()
+    .max(50)
+    .describe(
+      'Human-readable SOL amount to withdraw (e.g. "1.5"), OR the literal ' +
+        'string "max" to withdraw the full lamport balance (closes the stake ' +
+        'account and reclaims the rent-exempt seed). Partial withdraws leave ' +
+        'the account open with a smaller balance.'
+    ),
+});
+
 export const getSolanaSetupStatusInput = z.object({
   wallet: solanaAddressSchema.describe(
     "Solana wallet to probe. Returns the state of the durable-nonce account " +
@@ -609,6 +678,15 @@ export type PrepareMarginfiRepayArgs = z.infer<typeof prepareMarginfiRepayInput>
 export type PrepareMarinadeStakeArgs = z.infer<typeof prepareMarinadeStakeInput>;
 export type PrepareMarinadeUnstakeImmediateArgs = z.infer<
   typeof prepareMarinadeUnstakeImmediateInput
+>;
+export type PrepareNativeStakeDelegateArgs = z.infer<
+  typeof prepareNativeStakeDelegateInput
+>;
+export type PrepareNativeStakeDeactivateArgs = z.infer<
+  typeof prepareNativeStakeDeactivateInput
+>;
+export type PrepareNativeStakeWithdrawArgs = z.infer<
+  typeof prepareNativeStakeWithdrawInput
 >;
 export type GetMarginfiPositionsArgs = z.infer<typeof getMarginfiPositionsInput>;
 export type GetSolanaStakingPositionsArgs = z.infer<typeof getSolanaStakingPositionsInput>;

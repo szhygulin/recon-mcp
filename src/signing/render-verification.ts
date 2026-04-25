@@ -894,7 +894,10 @@ export interface RenderableSolanaPrepareResult {
     | "marginfi_borrow"
     | "marginfi_repay"
     | "marinade_stake"
-    | "marinade_unstake_immediate";
+    | "marinade_unstake_immediate"
+    | "native_stake_delegate"
+    | "native_stake_deactivate"
+    | "native_stake_withdraw";
   from: string;
   description: string;
   decoded: { functionName: string; args: Record<string, string> };
@@ -936,6 +939,12 @@ function solanaActionLabel(action: RenderableSolanaPrepareResult["action"]): str
       return "Marinade stake (SOL → mSOL)";
     case "marinade_unstake_immediate":
       return "Marinade liquid unstake (mSOL → SOL via pool)";
+    case "native_stake_delegate":
+      return "Native stake delegate (create stake account + delegate to validator)";
+    case "native_stake_deactivate":
+      return "Native stake deactivate (one-epoch cooldown before withdrawable)";
+    case "native_stake_withdraw":
+      return "Native stake withdraw (from inactive stake account)";
   }
 }
 
@@ -995,6 +1004,7 @@ export function renderSolanaPrepareAgentTaskBlock(
 ): string {
   const isMarginfi = r.action.startsWith("marginfi_");
   const isMarinade = r.action.startsWith("marinade_");
+  const isNativeStake = r.action.startsWith("native_stake_");
   const marginfiActionWord =
     r.action === "marginfi_init"
       ? "MarginFi account init"
@@ -1013,6 +1023,14 @@ export function renderSolanaPrepareAgentTaskBlock(
       : r.action === "marinade_unstake_immediate"
         ? "Marinade liquid unstake"
         : null;
+  const nativeStakeActionWord =
+    r.action === "native_stake_delegate"
+      ? "native stake delegate"
+      : r.action === "native_stake_deactivate"
+        ? "native stake deactivate"
+        : r.action === "native_stake_withdraw"
+          ? "native stake withdraw"
+          : null;
   const actionWord =
     r.action === "native_send"
       ? "native SOL send"
@@ -1024,7 +1042,7 @@ export function renderSolanaPrepareAgentTaskBlock(
             ? "durable-nonce close"
             : r.action === "jupiter_swap"
               ? "Jupiter swap"
-              : marginfiActionWord ?? marinadeActionWord ?? "Solana tx";
+              : marginfiActionWord ?? marinadeActionWord ?? nativeStakeActionWord ?? "Solana tx";
   const nonceBullet =
     r.nonceAccount && r.action !== "nonce_init"
       ? ["  - Nonce: <short nonce-account addr>"]
@@ -1118,6 +1136,34 @@ export function renderSolanaPrepareAgentTaskBlock(
                       "  - Wallet: <from address>",
                       "  - Amount: <amountMSol> mSOL (burned)",
                       "  - mSOL ATA: <mSolAta from decoded.args>",
+                      ...nonceBullet,
+                      "  - Fee: <est. fee in SOL>",
+                    ]
+                  : r.action === "native_stake_delegate"
+                  ? [
+                      "  - Headline: \"Prepared native stake delegate — <amountSol> SOL → validator <short>\"",
+                      "  - Wallet: <from address>",
+                      "  - Validator: <validator from decoded.args>",
+                      "  - Stake amount: <amountSol> SOL",
+                      "  - Stake account: <stakeAccount from decoded.args>",
+                      "  - Rent-exempt seed: <rentLamports>",
+                      ...nonceBullet,
+                      "  - Fee: <est. fee in SOL>",
+                    ]
+                  : r.action === "native_stake_deactivate"
+                  ? [
+                      "  - Headline: \"Prepared native stake deactivate — <stakeAccount short>\"",
+                      "  - Wallet: <from address>",
+                      "  - Stake account: <stakeAccount from decoded.args>",
+                      ...nonceBullet,
+                      "  - Fee: <est. fee in SOL>",
+                    ]
+                  : r.action === "native_stake_withdraw"
+                  ? [
+                      "  - Headline: \"Prepared native stake withdraw — <amountSol> SOL from <stakeAccount short>\"",
+                      "  - Wallet: <from + recipient>",
+                      "  - Stake account: <stakeAccount from decoded.args>",
+                      "  - Amount: <amountSol> SOL (or 'max')",
                       ...nonceBullet,
                       "  - Fee: <est. fee in SOL>",
                     ]
@@ -1277,6 +1323,10 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
   const isMarinade =
     tx.action === "marinade_stake" ||
     tx.action === "marinade_unstake_immediate";
+  const isNativeStake =
+    tx.action === "native_stake_delegate" ||
+    tx.action === "native_stake_deactivate" ||
+    tx.action === "native_stake_withdraw";
   const marginfiActionLabel =
     tx.action === "marginfi_init"
       ? "account init"
@@ -1356,14 +1406,14 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
   // as ix[0] — this flag drives the "DURABLE-NONCE MODE" explainer text +
   // the Nonce bullet in the summary + the expected-shape text for CHECK 1.
   const hasAdvanceNonceIx =
-    isNativeSend || isSpl || isNonceClose || isJupiterSwap || isMarginfi || isMarinade;
+    isNativeSend || isSpl || isNonceClose || isJupiterSwap || isMarginfi || isMarinade || isNativeStake;
   // The Ledger Solana app only clear-signs a small allowlist of programs
   // (System Program's transfer/advance/initialize/withdraw, and a few
   // others). Everything else falls to blind-sign, which shows only the
   // Message Hash on-device and requires the user to match it against the
   // hash the server displayed. SPL TransferChecked AND Jupiter swaps both
   // fall in that bucket.
-  const isBlindSign = isSpl || isJupiterSwap || isMarginfi || isMarinade;
+  const isBlindSign = isSpl || isJupiterSwap || isMarginfi || isMarinade || isNativeStake;
   const ledgerHash = isBlindSign ? solanaLedgerMessageHash(tx.messageBase64) : null;
 
   const checksPayload = {
@@ -1471,7 +1521,38 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
                       ...(nonceBullet ? [nonceBullet] : []),
                       "  - Fee: <est. fee in SOL>",
                     ]
-                  : [
+                  : tx.action === "native_stake_delegate"
+                    ? [
+                        "  - Headline: \"Prepared native stake delegate — <amountSol> SOL → validator <short>\"",
+                        "  - Wallet: <from address>",
+                        "  - Validator: <validator vote pubkey from decoded.args>",
+                        "  - Stake amount: <amountSol> SOL (active principal)",
+                        "  - Stake account: <stakeAccount from decoded.args (deterministic per (wallet, validator))>",
+                        "  - Rent-exempt seed: <rentLamports from decoded.args> lamports (~0.00228 SOL — reclaimable on full withdraw)",
+                        ...(nonceBullet ? [nonceBullet] : []),
+                        "  - Fee: <est. fee in SOL>",
+                        "  - Note: stake activates next epoch (~2-3 days); use prepare_native_stake_deactivate then prepare_native_stake_withdraw to exit",
+                      ]
+                    : tx.action === "native_stake_deactivate"
+                      ? [
+                          "  - Headline: \"Prepared native stake deactivate — <stakeAccount short>\"",
+                          "  - Wallet: <from address>",
+                          "  - Stake account: <stakeAccount from decoded.args>",
+                          ...(nonceBullet ? [nonceBullet] : []),
+                          "  - Fee: <est. fee in SOL>",
+                          "  - Note: deactivation takes one epoch (~2-3 days). After it lands, prepare_native_stake_withdraw can fully drain.",
+                        ]
+                      : tx.action === "native_stake_withdraw"
+                        ? [
+                            "  - Headline: \"Prepared native stake withdraw — <amountSol> SOL from <stakeAccount short>\"",
+                            "  - Wallet: <from + recipient (same address)>",
+                            "  - Stake account: <stakeAccount from decoded.args>",
+                            "  - Amount: <amountSol> SOL (or 'max' = full balance, closes the account)",
+                            ...(nonceBullet ? [nonceBullet] : []),
+                            "  - Fee: <est. fee in SOL>",
+                            "  - Note: stake account must already be inactive (1 epoch after deactivate); on-chain reverts otherwise",
+                          ]
+                        : [
                       // marginfi_supply / withdraw / borrow / repay — same shape,
                       // only the "Action" bullet text differs; keep one template.
                       `  - Headline: \"Prepared MarginFi ${marginfiActionLabel} — <amount> <symbol>\"`,

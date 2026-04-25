@@ -70,6 +70,9 @@ import {
   prepareMarginfiRepay,
   prepareMarinadeStake,
   prepareMarinadeUnstakeImmediate,
+  prepareNativeStakeDelegate,
+  prepareNativeStakeDeactivate,
+  prepareNativeStakeWithdraw,
   getMarginfiPositions,
   getSolanaStakingPositions,
   getMarginfiDiagnostics,
@@ -109,6 +112,9 @@ import {
   prepareMarginfiRepayInput,
   prepareMarinadeStakeInput,
   prepareMarinadeUnstakeImmediateInput,
+  prepareNativeStakeDelegateInput,
+  prepareNativeStakeDeactivateInput,
+  prepareNativeStakeWithdrawInput,
   getMarginfiPositionsInput,
   getSolanaStakingPositionsInput,
   getMarginfiDiagnosticsInput,
@@ -1432,6 +1438,55 @@ async function main() {
       inputSchema: prepareMarinadeUnstakeImmediateInput.shape,
     },
     handler(prepareMarinadeUnstakeImmediate)
+  );
+
+  server.registerTool(
+    "prepare_native_stake_delegate",
+    {
+      description:
+        "Build an unsigned native-stake-program tx that creates a fresh stake account at a " +
+        "deterministic address (derived per (wallet, validator) via createAccountWithSeed) and " +
+        "delegates it to the given validator vote account. Funds the stake account with " +
+        "`amountSol` SOL of active principal PLUS a ~0.00228 SOL rent-exempt seed (reclaimable " +
+        "on full withdraw). Authority is the user's wallet for both staker + withdrawer roles " +
+        "— no separate authority handoff is supported in this server. DURABLE NONCE REQUIRED. " +
+        "Refuses if a stake account already exists at the deterministic address (the user " +
+        "almost certainly meant prepare_native_stake_deactivate / withdraw on the existing " +
+        "position). BLIND-SIGN on Ledger by default — match the Message Hash on-device.",
+      inputSchema: prepareNativeStakeDelegateInput.shape,
+    },
+    handler(prepareNativeStakeDelegate)
+  );
+
+  server.registerTool(
+    "prepare_native_stake_deactivate",
+    {
+      description:
+        "Build an unsigned native-stake deactivate tx. Initiates the one-epoch (~2-3 days) " +
+        "cooldown after which the stake becomes withdrawable; the stake earns no rewards during " +
+        "deactivation. Wallet must be the stake account's staker authority. After the cooldown " +
+        "lapses, run prepare_native_stake_withdraw to drain the account (or partial-withdraw to " +
+        "leave it open). DURABLE NONCE REQUIRED + same Ledger blind-sign treatment as " +
+        "prepare_native_stake_delegate. The on-chain stake program reverts if the stake is " +
+        "already deactivating/inactive — the simulation gate catches it.",
+      inputSchema: prepareNativeStakeDeactivateInput.shape,
+    },
+    handler(prepareNativeStakeDeactivate)
+  );
+
+  server.registerTool(
+    "prepare_native_stake_withdraw",
+    {
+      description:
+        "Build an unsigned native-stake withdraw tx. Pulls `amountSol` SOL (or 'max' for the " +
+        "full lamport balance) from an inactive stake account back into the wallet. 'max' closes " +
+        "the account and reclaims the rent-exempt seed; partial-withdraw leaves the account open. " +
+        "Stake MUST be inactive (one full epoch after deactivate) — on-chain reverts otherwise; " +
+        "the simulation gate catches it. DURABLE NONCE REQUIRED + same Ledger blind-sign treatment " +
+        "as prepare_native_stake_delegate.",
+      inputSchema: prepareNativeStakeWithdrawInput.shape,
+    },
+    handler(prepareNativeStakeWithdraw)
   );
 
   server.registerTool(

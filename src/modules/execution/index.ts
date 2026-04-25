@@ -99,6 +99,9 @@ import type {
   PrepareMarginfiRepayArgs,
   PrepareMarinadeStakeArgs,
   PrepareMarinadeUnstakeImmediateArgs,
+  PrepareNativeStakeDelegateArgs,
+  PrepareNativeStakeDeactivateArgs,
+  PrepareNativeStakeWithdrawArgs,
   GetMarginfiPositionsArgs,
   GetSolanaStakingPositionsArgs,
   PreviewSendArgs,
@@ -360,6 +363,47 @@ export async function prepareMarinadeUnstakeImmediate(
   const prepared = await buildMarinadeUnstakeImmediate({
     wallet: args.wallet,
     amountMSol: args.amountMSol,
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareNativeStakeDelegate(
+  args: PrepareNativeStakeDelegateArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildNativeStakeDelegate } = await import(
+    "../solana/native-stake.js"
+  );
+  const prepared = await buildNativeStakeDelegate({
+    wallet: args.wallet,
+    validator: args.validator,
+    amountSol: args.amountSol,
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareNativeStakeDeactivate(
+  args: PrepareNativeStakeDeactivateArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildNativeStakeDeactivate } = await import(
+    "../solana/native-stake.js"
+  );
+  const prepared = await buildNativeStakeDeactivate({
+    wallet: args.wallet,
+    stakeAccount: args.stakeAccount,
+  });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareNativeStakeWithdraw(
+  args: PrepareNativeStakeWithdrawArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildNativeStakeWithdraw } = await import(
+    "../solana/native-stake.js"
+  );
+  const prepared = await buildNativeStakeWithdraw({
+    wallet: args.wallet,
+    stakeAccount: args.stakeAccount,
+    amountSol: args.amountSol,
   });
   return prepared as unknown as PreparedSolanaTx;
 }
@@ -1751,7 +1795,10 @@ export interface SolanaVerificationArtifact {
     | "marginfi_borrow"
     | "marginfi_repay"
     | "marinade_stake"
-    | "marinade_unstake_immediate";
+    | "marinade_unstake_immediate"
+    | "native_stake_delegate"
+    | "native_stake_deactivate"
+    | "native_stake_withdraw";
   from: string;
   messageBase64: string;
   recentBlockhash: string;
@@ -1867,6 +1914,9 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
       "marginfi_repay",
       "marinade_stake",
       "marinade_unstake_immediate",
+      "native_stake_delegate",
+      "native_stake_deactivate",
+      "native_stake_withdraw",
     ]);
     const ledgerMessageHash = blindSignActions.has(tx.action)
       ? solanaLedgerMessageHash(tx.messageBase64)
