@@ -42,6 +42,8 @@ import {
 } from "./modules/staking/schemas.js";
 
 import { getPortfolioSummary } from "./modules/portfolio/index.js";
+import { getPortfolioDiff } from "./modules/diff/index.js";
+import { getPortfolioDiffInput } from "./modules/diff/schemas.js";
 import { getPortfolioSummaryInput } from "./modules/portfolio/schemas.js";
 
 import { getVaultPilotConfigStatus } from "./modules/diagnostics/index.js";
@@ -1304,6 +1306,16 @@ async function main() {
       inputSchema: getPortfolioSummaryInput.shape,
     },
     handler(getPortfolioSummary)
+  );
+
+  server.registerTool(
+    "get_portfolio_diff",
+    {
+      description:
+        "Decompose what changed in the user's portfolio over a time window — the AI version of an account statement. Returns the top-level USD change, broken down by chain and per-asset into: price moves (USD impact of price change on what was held the entire window), net deposits / withdrawals (sum of priced external transfers), and 'other' (the residual — interest accrual, swap legs, MEV, anything not cleanly attributable to price or external flow). Supports `wallet` (EVM), `tronAddress`, `solanaAddress`, `bitcoinAddress` — at least one required. Window: 24h / 7d / 30d / ytd. Returns BOTH a structured envelope AND a pre-rendered narrative string suitable for verbatim relay (control via `format`). Distinct from `get_portfolio_summary` (which gives current state) and the planned `get_pnl_summary` (which gives a single number) — this tool gives narrative decomposition. v1 caveats: history fetcher caps at ~50 items per chain, so very active wallets may under-count flows (response surfaces `truncated: true`); DeFi-position interest accrual collapses into the `otherEffectUsd` residual rather than its own bucket; Solana program-interaction txs (Jupiter swaps, MarginFi actions, etc.) are skipped from net-flow accounting (their balance deltas mix swap legs); Bitcoin shows current balance only (no in-window flow accounting yet).",
+      inputSchema: getPortfolioDiffInput.shape,
+    },
+    handler(getPortfolioDiff)
   );
 
   server.registerTool(

@@ -47,7 +47,7 @@ function zeroNative(wallet: `0x${string}`, chain: SupportedChain): TokenAmount {
   );
 }
 
-async function fetchNativeBalance(wallet: `0x${string}`, chain: SupportedChain): Promise<TokenAmount> {
+export async function fetchNativeBalance(wallet: `0x${string}`, chain: SupportedChain): Promise<TokenAmount> {
   const client = getClient(chain);
   const [balance, ethPrice] = await Promise.all([
     client.getBalance({ address: wallet }),
@@ -63,7 +63,7 @@ async function fetchNativeBalance(wallet: `0x${string}`, chain: SupportedChain):
   );
 }
 
-async function fetchTopErc20Balances(
+export async function fetchTopErc20Balances(
   wallet: `0x${string}`,
   chain: SupportedChain
 ): Promise<TokenAmount[]> {
