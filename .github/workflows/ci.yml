@@ -29,7 +29,13 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        # --legacy-peer-deps because @kamino-finance/kliquidity-sdk (a transitive
+        # dep of @kamino-finance/klend-sdk) declares peer @solana/kit@^3.0 while
+        # klend-sdk itself uses @solana/kit@^2.3. Nesting (kit v2 hoisted, kit v3
+        # under kliquidity-sdk's local node_modules) is the right resolution —
+        # the two SDKs use independent APIs of kit. Strict resolution refuses the
+        # nest and would force us to wait for upstream alignment.
+        run: npm ci --legacy-peer-deps
 
       - name: Typecheck & build
         run: npm run build
