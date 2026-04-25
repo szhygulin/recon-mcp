@@ -130,6 +130,13 @@ export interface PortfolioCoverage {
    * `tronStaking` / `tron` split). Absent when no Solana address was queried.
    */
   marginfi?: CoverageStatus;
+  /**
+   * Solana staking position fetch coverage (Marinade mSOL, Jito jitoSOL,
+   * native stake accounts). Mirrors the `marginfi` split so a staking-
+   * reader failure doesn't mask a successful balance read. Absent when no
+   * Solana address was queried.
+   */
+  solanaStaking?: CoverageStatus;
   /** Number of token balances whose USD valuation could not be resolved. */
   unpricedAssets: number;
   /**
@@ -356,6 +363,49 @@ export interface SolanaPortfolioSlice {
   marginfi?: SolanaMarginfiPositionSlice[];
   /** MarginFi aggregate net USD (sum of netValueUsd across positions). */
   marginfiNetUsd?: number;
+  /**
+   * Solana staking positions — Marinade mSOL, Jito jitoSOL, native stake
+   * accounts. Present when any of the three sections is non-empty for
+   * this wallet. Missing means nothing found (errored case surfaces
+   * through PortfolioCoverage.solanaStaking).
+   */
+  staking?: SolanaStakingPositionSlice;
+  /** Solana staking aggregate net USD (SOL-equivalent × SOL price). */
+  stakingNetUsd?: number;
+}
+
+/**
+ * Thin projection of the three staking readers' output
+ * (`src/modules/positions/solana-staking.ts`). Kept in sync with
+ * `SolanaStakingPositions` but stripped down — the portfolio JSON doesn't
+ * need the per-reader wrapper metadata (wallet duplication, protocol
+ * tags on subtotals).
+ */
+export interface SolanaStakingPositionSlice {
+  chain: "solana";
+  /** mSOL balance + SOL-equivalent via Marinade's on-chain mSolPrice. */
+  marinade: {
+    mSolBalance: number;
+    solEquivalent: number;
+    exchangeRate: number;
+  };
+  /** jitoSOL balance + SOL-equivalent via stake-pool's totalLamports/supply. */
+  jito: {
+    jitoSolBalance: number;
+    solEquivalent: number;
+    exchangeRate: number;
+  };
+  /** One entry per native stake account (SPL stake-program) with activation status. */
+  nativeStakes: Array<{
+    stakePubkey: string;
+    validator?: string;
+    stakeSol: number;
+    status: "activating" | "active" | "deactivating" | "inactive";
+    activationEpoch?: number;
+    deactivationEpoch?: number;
+  }>;
+  /** Sum of SOL-equivalents across Marinade + Jito + native stakes. */
+  totalSolEquivalent: number;
 }
 
 /**
@@ -590,6 +640,14 @@ export interface PortfolioSummary {
    * for the wallet.
    */
   solanaLendingUsd?: number;
+  /**
+   * Solana staking net USD — Marinade mSOL + Jito jitoSOL + native stake
+   * accounts (roadmap #2). Computed as `totalSolEquivalent * SOL price`
+   * using the same SOL price that valued the native-SOL balance line.
+   * Folded into `totalUsd`; carve-out here for UIs. Present only when the
+   * wallet holds at least some Solana staking.
+   */
+  solanaStakingUsd?: number;
   breakdown: {
     native: TokenAmount[];
     erc20: TokenAmount[];

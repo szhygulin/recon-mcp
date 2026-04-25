@@ -13,6 +13,7 @@ import { getTronBalances } from "../tron/balances.js";
 import { getTronStaking } from "../tron/staking.js";
 import { getSolanaBalances } from "../solana/balances.js";
 import { getMarginfiPositions as readMarginfiPositions } from "../positions/marginfi.js";
+import { getSolanaStakingPositions as readSolanaStakingPositions } from "../positions/solana-staking.js";
 import { getSolanaConnection } from "../solana/rpc.js";
 import type { GetPortfolioSummaryArgs } from "./schemas.js";
 import type {
@@ -22,6 +23,7 @@ import type {
   PortfolioSummary,
   SolanaMarginfiPositionSlice,
   SolanaPortfolioSlice,
+  SolanaStakingPositionSlice,
   SupportedChain,
   TokenAmount,
   TronPortfolioSlice,
@@ -308,6 +310,7 @@ async function buildWalletSummary(
     tronStaking: false,
     solana: false,
     marginfi: false,
+    solanaStaking: false,
   };
   // Per-market Compound V3 failure detail, populated when at least one market
   // read errored. Surfaced in coverage.compound.note so the agent can tell
@@ -346,6 +349,7 @@ async function buildWalletSummary(
     tronStakingSlice,
     solanaSlice,
     marginfiPositionsRaw,
+    solanaStakingRaw,
   ] = await Promise.all([
       Promise.all(
         chains.map((c) =>
@@ -482,6 +486,25 @@ async function buildWalletSummary(
         : (Promise.resolve([]) as Promise<
             Awaited<ReturnType<typeof readMarginfiPositions>>
           >),
+      // Solana staking rides the same gate. The consolidated reader fans
+      // out to three sub-readers (Marinade SDK, Jito stake pool, native
+      // stake-program enumeration) in parallel. A failure is independent
+      // of balance/MarginFi coverage (mirror of tronStaking / marginfi
+      // split). Returns null on failure so the aggregator can render a
+      // present-but-errored coverage entry.
+      solanaAddress
+        ? readSolanaStakingPositions(
+            getSolanaConnection(),
+            solanaAddress,
+          ).catch(() => {
+            errors.solanaStaking = true;
+            return null as Awaited<
+              ReturnType<typeof readSolanaStakingPositions>
+            > | null;
+          })
+        : (Promise.resolve(null) as Promise<Awaited<
+            ReturnType<typeof readSolanaStakingPositions>
+          > | null>),
     ]);
   const morphoPositions = morphoByChain.flatMap((r) => r.positions);
 
@@ -530,6 +553,54 @@ async function buildWalletSummary(
     (s, p) => s + p.netValueUsd,
     0,
   );
+
+  // Solana staking slice — shrink the consolidated reader's shape into the
+  // portfolio's thin projection. Dropping the wallet/protocol/chain fields
+  // on each sub-reader's output keeps the summary JSON compact; callers
+  // who want the full view call get_solana_staking_positions directly.
+  const solanaStakingSlice: SolanaStakingPositionSlice | undefined =
+    solanaStakingRaw
+      ? {
+          chain: "solana",
+          marinade: {
+            mSolBalance: solanaStakingRaw.marinade.mSolBalance,
+            solEquivalent: solanaStakingRaw.marinade.solEquivalent,
+            exchangeRate: solanaStakingRaw.marinade.exchangeRate,
+          },
+          jito: {
+            jitoSolBalance: solanaStakingRaw.jito.jitoSolBalance,
+            solEquivalent: solanaStakingRaw.jito.solEquivalent,
+            exchangeRate: solanaStakingRaw.jito.exchangeRate,
+          },
+          nativeStakes: solanaStakingRaw.nativeStakes.map((s) => ({
+            stakePubkey: s.stakePubkey,
+            ...(s.validator ? { validator: s.validator } : {}),
+            stakeSol: s.stakeSol,
+            status: s.status,
+            ...(s.activationEpoch !== undefined
+              ? { activationEpoch: s.activationEpoch }
+              : {}),
+            ...(s.deactivationEpoch !== undefined
+              ? { deactivationEpoch: s.deactivationEpoch }
+              : {}),
+          })),
+          totalSolEquivalent: solanaStakingRaw.totalSolEquivalent,
+        }
+      : undefined;
+
+  // Convert the Solana staking subtotal to USD using the same SOL price
+  // that valued the native-SOL line in solanaSlice. Reusing avoids a
+  // duplicate price fetch + guarantees the two USD numbers (SOL-in-wallet
+  // vs. staked-SOL) use the exact same SOL price. Falls back to 0 if the
+  // solanaSlice is absent or didn't manage to resolve a SOL price.
+  const solPriceUsd = solanaSlice?.native.find(
+    (b) => b.token === "native",
+  )?.priceUsd;
+  const solanaStakingUsd =
+    solanaStakingSlice && typeof solPriceUsd === "number"
+      ? solanaStakingSlice.totalSolEquivalent * solPriceUsd
+      : 0;
+
   const walletBalancesUsd = round(
     [...native, ...erc20].reduce((sum, t) => sum + (t.valueUsd ?? 0), 0) +
       tronBalancesUsd +
@@ -547,7 +618,7 @@ async function buildWalletSummary(
   );
   // totalUsd folds every accounted-for slice: EVM balances + TRON balances +
   // Solana balances are already rolled into walletBalancesUsd; TRON staking
-  // is surfaced separately (Phase 2 for Solana staking). EVM-only slices
+  // and Solana staking are surfaced separately. EVM-only slices
   // (lending/LP/staking) are added here.
   const totalUsd = round(
     walletBalancesUsd +
@@ -555,7 +626,8 @@ async function buildWalletSummary(
       lpUsd +
       stakingUsd +
       tronStakingUsd +
-      solanaLendingUsd,
+      solanaLendingUsd +
+      solanaStakingUsd,
     2
   );
 
@@ -671,6 +743,13 @@ async function buildWalletSummary(
                 note: "MarginFi position fetch failed — lending positions not included in totals. SDK or oracle RPC error; balances still loaded if coverage.solana is covered.",
               }
             : { covered: true },
+          solanaStaking: errors.solanaStaking
+            ? {
+                covered: false,
+                errored: true,
+                note: "Solana staking fetch failed — Marinade / Jito / native stake positions not included in totals. Independent of coverage.solana; MarginFi + balances still loaded if those are covered.",
+              }
+            : { covered: true },
         }
       : {}),
     unpricedAssets,
@@ -712,6 +791,9 @@ async function buildWalletSummary(
     ...(marginfiSlices.length > 0
       ? { solanaLendingUsd: round(solanaLendingUsd, 2) }
       : {}),
+    ...(solanaStakingSlice && solanaStakingSlice.totalSolEquivalent > 0
+      ? { solanaStakingUsd: round(solanaStakingUsd, 2) }
+      : {}),
     breakdown: {
       native,
       erc20,
@@ -727,6 +809,13 @@ async function buildWalletSummary(
                 ? {
                     marginfi: marginfiSlices,
                     marginfiNetUsd: round(solanaLendingUsd, 2),
+                  }
+                : {}),
+              ...(solanaStakingSlice &&
+              solanaStakingSlice.totalSolEquivalent > 0
+                ? {
+                    staking: solanaStakingSlice,
+                    stakingNetUsd: round(solanaStakingUsd, 2),
                   }
                 : {}),
             },
