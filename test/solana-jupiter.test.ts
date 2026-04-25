@@ -179,7 +179,7 @@ describe("buildJupiterSwap", () => {
     );
     await expect(
       buildJupiterSwap({ wallet: WALLET, quote: SAMPLE_QUOTE as never }),
-    ).rejects.toThrow(/prepare_solana_nonce_init first/);
+    ).rejects.toThrow(/durable-nonce account not initialized/);
   });
 
   it("composes the v0 ix list with nonceAdvance first + resolves ALTs + stashes everything on a v0 draft", async () => {

@@ -139,29 +139,45 @@ export interface PreparedSolanaTx {
 }
 
 /**
- * Structured error thrown by `buildSolanaNativeSend` / `buildSolanaSplSend`
- * when the wallet hasn't initialized a durable-nonce account yet. The agent
- * relays the message verbatim to the user, who then runs
- * `prepare_solana_nonce_init` before retrying the send.
+ * Structured error thrown by builders that can't safely auto-bundle the
+ * one-time nonce-init step into their tx (Jupiter swaps + MarginFi actions
+ * are already large v0+ALT messages where appending two more ixs risks
+ * blowing past size limits). Points the user at the simplest fix: do any
+ * tiny `prepare_solana_native_send` first — that builder auto-bundles
+ * nonce-init when missing — or call `prepare_solana_nonce_init` explicitly.
  */
 export function throwNonceRequired(wallet: string): never {
   throw new Error(
-    `Solana nonce account not initialized for ${wallet}. Durable-nonce protection is required ` +
-      `for all Solana sends in this server — the ~90s recentBlockhash window was eating into the ` +
-      `Ledger blind-sign review time and causing intermittent failures. ` +
-      `Run prepare_solana_nonce_init first (one-time setup, ~0.00144 SOL rent-exempt seed, fully ` +
-      `reclaimable via prepare_solana_nonce_close) and then retry this send.`,
+    `Solana durable-nonce account not initialized for ${wallet}. This builder ` +
+      `can't safely auto-bundle the setup into a swap/lending tx (size + ALT ` +
+      `constraints), so you have two options: (1) easiest — do any tiny ` +
+      `prepare_solana_native_send (e.g. 0.001 SOL to yourself); that builder ` +
+      `auto-includes the one-time ~0.00144 SOL nonce setup, or (2) call ` +
+      `prepare_solana_nonce_init directly. Either way, retry this action ` +
+      `afterwards. The rent is fully reclaimable via prepare_solana_nonce_close.`,
   );
 }
 
 /**
- * Build a native SOL transfer. One `SystemProgram.transfer` instruction,
- * preceded by `SystemProgram.nonceAdvance` (ix[0], required — Agave
- * detects durable-nonce txs via ix[0] only) and optionally a `ComputeBudget`
- * pair when the network is congested. Pre-flight: refuses if the wallet is
- * short OR if the nonce account doesn't exist yet. Returns a DRAFT
- * (handle + metadata) — the nonce value is pinned later by
- * `preview_solana_send`.
+ * Build a native SOL transfer.
+ *
+ * Two shapes depending on whether the wallet has a durable-nonce account yet:
+ *
+ *   - **Steady state** (nonce exists): one `SystemProgram.transfer` preceded
+ *     by `SystemProgram.nonceAdvance` (ix[0], required — Agave detects
+ *     durable-nonce txs via ix[0] only) and optionally a `ComputeBudget`
+ *     pair when the network is congested. Tx is durable-nonce-protected and
+ *     stays valid indefinitely on the device.
+ *
+ *   - **First send** (nonce missing): same tx auto-bundles the one-time
+ *     create+initialize of the nonce PDA at ix[0..1], then optional compute-
+ *     budget, then the transfer. This run is legacy-blockhash mode (the
+ *     nonce account doesn't exist yet to advance), so the ~60s blockhash
+ *     window applies — but every subsequent send is durable-nonce-protected.
+ *     Eliminates the visible `prepare_solana_nonce_init` pre-step.
+ *
+ * Returns a DRAFT (handle + metadata); the blockhash / nonce value is pinned
+ * later by `preview_solana_send`.
  */
 export async function buildSolanaNativeSend(
   p: SolanaNativeSendParams,
@@ -170,12 +186,14 @@ export async function buildSolanaNativeSend(
   const toPubkey = assertSolanaAddress(p.to);
   const conn = getSolanaConnection();
 
-  // Durable-nonce preflight: refuse if the user hasn't initialized yet.
-  // The nonce PDA is deterministic — same seed + base → same pubkey — so
-  // no lookup table is needed, just derive and check on-chain presence.
+  // Derive the deterministic nonce PDA. Existence determines the tx shape.
   const noncePubkey = await deriveNonceAccountAddress(fromPubkey);
   const nonceState = await getNonceAccountValue(conn, noncePubkey);
-  if (!nonceState) throwNonceRequired(p.wallet);
+  const firstTimeSetup = !nonceState;
+  // Rent for the nonce account, only fetched when we need to bundle init.
+  const nonceRentLamports = firstTimeSetup
+    ? await conn.getMinimumBalanceForRentExemption(NONCE_ACCOUNT_LENGTH)
+    : 0;
 
   // Priority-fee decision BEFORE resolving "max" — the fee is baked into
   // the amount we're willing to hand back to the user on "max".
@@ -184,18 +202,27 @@ export async function buildSolanaNativeSend(
     ? Math.ceil((pfee.microLamportsPerCu * pfee.computeUnitLimit) / 1_000_000)
     : 0;
   const totalFee = SOLANA_BASE_FEE_LAMPORTS + priorityFeeLamports;
+  // On the first-time path, rent for the nonce PDA is reserved BEFORE we
+  // decide how much SOL the user can send; "max" must leave the rent on the
+  // nonce account, not hand it to the recipient.
+  const reservedForNonceRent = BigInt(nonceRentLamports);
 
   let lamports: bigint;
   let displayAmount: string;
   if (p.amount === "max") {
     const balanceLamports = BigInt(await conn.getBalance(fromPubkey, "confirmed"));
-    const reserved = BigInt(totalFee + SOL_SAFETY_BUFFER_LAMPORTS);
+    const reserved =
+      BigInt(totalFee + SOL_SAFETY_BUFFER_LAMPORTS) + reservedForNonceRent;
     if (balanceLamports <= reserved) {
       throw new Error(
         `Cannot "max": wallet ${p.wallet} balance ${formatSol(balanceLamports)} SOL is at or below ` +
           `the reserve (${formatSol(reserved)} SOL = tx fee + ${formatSol(
             BigInt(SOL_SAFETY_BUFFER_LAMPORTS),
-          )} SOL safety buffer).`,
+          )} SOL safety buffer` +
+          (firstTimeSetup
+            ? ` + ${formatSol(reservedForNonceRent)} SOL one-time durable-nonce account rent`
+            : "") +
+          `).`,
       );
     }
     lamports = balanceLamports - reserved;
@@ -203,22 +230,35 @@ export async function buildSolanaNativeSend(
   } else {
     lamports = parseSolAmount(p.amount);
     const balanceLamports = BigInt(await conn.getBalance(fromPubkey, "confirmed"));
-    if (balanceLamports < lamports + BigInt(totalFee)) {
+    const needed = lamports + BigInt(totalFee) + reservedForNonceRent;
+    if (balanceLamports < needed) {
       throw new Error(
         `Insufficient SOL: wallet ${p.wallet} has ${formatSol(balanceLamports)} SOL, ` +
-          `requested ${p.amount} + ${formatSol(BigInt(totalFee))} SOL fee = ` +
-          `${formatSol(lamports + BigInt(totalFee))} SOL. Reduce the amount or top up.`,
+          `requested ${p.amount} + ${formatSol(BigInt(totalFee))} SOL fee` +
+          (firstTimeSetup
+            ? ` + ${formatSol(reservedForNonceRent)} SOL one-time durable-nonce account rent`
+            : "") +
+          ` = ${formatSol(needed)} SOL. Reduce the amount or top up.`,
       );
     }
     displayAmount = p.amount;
   }
 
-  // Build the draft tx. ix[0] MUST be nonceAdvance — that's the signal
-  // Agave uses to detect durable-nonce txs and skip the blockhash validity
-  // window check. Everything else (compute-budget, payload) stacks after.
+  // Build the draft tx.
+  //   - Steady state: ix[0] = nonceAdvance, then compute-budget, then transfer.
+  //   - First-time setup: ix[0..1] = createAccountWithSeed + nonceInitialize,
+  //     then compute-budget, then transfer. This bundle uses a regular recent
+  //     blockhash because the nonce doesn't exist yet to advance — but it's
+  //     a one-time path; subsequent sends take the steady-state branch.
   const draftTx = new Transaction();
   draftTx.feePayer = fromPubkey;
-  draftTx.add(buildAdvanceNonceIx(noncePubkey, fromPubkey));
+  if (firstTimeSetup) {
+    for (const ix of buildInitNonceIxs(fromPubkey, noncePubkey, nonceRentLamports)) {
+      draftTx.add(ix);
+    }
+  } else {
+    draftTx.add(buildAdvanceNonceIx(noncePubkey, fromPubkey));
+  }
   if (pfee) {
     draftTx.add(
       ComputeBudgetProgram.setComputeUnitLimit({ units: pfee.computeUnitLimit }),
@@ -236,35 +276,56 @@ export async function buildSolanaNativeSend(
   );
 
   const nonceAccountStr = noncePubkey.toBase58();
+  const setupSuffix = firstTimeSetup
+    ? ` (+ one-time durable-nonce account setup, ${formatSol(reservedForNonceRent)} SOL rent reclaimable later via prepare_solana_nonce_close)`
+    : "";
+  const estimatedFeeLamportsTotal = totalFee + nonceRentLamports;
   const draft: SolanaTxDraft = {
     kind: "legacy",
     draftTx,
     meta: {
       action: "native_send",
       from: p.wallet,
-      description: `Send ${displayAmount} SOL to ${p.to}`,
+      description: `Send ${displayAmount} SOL to ${p.to}${setupSuffix}`,
       decoded: {
-        functionName: "solana.system.transfer",
+        functionName: firstTimeSetup
+          ? "solana.system.transfer+createNonceAccount"
+          : "solana.system.transfer",
         args: {
           from: p.wallet,
           to: p.to,
           amount: `${displayAmount} SOL`,
           lamports: lamports.toString(),
           nonceAccount: nonceAccountStr,
+          ...(firstTimeSetup
+            ? {
+                firstTimeNonceSetup: "true",
+                nonceSetupRentLamports: nonceRentLamports.toString(),
+                nonceSetupRentSol: formatSol(reservedForNonceRent),
+              }
+            : {}),
         },
       },
+      ...(firstTimeSetup ? { rentLamports: nonceRentLamports } : {}),
       ...(pfee
         ? {
             priorityFeeMicroLamports: pfee.microLamportsPerCu,
             computeUnitLimit: pfee.computeUnitLimit,
           }
         : {}),
-      estimatedFeeLamports: totalFee,
-      nonce: {
-        account: nonceAccountStr,
-        authority: fromPubkey.toBase58(),
-        value: nonceState.nonce,
-      },
+      estimatedFeeLamports: estimatedFeeLamportsTotal,
+      // Steady-state sends self-protect via durable nonce; record the meta
+      // so preview re-fetches the on-chain nonce value at pin time. The
+      // first-time bundle uses a legacy blockhash (no nonce to advance yet).
+      ...(firstTimeSetup
+        ? {}
+        : {
+            nonce: {
+              account: nonceAccountStr,
+              authority: fromPubkey.toBase58(),
+              value: nonceState!.nonce,
+            },
+          }),
     },
   };
   const { handle } = issueSolanaDraftHandle(draft);
@@ -275,6 +336,9 @@ export async function buildSolanaNativeSend(
     from: p.wallet,
     description: draft.meta.description,
     decoded: draft.meta.decoded,
+    ...(draft.meta.rentLamports !== undefined
+      ? { rentLamports: draft.meta.rentLamports }
+      : {}),
     ...(draft.meta.priorityFeeMicroLamports !== undefined
       ? { priorityFeeMicroLamports: draft.meta.priorityFeeMicroLamports }
       : {}),
@@ -298,11 +362,21 @@ export interface SolanaSplSendParams {
 }
 
 /**
- * Build an SPL token transfer. ix[0] is `SystemProgram.nonceAdvance` (required
- * for durable-nonce protection — see the module docs in `nonce.ts`), followed
- * by optional ComputeBudget ixs, optional createAssociatedTokenAccount, and
- * finally `Token.TransferChecked`. TransferChecked makes the Ledger Solana
- * app clear-sign the mint + decimals + amount.
+ * Build an SPL token transfer.
+ *
+ * Two shapes depending on whether the wallet has a durable-nonce account yet:
+ *
+ *   - **Steady state** (nonce exists): ix[0] = `SystemProgram.nonceAdvance`,
+ *     then optional ComputeBudget, then optional `createAssociatedTokenAccount`,
+ *     then `Token.TransferChecked`. Tx is durable-nonce-protected.
+ *
+ *   - **First send** (nonce missing): ix[0..1] = createAccountWithSeed +
+ *     nonceInitialize, then optional CB, optional createATA, then
+ *     TransferChecked. Legacy-blockhash one-shot — same auto-bundle pattern
+ *     as `buildSolanaNativeSend`.
+ *
+ * TransferChecked makes the Ledger Solana app clear-sign the mint + decimals
+ * + amount (when paired with a Trusted Name TLV; otherwise blind-sign).
  */
 export async function buildSolanaSplSend(
   p: SolanaSplSendParams,
@@ -312,10 +386,14 @@ export async function buildSolanaSplSend(
   const mintPubkey = assertSolanaAddress(p.mint);
   const conn = getSolanaConnection();
 
-  // Durable-nonce preflight — same gate as buildSolanaNativeSend.
+  // Durable-nonce check — auto-bundle init when missing (same pattern as
+  // buildSolanaNativeSend). Subsequent SPL sends take the steady-state path.
   const noncePubkey = await deriveNonceAccountAddress(fromPubkey);
   const nonceState = await getNonceAccountValue(conn, noncePubkey);
-  if (!nonceState) throwNonceRequired(p.wallet);
+  const firstTimeSetup = !nonceState;
+  const nonceRentLamports = firstTimeSetup
+    ? await conn.getMinimumBalanceForRentExemption(NONCE_ACCOUNT_LENGTH)
+    : 0;
 
   // Resolve decimals + symbol. Canonical mints (USDC/USDT/JUP/...) use the
   // static table; unknown mints hit the chain via getTokenSupply.
@@ -357,14 +435,15 @@ export async function buildSolanaSplSend(
   // Recipient ATA — may need to be created. Sender pays the rent if so.
   const recipient = await resolveRecipientAta(conn, mintPubkey, toPubkey);
 
-  // Pre-flight: ensure the wallet has enough SOL for tx fee + ATA rent.
+  // Pre-flight: ensure the wallet has enough SOL for tx fee + ATA rent
+  // (+ one-time durable-nonce account rent on the first SPL send).
   const pfee = await computePriorityFee(conn, [senderAta, recipient.ataAddress]);
   const priorityFeeLamports = pfee
     ? Math.ceil((pfee.microLamportsPerCu * pfee.computeUnitLimit) / 1_000_000)
     : 0;
   const totalFee = SOLANA_BASE_FEE_LAMPORTS + priorityFeeLamports;
-  const totalLamportsNeeded =
-    totalFee + (recipient.needsCreation ? SPL_TOKEN_ACCOUNT_RENT_LAMPORTS : 0);
+  const ataRent = recipient.needsCreation ? SPL_TOKEN_ACCOUNT_RENT_LAMPORTS : 0;
+  const totalLamportsNeeded = totalFee + ataRent + nonceRentLamports;
   const solBalance = BigInt(await conn.getBalance(fromPubkey, "confirmed"));
   if (solBalance < BigInt(totalLamportsNeeded)) {
     throw new Error(
@@ -373,15 +452,27 @@ export async function buildSolanaSplSend(
         (recipient.needsCreation
           ? ` + ${formatSol(BigInt(SPL_TOKEN_ACCOUNT_RENT_LAMPORTS))} SOL to create the recipient's ${symbol} account`
           : "") +
+        (firstTimeSetup
+          ? ` + ${formatSol(BigInt(nonceRentLamports))} SOL one-time durable-nonce account rent`
+          : "") +
         `). Top up and retry.`,
     );
   }
 
-  // Build the draft tx. ix[0] = nonceAdvance (required); then compute-budget,
-  // then optional ATA-create, then the SPL transfer.
+  // Build the draft tx.
+  //   - Steady state: ix[0] = nonceAdvance, then compute-budget, then optional
+  //     ATA-create, then TransferChecked.
+  //   - First-time setup: ix[0..1] = createAccountWithSeed + nonceInitialize,
+  //     then compute-budget, then optional ATA-create, then TransferChecked.
   const draftTx = new Transaction();
   draftTx.feePayer = fromPubkey;
-  draftTx.add(buildAdvanceNonceIx(noncePubkey, fromPubkey));
+  if (firstTimeSetup) {
+    for (const ix of buildInitNonceIxs(fromPubkey, noncePubkey, nonceRentLamports)) {
+      draftTx.add(ix);
+    }
+  } else {
+    draftTx.add(buildAdvanceNonceIx(noncePubkey, fromPubkey));
+  }
   if (pfee) {
     draftTx.add(
       ComputeBudgetProgram.setComputeUnitLimit({ units: pfee.computeUnitLimit }),
@@ -411,11 +502,16 @@ export async function buildSolanaSplSend(
     ),
   );
 
-  const descSuffix = recipient.needsCreation
+  const ataSuffix = recipient.needsCreation
     ? ` (+ create recipient ${symbol} account, costs ${formatSol(BigInt(SPL_TOKEN_ACCOUNT_RENT_LAMPORTS))} SOL rent)`
     : "";
-  const estimatedFeeLamports =
-    totalFee + (recipient.needsCreation ? SPL_TOKEN_ACCOUNT_RENT_LAMPORTS : 0);
+  const setupSuffix = firstTimeSetup
+    ? ` (+ one-time durable-nonce account setup, ${formatSol(BigInt(nonceRentLamports))} SOL rent reclaimable later via prepare_solana_nonce_close)`
+    : "";
+  const estimatedFeeLamports = totalFee + ataRent + nonceRentLamports;
+  // Combine rent components into a single number; surfaces the user's total
+  // rent obligation (ATA rent + nonce rent) on the prepared result.
+  const totalRentLamports = ataRent + nonceRentLamports;
   const nonceAccountStr = noncePubkey.toBase58();
   const draft: SolanaTxDraft = {
     kind: "legacy",
@@ -423,9 +519,11 @@ export async function buildSolanaSplSend(
     meta: {
       action: "spl_send",
       from: p.wallet,
-      description: `Send ${p.amount} ${symbol} to ${p.to}${descSuffix}`,
+      description: `Send ${p.amount} ${symbol} to ${p.to}${ataSuffix}${setupSuffix}`,
       decoded: {
-        functionName: "solana.spl.transferChecked",
+        functionName: firstTimeSetup
+          ? "solana.spl.transferChecked+createNonceAccount"
+          : "solana.spl.transferChecked",
         args: {
           from: p.wallet,
           to: p.to,
@@ -438,9 +536,16 @@ export async function buildSolanaSplSend(
           ...(recipient.needsCreation
             ? { createsRecipientAta: "true", rentSol: formatSol(BigInt(SPL_TOKEN_ACCOUNT_RENT_LAMPORTS)) }
             : {}),
+          ...(firstTimeSetup
+            ? {
+                firstTimeNonceSetup: "true",
+                nonceSetupRentLamports: nonceRentLamports.toString(),
+                nonceSetupRentSol: formatSol(BigInt(nonceRentLamports)),
+              }
+            : {}),
         },
       },
-      ...(recipient.needsCreation ? { rentLamports: SPL_TOKEN_ACCOUNT_RENT_LAMPORTS } : {}),
+      ...(totalRentLamports > 0 ? { rentLamports: totalRentLamports } : {}),
       ...(pfee
         ? {
             priorityFeeMicroLamports: pfee.microLamportsPerCu,
@@ -448,11 +553,17 @@ export async function buildSolanaSplSend(
           }
         : {}),
       estimatedFeeLamports,
-      nonce: {
-        account: nonceAccountStr,
-        authority: fromPubkey.toBase58(),
-        value: nonceState.nonce,
-      },
+      // Steady-state SPL sends self-protect via durable nonce; the first-time
+      // bundle uses a legacy blockhash (no nonce to advance yet).
+      ...(firstTimeSetup
+        ? {}
+        : {
+            nonce: {
+              account: nonceAccountStr,
+              authority: fromPubkey.toBase58(),
+              value: nonceState!.nonce,
+            },
+          }),
     },
   };
   const { handle } = issueSolanaDraftHandle(draft);

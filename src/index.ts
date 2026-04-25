@@ -1242,7 +1242,7 @@ async function main() {
     "prepare_solana_native_send",
     {
       description:
-        "Build an unsigned SOL native-transfer DRAFT via SystemProgram.transfer. Returns a compact preview + opaque handle — but does NOT yet serialize the message or fetch a blockhash (those happen in `preview_solana_send`, called right before `send_transaction`, to keep the ~60s blockhash validity window from being burned during user review). Run `pair_ledger_solana` once per session first so the Solana app is open and the device address is verified. Amount is in SOL (e.g. \"0.5\") or \"max\" for full balance minus fee + safety buffer. Priority fee is added dynamically only when `getRecentPrioritizationFees` p50 is above the congestion threshold. The Ledger Solana app clear-signs SystemProgram.transfer (shows recipient + amount on device); `preview_solana_send` still runs to pin a fresh blockhash — just without a blind-sign hash-match step on the user's side.",
+        "Build an unsigned SOL native-transfer DRAFT via SystemProgram.transfer. Returns a compact preview + opaque handle — but does NOT yet serialize the message or fetch a blockhash (those happen in `preview_solana_send`, called right before `send_transaction`, to keep the ~60s blockhash validity window from being burned during user review). Run `pair_ledger_solana` once per session first so the Solana app is open and the device address is verified. Amount is in SOL (e.g. \"0.5\") or \"max\" for full balance minus fee + safety buffer. Priority fee is added dynamically only when `getRecentPrioritizationFees` p50 is above the congestion threshold. AUTO NONCE SETUP: if the wallet has no durable-nonce account yet (first Solana send), this tool transparently bundles createAccountWithSeed + nonceInitialize ahead of the transfer in a single tx — costs an extra ~0.00144 SOL rent (reclaimable via `prepare_solana_nonce_close`), surfaced in the response (`firstTimeNonceSetup: \"true\"`, `rentLamports`, description suffix). Subsequent sends are durable-nonce-protected and stay valid indefinitely on the device. The Ledger Solana app clear-signs SystemProgram.transfer + nonce-account ops (no blind-sign hash-match step needed for native sends).",
       inputSchema: prepareSolanaNativeSendInput.shape,
     },
     handler(prepareSolanaNativeSend)
@@ -1252,7 +1252,7 @@ async function main() {
     "prepare_solana_spl_send",
     {
       description:
-        "Build an unsigned SPL token transfer DRAFT via Token.TransferChecked. Returns a compact preview + opaque handle — but does NOT yet serialize the message or fetch a blockhash. When the user says 'send', call `preview_solana_send(handle)` to pin a fresh blockhash, compute the Message Hash, and emit the CHECKS agent-task block, then call `send_transaction`. Run `pair_ledger_solana` first. Pass the base58 SPL mint address (canonical decimals resolved for USDC, USDT, JUP, BONK, JTO, mSOL, jitoSOL; otherwise read from chain). If the recipient does NOT yet have an Associated Token Account for this mint, the draft automatically includes a `createAssociatedTokenAccount` instruction — the sender pays ~0.00204 SOL rent, disclosed explicitly (`rentLamports` + `description`). DURABLE NONCE REQUIRED: every send tx is protected by a per-wallet durable-nonce account (ix[0] = SystemProgram.nonceAdvance), so the ~90s blockhash window no longer bounds Ledger review time. If the wallet hasn't run `prepare_solana_nonce_init` yet, this tool errors with a clear pointer to do so — that's a one-time setup costing ~0.00144 SOL (reclaimable via `prepare_solana_nonce_close`). BLIND-SIGN REQUIRED: the Ledger Solana app does NOT auto clear-sign TransferChecked — its parser requires a signed 'Trusted Name' TLV descriptor that only Ledger Live supplies, so the device drops into blind-sign and shows a 'Message Hash' (base58(sha256(messageBytes))). The user must (1) enable 'Allow blind signing' in Solana app → Settings, and (2) match the Message Hash surfaced by `preview_solana_send` against the on-device value before approving.",
+        "Build an unsigned SPL token transfer DRAFT via Token.TransferChecked. Returns a compact preview + opaque handle — but does NOT yet serialize the message or fetch a blockhash. When the user says 'send', call `preview_solana_send(handle)` to pin a fresh blockhash, compute the Message Hash, and emit the CHECKS agent-task block, then call `send_transaction`. Run `pair_ledger_solana` first. Pass the base58 SPL mint address (canonical decimals resolved for USDC, USDT, JUP, BONK, JTO, mSOL, jitoSOL; otherwise read from chain). If the recipient does NOT yet have an Associated Token Account for this mint, the draft automatically includes a `createAssociatedTokenAccount` instruction — the sender pays ~0.00204 SOL rent, disclosed explicitly (`rentLamports` + `description`). AUTO NONCE SETUP: if the wallet has no durable-nonce account yet, this tool transparently bundles createAccountWithSeed + nonceInitialize ahead of the SPL transfer (legacy blockhash; subsequent SPL sends use the durable-nonce path). Surfaced as `firstTimeNonceSetup: \"true\"` + ~0.00144 SOL rent in the description. BLIND-SIGN REQUIRED: the Ledger Solana app does NOT auto clear-sign TransferChecked — its parser requires a signed 'Trusted Name' TLV descriptor that only Ledger Live supplies, so the device drops into blind-sign and shows a 'Message Hash' (base58(sha256(messageBytes))). The user must (1) enable 'Allow blind signing' in Solana app → Settings, and (2) match the Message Hash surfaced by `preview_solana_send` against the on-device value before approving.",
       inputSchema: prepareSolanaSplSendInput.shape,
     },
     handler(prepareSolanaSplSend)
@@ -1262,17 +1262,16 @@ async function main() {
     "prepare_solana_nonce_init",
     {
       description:
-        "One-time setup: build a tx that creates a per-wallet durable-nonce account at the deterministic PDA " +
-        "`PublicKey.createWithSeed(wallet, 'vaultpilot-nonce-v1', SystemProgram.programId)`. After this runs " +
-        "and broadcasts, every subsequent `prepare_solana_native_send` / `prepare_solana_spl_send` for this " +
-        "wallet will prepend `SystemProgram.nonceAdvance` as ix[0] and use the nonce value in place of a " +
-        "recentBlockhash — eliminating the ~90s window that was causing Ledger blind-sign SPL txs to expire " +
-        "during user review. Costs ~0.00144 SOL rent-exempt seed + ~0.000005 SOL tx fee; the rent is " +
-        "returned to the main wallet via `prepare_solana_nonce_close`. The user's main wallet stays exactly " +
-        "as is — funds do NOT move; a small deposit is parked in the new account. Run this once per wallet. " +
-        "Refuses if a nonce account already exists at the derived PDA (re-init would brick in-flight txs). " +
-        "This init tx itself uses a regular recent blockhash (one-time exception — there's no nonce to use " +
-        "yet).",
+        "Explicit one-time setup of a per-wallet durable-nonce account at the deterministic PDA " +
+        "`PublicKey.createWithSeed(wallet, 'vaultpilot-nonce-v1', SystemProgram.programId)`. " +
+        "MOST USERS DO NOT NEED TO CALL THIS DIRECTLY — `prepare_solana_native_send` / " +
+        "`prepare_solana_spl_send` auto-bundle the same setup into the user's first send. Use this " +
+        "tool when the user wants the setup standalone (e.g. before a Jupiter swap or MarginFi " +
+        "action, which can't safely auto-bundle due to size + ALT constraints), or to re-init after " +
+        "a `prepare_solana_nonce_close`. Costs ~0.00144 SOL rent-exempt seed + ~0.000005 SOL tx fee; " +
+        "the rent is fully reclaimable via `prepare_solana_nonce_close`. Refuses if a nonce account " +
+        "already exists at the derived PDA. This init tx uses a regular recent blockhash (no nonce " +
+        "to use yet — same constraint that makes auto-bundling possible inside native/SPL sends).",
       inputSchema: prepareSolanaNonceInitInput.shape,
     },
     handler(prepareSolanaNonceInit)
