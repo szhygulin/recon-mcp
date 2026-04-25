@@ -898,7 +898,9 @@ export interface RenderableSolanaPrepareResult {
     | "native_stake_delegate"
     | "native_stake_deactivate"
     | "native_stake_withdraw"
-    | "lifi_solana_swap";
+    | "lifi_solana_swap"
+    | "kamino_init_user"
+    | "kamino_supply";
   from: string;
   description: string;
   decoded: { functionName: string; args: Record<string, string> };
@@ -948,6 +950,10 @@ function solanaActionLabel(action: RenderableSolanaPrepareResult["action"]): str
       return "Native stake withdraw (from inactive stake account)";
     case "lifi_solana_swap":
       return "LiFi swap / bridge (Solana source)";
+    case "kamino_init_user":
+      return "Kamino account init (create LUT + userMetadata + obligation)";
+    case "kamino_supply":
+      return "Kamino supply";
   }
 }
 
@@ -1344,6 +1350,8 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
     tx.action === "native_stake_deactivate" ||
     tx.action === "native_stake_withdraw";
   const isLifiSolana = tx.action === "lifi_solana_swap";
+  const isKamino =
+    tx.action === "kamino_init_user" || tx.action === "kamino_supply";
   const marginfiActionLabel =
     tx.action === "marginfi_init"
       ? "account init"
@@ -1423,14 +1431,14 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
   // as ix[0] — this flag drives the "DURABLE-NONCE MODE" explainer text +
   // the Nonce bullet in the summary + the expected-shape text for CHECK 1.
   const hasAdvanceNonceIx =
-    isNativeSend || isSpl || isNonceClose || isJupiterSwap || isMarginfi || isMarinade || isNativeStake || isLifiSolana;
+    isNativeSend || isSpl || isNonceClose || isJupiterSwap || isMarginfi || isMarinade || isNativeStake || isLifiSolana || isKamino;
   // The Ledger Solana app only clear-signs a small allowlist of programs
   // (System Program's transfer/advance/initialize/withdraw, and a few
   // others). Everything else falls to blind-sign, which shows only the
   // Message Hash on-device and requires the user to match it against the
   // hash the server displayed. SPL TransferChecked AND Jupiter swaps both
   // fall in that bucket.
-  const isBlindSign = isSpl || isJupiterSwap || isMarginfi || isMarinade || isNativeStake || isLifiSolana;
+  const isBlindSign = isSpl || isJupiterSwap || isMarginfi || isMarinade || isNativeStake || isLifiSolana || isKamino;
   const ledgerHash = isBlindSign ? solanaLedgerMessageHash(tx.messageBase64) : null;
 
   const checksPayload = {
@@ -1582,7 +1590,30 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
                               "  - Fee: <est. fee in SOL>",
                               "  - Note: cross-chain bridges complete in 2 stages — Solana source tx confirms first; destination delivery happens after via the bridge protocol (typically 1-15 min depending on tool).",
                             ]
-                          : [
+                          : tx.action === "kamino_init_user"
+                            ? [
+                                "  - Headline: \"Prepared Kamino account init — userMetadata + obligation\"",
+                                "  - Wallet: <from address>",
+                                "  - Market: <market from decoded.args>",
+                                "  - UserMetadata PDA: <userMetadata from decoded.args>",
+                                "  - User lookup table: <userLookupTable from decoded.args>",
+                                "  - Obligation PDA: <obligation from decoded.args>",
+                                ...(nonceBullet ? [nonceBullet] : []),
+                                "  - Fee: <est. fee in SOL>",
+                                "  - Note: one-time setup; after this lands, prepare_kamino_supply / borrow / withdraw / repay all work without re-initing.",
+                              ]
+                            : tx.action === "kamino_supply"
+                              ? [
+                                  "  - Headline: \"Prepared Kamino supply — <amount> <symbol>\"",
+                                  "  - Wallet: <from address>",
+                                  "  - Reserve: <reserve from decoded.args>",
+                                  "  - Mint: <mint from decoded.args> (<symbol>)",
+                                  "  - Amount: <amount> <symbol>",
+                                  "  - Obligation: <obligation from decoded.args>",
+                                  ...(nonceBullet ? [nonceBullet] : []),
+                                  "  - Fee: <est. fee in SOL>",
+                                ]
+                              : [
                       // marginfi_supply / withdraw / borrow / repay — same shape,
                       // only the "Action" bullet text differs; keep one template.
                       `  - Headline: \"Prepared MarginFi ${marginfiActionLabel} — <amount> <symbol>\"`,

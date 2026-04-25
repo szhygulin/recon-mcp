@@ -105,6 +105,8 @@ import type {
   PrepareNativeStakeWithdrawArgs,
   PrepareSolanaLifiSwapArgs,
   PrepareTronLifiSwapArgs,
+  PrepareKaminoInitUserArgs,
+  PrepareKaminoSupplyArgs,
   GetMarginfiPositionsArgs,
   GetSolanaStakingPositionsArgs,
   PreviewSendArgs,
@@ -477,6 +479,26 @@ export async function prepareTronLifiSwap(
     toAddress: args.toAddress,
     ...(slippage !== undefined ? { slippage } : {}),
   });
+}
+
+export async function prepareKaminoInitUser(
+  args: PrepareKaminoInitUserArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildKaminoInitUser } = await import("../solana/kamino-actions.js");
+  const prepared = await buildKaminoInitUser({ wallet: args.wallet });
+  return prepared as unknown as PreparedSolanaTx;
+}
+
+export async function prepareKaminoSupply(
+  args: PrepareKaminoSupplyArgs,
+): Promise<PreparedSolanaTx> {
+  const { buildKaminoSupply } = await import("../solana/kamino-actions.js");
+  const prepared = await buildKaminoSupply({
+    wallet: args.wallet,
+    mint: args.mint,
+    amount: args.amount,
+  });
+  return prepared as unknown as PreparedSolanaTx;
 }
 
 export async function getMarginfiPositions(args: GetMarginfiPositionsArgs) {
@@ -1870,7 +1892,9 @@ export interface SolanaVerificationArtifact {
     | "native_stake_delegate"
     | "native_stake_deactivate"
     | "native_stake_withdraw"
-    | "lifi_solana_swap";
+    | "lifi_solana_swap"
+    | "kamino_init_user"
+    | "kamino_supply";
   from: string;
   messageBase64: string;
   recentBlockhash: string;
@@ -1990,6 +2014,8 @@ export function getVerificationArtifact(args: GetVerificationArtifactArgs): Veri
       "native_stake_deactivate",
       "native_stake_withdraw",
       "lifi_solana_swap",
+      "kamino_init_user",
+      "kamino_supply",
     ]);
     const ledgerMessageHash = blindSignActions.has(tx.action)
       ? solanaLedgerMessageHash(tx.messageBase64)

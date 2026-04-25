@@ -861,5 +861,49 @@ export type GetSolanaStakingPositionsArgs = z.infer<typeof getSolanaStakingPosit
 export type GetSolanaSetupStatusArgs = z.infer<typeof getSolanaSetupStatusInput>;
 export type PrepareSolanaLifiSwapArgs = z.infer<typeof prepareSolanaLifiSwapInput>;
 export type PrepareTronLifiSwapArgs = z.infer<typeof prepareTronLifiSwapInput>;
+
+/**
+ * Kamino lending — first-time setup. Creates the user lookup table +
+ * userMetadata PDA + obligation PDA in a single tx. Required prerequisite
+ * before any prepare_kamino_supply / borrow / withdraw / repay call.
+ *
+ * Refuses if the wallet already has Kamino userMetadata. Use
+ * prepare_kamino_supply directly for initialized wallets.
+ */
+export const prepareKaminoInitUserInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana base58 wallet — funds the LUT (~0.014 SOL rent) + obligation PDA " +
+      "(~0.012 SOL rent) + userMetadata PDA (~0.002 SOL rent). Must have an " +
+      "initialized durable-nonce account (prepare_solana_nonce_init)."
+  ),
+});
+
+/**
+ * Kamino lending — supply liquidity to a reserve. The wallet MUST have
+ * already run prepare_kamino_init_user (the builder refuses on missing
+ * userMetadata or obligation with a clear error pointing at init).
+ */
+export const prepareKaminoSupplyInput = z.object({
+  wallet: solanaAddressSchema.describe(
+    "Solana base58 wallet — funds the deposit + tx fee. Must have already " +
+      "run prepare_kamino_init_user."
+  ),
+  mint: solanaAddressSchema.describe(
+    "Base58 SPL mint address of the asset to supply. Must be listed on Kamino's " +
+      "main market — refuses otherwise. Common Kamino reserves: USDC, USDT, SOL, " +
+      "JitoSOL, mSOL, JLP, JUP, BONK."
+  ),
+  amount: z
+    .string()
+    .max(50)
+    .describe(
+      'Human-readable amount to supply (e.g. "100" for 100 USDC, "0.5" for 0.5 SOL). ' +
+        "Decimals are resolved from the reserve's mint metadata; pass the human value, " +
+        "not raw base units."
+    ),
+});
+
+export type PrepareKaminoInitUserArgs = z.infer<typeof prepareKaminoInitUserInput>;
+export type PrepareKaminoSupplyArgs = z.infer<typeof prepareKaminoSupplyInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
 export type GetLedgerDeviceInfoArgs = z.infer<typeof getLedgerDeviceInfoInput>;

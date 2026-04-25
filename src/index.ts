@@ -78,6 +78,8 @@ import {
   prepareNativeStakeWithdraw,
   prepareSolanaLifiSwap,
   prepareTronLifiSwap,
+  prepareKaminoInitUser,
+  prepareKaminoSupply,
   getMarginfiPositions,
   getSolanaStakingPositions,
   getMarginfiDiagnostics,
@@ -122,6 +124,8 @@ import {
   prepareNativeStakeWithdrawInput,
   prepareSolanaLifiSwapInput,
   prepareTronLifiSwapInput,
+  prepareKaminoInitUserInput,
+  prepareKaminoSupplyInput,
   getMarginfiPositionsInput,
   getSolanaStakingPositionsInput,
   getMarginfiDiagnosticsInput,
@@ -1617,6 +1621,40 @@ async function main() {
       inputSchema: prepareSolanaLifiSwapInput.shape,
     },
     handler(prepareSolanaLifiSwap)
+  );
+
+  server.registerTool(
+    "prepare_kamino_init_user",
+    {
+      description:
+        "First-time Kamino setup. Creates the user lookup table + userMetadata PDA + " +
+        "obligation PDA (VanillaObligation, tag 0) on Kamino's main market in a single " +
+        "tx. ONE-TIME — required prerequisite before prepare_kamino_supply / borrow / " +
+        "withdraw / repay. Refuses if userMetadata already exists (use the supply tool " +
+        "directly). Costs ~0.028 SOL total in rent for the three accounts (recoverable " +
+        "via Kamino's account-close flow when fully exiting). DURABLE NONCE REQUIRED. " +
+        "BLIND-SIGN on Ledger — Kamino's program isn't in the Solana app's clear-sign " +
+        "allowlist; match the Message Hash on-device after `preview_solana_send`.",
+      inputSchema: prepareKaminoInitUserInput.shape,
+    },
+    handler(prepareKaminoInitUser)
+  );
+
+  server.registerTool(
+    "prepare_kamino_supply",
+    {
+      description:
+        "Build a Kamino deposit (supply) tx. Refuses if the wallet doesn't have Kamino " +
+        "userMetadata + obligation already initialized — run prepare_kamino_init_user " +
+        "first. Validates that the mint is listed on Kamino's main market; resolves " +
+        "decimals from the reserve's mint metadata so callers pass human amounts (\"100\" " +
+        "= 100 USDC, \"0.5\" = 0.5 SOL). DURABLE NONCE REQUIRED + same Ledger blind-sign " +
+        "treatment as prepare_kamino_init_user. The returned tx packs " +
+        "[computeBudget, ATA setup if needed, reserve refresh, obligation refresh, " +
+        "deposit, cleanup] under v0 + Kamino's market ALTs.",
+      inputSchema: prepareKaminoSupplyInput.shape,
+    },
+    handler(prepareKaminoSupply)
   );
 
   server.registerTool(

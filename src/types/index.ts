@@ -792,7 +792,9 @@ export interface UnsignedSolanaTx {
     | "native_stake_delegate"
     | "native_stake_deactivate"
     | "native_stake_withdraw"
-    | "lifi_solana_swap";
+    | "lifi_solana_swap"
+    | "kamino_init_user"
+    | "kamino_supply";
   /** Base58 owner address (44-char ed25519 pubkey). */
   from: string;
   /**

@@ -55,7 +55,9 @@ export interface SolanaDraftMeta {
     | "native_stake_delegate"
     | "native_stake_deactivate"
     | "native_stake_withdraw"
-    | "lifi_solana_swap";
+    | "lifi_solana_swap"
+    | "kamino_init_user"
+    | "kamino_supply";
   from: string;
   description: string;
   decoded: {
