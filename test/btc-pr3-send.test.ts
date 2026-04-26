@@ -73,6 +73,18 @@ const SEGWIT_ADDR = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
 // Ledger returned, so the SDK's downstream P2WPKH/P2TR derivation
 // arithmetic doesn't choke. Issue #211.
 const SEGWIT_PUBKEY = "03a34b99f22c790c4e36b2b3c2c35a36db06226e41c692fc82b8b56ac1c540c5bd";
+// Issue #254: BIP-32 chain=1 (internal/change) address that pair_ledger_btc
+// caches for the same account. The builder picks this when adding the
+// change output to the PSBT, and the signer registers it as a second
+// `knownAddressDerivations` entry so the Ledger BTC app labels the
+// output as "Change" instead of warning. Address + pubkey can be any
+// well-formed pair — the mock SDK doesn't device-validate them.
+// Derived with `bj.address.toBech32(ripemd160(sha256("…change-fixture")))`
+// so the bech32 checksum is genuine (bitcoinjs's address.toOutputScript
+// validates it).
+const CHANGE_ADDR = "bc1qr0p2usnskwqhupc2590l2skll0vzd84cdp3gly";
+const CHANGE_PUBKEY = SEGWIT_PUBKEY;
+const CHANGE_PATH = "84'/0'/0'/1/0";
 // Uncompressed (65-byte) form of the same on-curve point — what Ledger
 // `getWalletPublicKey` actually returns. Tests stub the device with this
 // to exercise the compress-on-the-way-in path.
@@ -183,6 +195,21 @@ beforeEach(async () => {
     appVersion: "2.2.0",
     addressType: "segwit",
     accountIndex: 0,
+    chain: 0,
+    addressIndex: 0,
+  });
+  // Issue #254: also pre-pair the BIP-32 chain=1 (change) address.
+  // `pair_ledger_btc`'s gap-limit scan caches both chains; the modern
+  // builder requires a chain=1 entry to construct the change output.
+  setPairedBtcAddress({
+    address: CHANGE_ADDR,
+    publicKey: CHANGE_PUBKEY,
+    path: CHANGE_PATH,
+    appVersion: "2.2.0",
+    addressType: "segwit",
+    accountIndex: 0,
+    chain: 1,
+    addressIndex: 0,
   });
 });
 
@@ -311,6 +338,79 @@ describe("buildBitcoinNativeSend", () => {
     ).rejects.toThrow(/No UTXOs/);
   });
 
+  // Issue #254 regression: when the pairings cache has a chain=0 source
+  // entry but no chain=1 change entry (= the user paired before any
+  // history existed; gap-limit scan skipped chain=1 in that branch),
+  // the builder must refuse with a clear "re-pair" message rather than
+  // silently fall back to change-on-source.
+  it("refuses when the pairings cache has no chain=1 change entry for the account", async () => {
+    const { clearPairedBtcAddresses, setPairedBtcAddress } = await import(
+      "../src/signing/btc-usb-signer.js"
+    );
+    clearPairedBtcAddresses();
+    setPairedBtcAddress({
+      address: SEGWIT_ADDR,
+      publicKey: SEGWIT_PUBKEY,
+      path: "84'/0'/0'/0/0",
+      appVersion: "2.2.0",
+      addressType: "segwit",
+      accountIndex: 0,
+      chain: 0,
+      addressIndex: 0,
+    });
+    // NOTE: no chain=1 entry inserted — mirrors a fresh-wallet pairing.
+    getUtxosMock.mockResolvedValueOnce([
+      { txid: FAKE_TXID, vout: 0, value: 100_000, unconfirmed: false },
+    ]);
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    await expect(
+      buildBitcoinNativeSend({
+        wallet: SEGWIT_ADDR,
+        to: RECIPIENT,
+        amount: "0.0005",
+        feeRateSatPerVb: 10,
+      }),
+    ).rejects.toThrow(/No paired chain=1 \(change\) address found.*pair_ledger_btc/s);
+  });
+
+  // Issue #254 happy path: the builder routes change to the cached
+  // chain=1 address, threads it onto `tx.change`, and stamps the change
+  // output's `decoded` projection with `changePath` so the verification
+  // block (and second-LLM check) can show the BIP-44 internal-chain
+  // derivation that backs the on-screen "Change" label.
+  it("routes change to the cached chain=1 address and stamps decoded.outputs.changePath", async () => {
+    getUtxosMock.mockResolvedValueOnce([
+      { txid: FAKE_TXID, vout: 0, value: 1_000_000, unconfirmed: false },
+    ]);
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    const tx = await buildBitcoinNativeSend({
+      wallet: SEGWIT_ADDR,
+      to: RECIPIENT,
+      amount: "0.001",
+      feeRateSatPerVb: 10,
+    });
+    expect(tx.change).toEqual({
+      address: CHANGE_ADDR,
+      path: CHANGE_PATH,
+      publicKey: CHANGE_PUBKEY,
+    });
+    const changeOutput = tx.decoded.outputs.find((o) => o.isChange);
+    expect(changeOutput).toBeDefined();
+    expect(changeOutput!.address).toBe(CHANGE_ADDR);
+    expect(changeOutput!.changePath).toBe(CHANGE_PATH);
+    // Recipient output is unaffected.
+    const recipientOutput = tx.decoded.outputs.find(
+      (o) => o.address === RECIPIENT,
+    );
+    expect(recipientOutput).toBeDefined();
+    expect(recipientOutput!.isChange).toBe(false);
+    expect(recipientOutput!.changePath).toBeUndefined();
+  });
+
   it("supports rbf=false (sequence finality)", async () => {
     getUtxosMock.mockResolvedValueOnce([
       { txid: FAKE_TXID, vout: 0, value: 100_000, unconfirmed: false },
@@ -413,17 +513,40 @@ describe("sendBitcoinTransaction", () => {
       string,
       { pubkey: Buffer; path: number[] }
     >;
-    expect(known.size).toBe(1);
-    const [[lookupKey, entry]] = [...known.entries()];
-    expect(lookupKey).toMatch(/^[0-9a-f]{40}$/);
-    expect(lookupKey).not.toMatch(/^[0-9a-f]{64}$/);
-    expect(entry.pubkey.toString("hex")).toBe(SEGWIT_PUBKEY);
+    // Issue #254: the map now carries TWO entries — source (chain=0) and
+    // change (chain=1) — so the Ledger BTC app labels the change output
+    // as "Change" instead of warning "unusual change path".
+    expect(known.size).toBe(2);
+    for (const lookupKey of known.keys()) {
+      expect(lookupKey).toMatch(/^[0-9a-f]{40}$/);
+      expect(lookupKey).not.toMatch(/^[0-9a-f]{64}$/);
+    }
+    // Find each entry by matching the path's chain segment.
+    const entries = [...known.values()];
+    const sourceEntry = entries.find(
+      (e) => e.path[3] === 0,
+    );
+    const changeEntry = entries.find((e) => e.path[3] === 1);
+    expect(sourceEntry).toBeDefined();
+    expect(changeEntry).toBeDefined();
+    expect(sourceEntry!.pubkey.toString("hex")).toBe(SEGWIT_PUBKEY);
     // 84'/0'/0'/0/0 — three hardened segments + receive chain + index 0.
-    expect(entry.path).toEqual([
+    expect(sourceEntry!.path).toEqual([
       (84 | 0x80000000) >>> 0,
       (0 | 0x80000000) >>> 0,
       (0 | 0x80000000) >>> 0,
       0,
+      0,
+    ]);
+    // 84'/0'/0'/1/0 — same shape, change chain. The pubkey we threaded
+    // through is the same fixture for simplicity; in production each
+    // chain has its own derived leaf pubkey, which the device validates
+    // against its own derivation at sign time.
+    expect(changeEntry!.path).toEqual([
+      (84 | 0x80000000) >>> 0,
+      (0 | 0x80000000) >>> 0,
+      (0 | 0x80000000) >>> 0,
+      1,
       0,
     ]);
   });

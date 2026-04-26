@@ -678,6 +678,15 @@ export async function signLtcPsbtOnLedger(args: {
   path: string;
   accountPath: string;
   addressFormat: "legacy" | "p2sh" | "bech32" | "bech32m";
+  /**
+   * BIP-32 chain=1 change-output derivation (issue #254). Mirror of the
+   * BTC signer's same-named field — see `signBtcPsbtOnLedger`.
+   */
+  change?: {
+    address: string;
+    path: string;
+    publicKey: string;
+  };
 }): Promise<{ rawTxHex: string }> {
   return withLtcUsbLock(async () => {
     const { app, transport, rawTransport } = await openLedger();
@@ -709,26 +718,37 @@ export async function signLtcPsbtOnLedger(args: {
         );
       }
 
-      // Build the knownAddressDerivations map. Phase 1 sends keep change
-      // on the source address, so a single entry covers both inputs and
-      // any same-address output. The SDK keys the map by the witness-
-      // program payload extracted from each scriptPubKey — bytes 2..22
-      // (hash160 of pubkey) for P2WPKH, bytes 2..34 (tweaked x-only key)
-      // for P2TR. Mirrors @ledgerhq/psbtv2 `extractHashFromScriptPubKey`,
-      // which is what `populateMissingBip32Derivations` looks up against.
-      // Issue #206: an earlier sha256(scriptPubKey) key never matched, so
-      // the library left the PSBT without bip32Derivation and the Ledger
+      // Build the knownAddressDerivations map. The SDK keys the map by
+      // the witness-program payload extracted from each scriptPubKey —
+      // bytes 2..22 (hash160 of pubkey) for P2WPKH, bytes 2..34 (tweaked
+      // x-only key) for P2TR. Mirrors @ledgerhq/psbtv2
+      // `extractHashFromScriptPubKey`, which is what
+      // `populateMissingBip32Derivations` looks up against. Issue #206:
+      // an earlier sha256(scriptPubKey) key never matched, so the
+      // library left the PSBT without bip32Derivation and the Ledger
       // Litecoin app v2.x rejected with 0x6a80 before any UI.
-      const scriptPubKey = bitcoinjs.address.toOutputScript(
+      //
+      // Two entries today: the source (input + same-address-as-recipient
+      // edge case) and the BIP-32 chain=1 change output (issue #254).
+      const known = new Map<string, { pubkey: Buffer; path: number[] }>();
+      const sourceScript = bitcoinjs.address.toOutputScript(
         args.expectedFrom,
         LITECOIN_NETWORK,
       );
-      const lookupKey = extractWitnessProgramHex(scriptPubKey);
-      const known = new Map<string, { pubkey: Buffer; path: number[] }>();
-      known.set(lookupKey, {
+      known.set(extractWitnessProgramHex(sourceScript), {
         pubkey: compressPubkey(Buffer.from(derived.publicKey, "hex")),
         path: pathStringToNumbers(args.path),
       });
+      if (args.change) {
+        const changeScript = bitcoinjs.address.toOutputScript(
+          args.change.address,
+          LITECOIN_NETWORK,
+        );
+        known.set(extractWitnessProgramHex(changeScript), {
+          pubkey: compressPubkey(Buffer.from(args.change.publicKey, "hex")),
+          path: pathStringToNumbers(args.change.path),
+        });
+      }
 
       const psbtBuffer = Buffer.from(args.psbtBase64, "base64");
       try {
@@ -842,6 +862,7 @@ async function signLtcPsbtViaLegacyApi(
     path: string;
     accountPath: string;
     addressFormat: "legacy" | "p2sh" | "bech32" | "bech32m";
+    change?: { address: string; path: string; publicKey: string };
   },
 ): Promise<string> {
   const psbt = bitcoinjs.Psbt.fromBase64(args.psbtBase64);
@@ -881,21 +902,29 @@ async function signLtcPsbtViaLegacyApi(
   // verbatim into the tx's outputs section before signing.
   const outChunks: Buffer[] = [encodeVarInt(psbt.txOutputs.length)];
   let changePath: string | undefined;
+  // Issue #254: detect change by matching the script either against the
+  // BIP-32 chain=1 change address (when supplied — modern path) or
+  // against the source script as a same-address-as-source fallback (so
+  // a legacy on-disk envelope without `change` still labels its change
+  // output to the device). Compare scripts byte-equal rather than
+  // addresses to handle the bech32/bech32m case where the same address
+  // renders identically on both sides.
   const sourceScript = bitcoinjs.address.toOutputScript(
     args.expectedFrom,
     LITECOIN_NETWORK,
   );
+  const changeScript = args.change
+    ? bitcoinjs.address.toOutputScript(args.change.address, LITECOIN_NETWORK)
+    : null;
   for (const o of psbt.txOutputs) {
     const value = Buffer.alloc(8);
     value.writeBigUInt64LE(BigInt(o.value), 0);
     outChunks.push(value);
     outChunks.push(encodeVarInt(o.script.length));
     outChunks.push(o.script);
-    // Phase 1 LTC sends keep change on the source address — flag that
-    // output to the device as "yours" via changePath. Compare scripts
-    // byte-equal rather than addresses to handle the bech32/bech32m
-    // case where the same address renders identically on both sides.
-    if (o.script.equals(sourceScript)) {
+    if (changeScript && o.script.equals(changeScript)) {
+      changePath = args.change!.path;
+    } else if (!changeScript && o.script.equals(sourceScript)) {
       changePath = args.path;
     }
   }

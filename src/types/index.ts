@@ -1220,6 +1220,25 @@ export interface UnsignedBitcoinTx {
    * `signPsbtBuffer.addressFormat`. "bech32" for native segwit, etc.
    */
   addressFormat: "legacy" | "p2sh" | "bech32" | "bech32m";
+  /**
+   * Internal-chain (BIP-32 chain=1) address the change output goes to,
+   * plus its derivation. Threaded to the signer so it can register the
+   * change output in `signPsbtBuffer.knownAddressDerivations` (and, for
+   * the legacy `createPaymentTransaction` fallback, populate
+   * `changePath`). Without this, the Ledger BTC app v2.x flags every
+   * change output as "unusual change path". Issue #254.
+   *
+   * Optional only for tx envelopes built by older code paths or by
+   * clients that pre-validated they want change-on-source — the modern
+   * Phase-1 builder always sets it.
+   */
+  change?: {
+    address: string;
+    /** Full leaf path of the change address, e.g. `84'/0'/0'/1/0`. */
+    path: string;
+    /** Compressed (or uncompressed; signer compresses) public key hex. */
+    publicKey: string;
+  };
   /** Human-readable description for the preview. */
   description: string;
   /** Decoded outputs + fee + RBF flag. The shape Ledger's screen mirrors. */
@@ -1267,6 +1286,12 @@ export interface UnsignedLitecoinTx {
   psbtBase64: string;
   accountPath: string;
   addressFormat: "legacy" | "p2sh" | "bech32" | "bech32m";
+  /** See `UnsignedBitcoinTx.change`. Issue #254. */
+  change?: {
+    address: string;
+    path: string;
+    publicKey: string;
+  };
   description: string;
   decoded: {
     functionName: string;
@@ -1383,6 +1408,13 @@ export interface UserConfig {
   etherscanApiKey?: string;
   /** Optional 1inch Developer Portal API key for intra-chain swap-quote comparison. */
   oneInchApiKey?: string;
+  /**
+   * Safe Transaction Service API key. Required to call `get_safe_positions` and
+   * the v2/v3 propose/execute Safe tools — modern `*.safe.global` endpoints
+   * authenticate every request. Get one at https://developer.safe.global/.
+   * Env var `SAFE_API_KEY` takes priority over this field.
+   */
+  safeApiKey?: string;
   /**
    * TronGrid API key (`TRON-PRO-API-KEY` header). Required to read TRX and
    * TRC-20 balances on the `tron` chain — TronGrid rate-limits unauthenticated
