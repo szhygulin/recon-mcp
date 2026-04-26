@@ -101,6 +101,12 @@ import {
   getLitecoinBlockTip,
   getBitcoinBlocksRecent,
   getLitecoinBlocksRecent,
+  getBitcoinChainTips,
+  getLitecoinChainTips,
+  getBitcoinBlockStats,
+  getLitecoinBlockStats,
+  getBitcoinMempoolSummary,
+  getLitecoinMempoolSummary,
   getBitcoinAccountBalance,
   rescanBitcoinAccount,
   getBitcoinTxHistory,
@@ -170,6 +176,12 @@ import {
   getLitecoinBlockTipInput,
   getBitcoinBlocksRecentInput,
   getLitecoinBlocksRecentInput,
+  getBitcoinChainTipsInput,
+  getLitecoinChainTipsInput,
+  getBitcoinBlockStatsInput,
+  getLitecoinBlockStatsInput,
+  getBitcoinMempoolSummaryInput,
+  getLitecoinMempoolSummaryInput,
   getBitcoinAccountBalanceInput,
   rescanBitcoinAccountInput,
   getBitcoinTxHistoryInput,
@@ -2058,6 +2070,88 @@ async function main() {
       inputSchema: getLitecoinBlocksRecentInput.shape,
     },
     handler(getLitecoinBlocksRecent)
+  );
+
+  // ---------- Issue #248: forensic-tier RPC-gated tools ----------
+  registerTool(server,
+    "get_btc_chain_tips",
+    {
+      description:
+        "READ-ONLY — bitcoind `getchaintips` output: every fork the node knows about, " +
+        "with `branchlen` and `status` (active / valid-fork / valid-headers / headers-only / invalid). " +
+        "THE primitive for fork / deep-reorg detection — Esplora indexers cannot expose this; " +
+        "they only know the chain they followed. Requires `BITCOIN_RPC_URL` configured " +
+        "(self-hosted bitcoind or a public RPC provider). Returns `available: false` with " +
+        "a setup hint when RPC is not configured. Issue #248 / #233 v2.",
+      inputSchema: getBitcoinChainTipsInput.shape,
+    },
+    handler(getBitcoinChainTips)
+  );
+
+  registerTool(server,
+    "get_ltc_chain_tips",
+    {
+      description:
+        "READ-ONLY — litecoind `getchaintips` output. Mirror of `get_btc_chain_tips` for LTC. " +
+        "Requires `LITECOIN_RPC_URL` configured. Self-hosting `litecoind -prune=5000` is " +
+        "much cheaper than self-hosting bitcoind (~5GB on disk + ~6h IBD on a residential link), " +
+        "so for LTC users wanting an indexer-independent second opinion, self-hosting is " +
+        "the most accessible route. Issue #248 / #233 v2.",
+      inputSchema: getLitecoinChainTipsInput.shape,
+    },
+    handler(getLitecoinChainTips)
+  );
+
+  registerTool(server,
+    "get_btc_block_stats",
+    {
+      description:
+        "READ-ONLY — bitcoind `getblockstats(hashOrHeight)` output: fee distribution " +
+        "(min / max / avg / 10/25/50/75/90 percentile feerates in sat/vB), tx count, " +
+        "block size, total fees. RPC-only — Esplora exposes block size + tx count but " +
+        "NOT fee percentiles. Used to spot fee-market anomalies and to baseline " +
+        "`mempool_anomaly`. Requires `BITCOIN_RPC_URL` configured. Issue #248 / #233 v2.",
+      inputSchema: getBitcoinBlockStatsInput.shape,
+    },
+    handler(getBitcoinBlockStats)
+  );
+
+  registerTool(server,
+    "get_ltc_block_stats",
+    {
+      description:
+        "READ-ONLY — litecoind `getblockstats` output. Mirror of `get_btc_block_stats` for LTC. " +
+        "Requires `LITECOIN_RPC_URL` configured. Issue #248 / #233 v2.",
+      inputSchema: getLitecoinBlockStatsInput.shape,
+    },
+    handler(getLitecoinBlockStats)
+  );
+
+  registerTool(server,
+    "get_btc_mempool_summary",
+    {
+      description:
+        "READ-ONLY — bitcoind `getmempoolinfo` output: tx count in mempool, total bytes, " +
+        "memory usage, current minimum admission feerate, total fees of mempool txs. " +
+        "RPC-only — Esplora's mempool view is whatever that one node sees; ours gives " +
+        "us the real local view + the daemon's admission policy. Used by " +
+        "`get_market_incident_status` to flip the `mempool_anomaly` signal from " +
+        "`available: false` to live computation. Requires `BITCOIN_RPC_URL` configured. " +
+        "Issue #248 / #236 v2.",
+      inputSchema: getBitcoinMempoolSummaryInput.shape,
+    },
+    handler(getBitcoinMempoolSummary)
+  );
+
+  registerTool(server,
+    "get_ltc_mempool_summary",
+    {
+      description:
+        "READ-ONLY — litecoind `getmempoolinfo` output. Mirror of `get_btc_mempool_summary` " +
+        "for LTC. Requires `LITECOIN_RPC_URL` configured. Issue #248 / #236 v2.",
+      inputSchema: getLitecoinMempoolSummaryInput.shape,
+    },
+    handler(getLitecoinMempoolSummary)
   );
 
   registerTool(server,

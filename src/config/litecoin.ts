@@ -51,3 +51,25 @@ export function resolveLitecoinIndexerParallelism(): number {
   }
   return Math.min(LITECOIN_INDEXER_MAX_PARALLELISM, parsed);
 }
+
+/**
+ * Resolve the optional Litecoin Core JSON-RPC client config — mirror of
+ * `resolveBitcoinRpcConfig`. Issue #248. Same env-var family with the
+ * `LITECOIN_` prefix. See the BTC counterpart for the auth-mode
+ * priority order.
+ *
+ * Self-hosted Litecoin Core is very cheap relative to Bitcoin Core: a
+ * pruned `litecoind -prune=5000` is ~5GB on disk and ~6h to IBD on a
+ * residential connection (vs ~10GB / ~2 days for BTC). For users who
+ * want a second indexer-independent opinion on LTC, self-hosting is
+ * the most accessible route. Documented in INSTALL.md alongside the
+ * provider list.
+ */
+import { resolveAuthFromEnv } from "./btc.js";
+import type { JsonRpcClientConfig } from "../data/jsonrpc.js";
+
+export function resolveLitecoinRpcConfig(): JsonRpcClientConfig | null {
+  const url = process.env.LITECOIN_RPC_URL;
+  if (!url || url.trim() === "") return null;
+  return { url: url.trim(), auth: resolveAuthFromEnv("LITECOIN") };
+}

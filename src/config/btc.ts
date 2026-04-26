@@ -52,3 +52,61 @@ export function resolveBitcoinIndexerParallelism(): number {
   }
   return Math.min(BITCOIN_INDEXER_MAX_PARALLELISM, parsed);
 }
+
+/**
+ * Resolve the optional Bitcoin Core JSON-RPC client config. Issue #248
+ * adds forensic-tier tools that require a bitcoind RPC endpoint —
+ * Esplora indexers cannot expose `getchaintips` (fork detection) or
+ * `getrawmempool` (mempool census) at all. When this returns `null`,
+ * the RPC tools surface `available: false, reason: "BITCOIN_RPC_URL not set"`.
+ *
+ * Auth-mode resolution (env vars override user config):
+ *   - `BITCOIN_RPC_URL`        — endpoint (required to enable RPC at all)
+ *   - `BITCOIN_RPC_COOKIE`     — path to cookie file (preferred for
+ *                                self-hosted bitcoind; daemon writes
+ *                                ~/.bitcoin/.cookie by default)
+ *   - `BITCOIN_RPC_USER` + `BITCOIN_RPC_PASSWORD` — basic auth fallback
+ *                                (when the daemon was started with
+ *                                rpcuser/rpcpassword in bitcoin.conf
+ *                                rather than cookie auth)
+ *   - `BITCOIN_RPC_AUTH_HEADER_NAME` + `BITCOIN_RPC_AUTH_HEADER_VALUE`
+ *                              — for hosted providers (Quicknode,
+ *                                NOWNodes, Helius, etc.) that auth via
+ *                                a custom header instead of HTTP basic
+ *
+ * Cookie takes precedence over basic, which takes precedence over header.
+ * When URL is set but no auth is configured, returns kind="none" — the
+ * daemon will reject with HTTP 401 unless it's set to allow unauth'd
+ * RPC, which is rare.
+ */
+import type { JsonRpcAuth, JsonRpcClientConfig } from "../data/jsonrpc.js";
+
+export function resolveBitcoinRpcConfig(): JsonRpcClientConfig | null {
+  const url = process.env.BITCOIN_RPC_URL;
+  if (!url || url.trim() === "") return null;
+  const auth: JsonRpcAuth = resolveAuthFromEnv("BITCOIN");
+  return { url: url.trim(), auth };
+}
+
+/**
+ * Internal helper — picks the first configured auth flavor from env
+ * vars. Exported for testing the priority order; the real resolvers
+ * invoke this via their per-chain prefix.
+ */
+export function resolveAuthFromEnv(prefix: "BITCOIN" | "LITECOIN"): JsonRpcAuth {
+  const cookie = process.env[`${prefix}_RPC_COOKIE`];
+  if (cookie && cookie.trim() !== "") {
+    return { kind: "cookie", cookiePath: cookie.trim() };
+  }
+  const user = process.env[`${prefix}_RPC_USER`];
+  const password = process.env[`${prefix}_RPC_PASSWORD`];
+  if (user && password) {
+    return { kind: "basic", user, password };
+  }
+  const headerName = process.env[`${prefix}_RPC_AUTH_HEADER_NAME`];
+  const headerValue = process.env[`${prefix}_RPC_AUTH_HEADER_VALUE`];
+  if (headerName && headerValue) {
+    return { kind: "header", headerName, headerValue };
+  }
+  return { kind: "none" };
+}

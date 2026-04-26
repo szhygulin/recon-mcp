@@ -138,6 +138,12 @@ import type {
   GetLitecoinBlockTipArgs,
   GetBitcoinBlocksRecentArgs,
   GetLitecoinBlocksRecentArgs,
+  GetBitcoinChainTipsArgs,
+  GetLitecoinChainTipsArgs,
+  GetBitcoinBlockStatsArgs,
+  GetLitecoinBlockStatsArgs,
+  GetBitcoinMempoolSummaryArgs,
+  GetLitecoinMempoolSummaryArgs,
   GetBitcoinAccountBalanceArgs,
   RescanBitcoinAccountArgs,
   GetBitcoinTxHistoryArgs,
@@ -759,6 +765,116 @@ export async function getLitecoinBlocksRecent(args: GetLitecoinBlocksRecentArgs)
   const { getLitecoinIndexer } = await import("../litecoin/indexer.js");
   const blocks = await getLitecoinIndexer().getRecentBlocks(args.limit);
   return { chain: "litecoin" as const, count: blocks.length, blocks };
+}
+
+// ---------- Issue #248: optional bitcoind / litecoind RPC-tier handlers ----------
+// All three handlers per chain follow the same shape:
+//   1. Resolve RPC config from env. If null, return `available: false`.
+//   2. Call the typed wrapper.
+//   3. Wrap any JsonRpcError / JsonRpcTransportError in a structured
+//      `available: false` envelope so the agent gets a useful reason.
+
+interface RpcUnavailable {
+  available: false;
+  reason: string;
+  hint: string;
+}
+
+const RPC_HINT_BTC =
+  "Configure `BITCOIN_RPC_URL` (and optionally `BITCOIN_RPC_COOKIE` for self-hosted bitcoind, or `BITCOIN_RPC_USER`+`BITCOIN_RPC_PASSWORD`, or `BITCOIN_RPC_AUTH_HEADER_NAME`+`BITCOIN_RPC_AUTH_HEADER_VALUE` for hosted providers). See INSTALL.md.";
+const RPC_HINT_LTC =
+  "Configure `LITECOIN_RPC_URL` (and optionally `LITECOIN_RPC_COOKIE` for self-hosted litecoind, or `LITECOIN_RPC_USER`+`LITECOIN_RPC_PASSWORD`, or `LITECOIN_RPC_AUTH_HEADER_NAME`+`LITECOIN_RPC_AUTH_HEADER_VALUE` for hosted providers). See INSTALL.md.";
+
+async function callBitcoinRpc<T>(
+  fn: (cfg: import("../../data/jsonrpc.js").JsonRpcClientConfig) => Promise<T>,
+): Promise<T | RpcUnavailable> {
+  const { resolveBitcoinRpcConfig } = await import("../../config/btc.js");
+  const cfg = resolveBitcoinRpcConfig();
+  if (!cfg) {
+    return {
+      available: false,
+      reason: "BITCOIN_RPC_URL not set",
+      hint: RPC_HINT_BTC,
+    };
+  }
+  try {
+    return await fn(cfg);
+  } catch (err) {
+    return {
+      available: false,
+      reason: `RPC call failed: ${err instanceof Error ? err.message : String(err)}`,
+      hint: RPC_HINT_BTC,
+    };
+  }
+}
+
+async function callLitecoinRpc<T>(
+  fn: (cfg: import("../../data/jsonrpc.js").JsonRpcClientConfig) => Promise<T>,
+): Promise<T | RpcUnavailable> {
+  const { resolveLitecoinRpcConfig } = await import("../../config/litecoin.js");
+  const cfg = resolveLitecoinRpcConfig();
+  if (!cfg) {
+    return {
+      available: false,
+      reason: "LITECOIN_RPC_URL not set",
+      hint: RPC_HINT_LTC,
+    };
+  }
+  try {
+    return await fn(cfg);
+  } catch (err) {
+    return {
+      available: false,
+      reason: `RPC call failed: ${err instanceof Error ? err.message : String(err)}`,
+      hint: RPC_HINT_LTC,
+    };
+  }
+}
+
+export async function getBitcoinChainTips(_args: GetBitcoinChainTipsArgs) {
+  void _args;
+  const { getChainTips } = await import("../utxo/rpc-client.js");
+  const tips = await callBitcoinRpc((cfg) => getChainTips(cfg));
+  if ("available" in tips) return { chain: "bitcoin" as const, ...tips };
+  return { chain: "bitcoin" as const, available: true as const, tipCount: tips.length, tips };
+}
+
+export async function getLitecoinChainTips(_args: GetLitecoinChainTipsArgs) {
+  void _args;
+  const { getChainTips } = await import("../utxo/rpc-client.js");
+  const tips = await callLitecoinRpc((cfg) => getChainTips(cfg));
+  if ("available" in tips) return { chain: "litecoin" as const, ...tips };
+  return { chain: "litecoin" as const, available: true as const, tipCount: tips.length, tips };
+}
+
+export async function getBitcoinBlockStats(args: GetBitcoinBlockStatsArgs) {
+  const { getBlockStats } = await import("../utxo/rpc-client.js");
+  const stats = await callBitcoinRpc((cfg) => getBlockStats(cfg, args.hashOrHeight));
+  if ("available" in stats) return { chain: "bitcoin" as const, ...stats };
+  return { chain: "bitcoin" as const, available: true as const, stats };
+}
+
+export async function getLitecoinBlockStats(args: GetLitecoinBlockStatsArgs) {
+  const { getBlockStats } = await import("../utxo/rpc-client.js");
+  const stats = await callLitecoinRpc((cfg) => getBlockStats(cfg, args.hashOrHeight));
+  if ("available" in stats) return { chain: "litecoin" as const, ...stats };
+  return { chain: "litecoin" as const, available: true as const, stats };
+}
+
+export async function getBitcoinMempoolSummary(_args: GetBitcoinMempoolSummaryArgs) {
+  void _args;
+  const { getMempoolInfo } = await import("../utxo/rpc-client.js");
+  const info = await callBitcoinRpc((cfg) => getMempoolInfo(cfg));
+  if ("available" in info) return { chain: "bitcoin" as const, ...info };
+  return { chain: "bitcoin" as const, available: true as const, mempool: info };
+}
+
+export async function getLitecoinMempoolSummary(_args: GetLitecoinMempoolSummaryArgs) {
+  void _args;
+  const { getMempoolInfo } = await import("../utxo/rpc-client.js");
+  const info = await callLitecoinRpc((cfg) => getMempoolInfo(cfg));
+  if ("available" in info) return { chain: "litecoin" as const, ...info };
+  return { chain: "litecoin" as const, available: true as const, mempool: info };
 }
 
 /**

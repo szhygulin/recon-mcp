@@ -179,15 +179,24 @@ describe("evalMinerConcentration", () => {
   });
 });
 
-describe("rpcOnlySignals", () => {
-  it("includes all three deferred-to-RPC signals as available:false", () => {
-    const sigs = utxoSignals.rpcOnlySignals();
+describe("rpcGatedSignals — unconfigured RPC fallback (issue #248)", () => {
+  it("includes all three RPC-gated signals as available:false when env var unset", async () => {
+    const sigs = await utxoSignals.rpcGatedSignalsUnconfigured("BITCOIN_RPC_URL");
     const names = sigs.map((s) => s.name);
     expect(names).toEqual(["deep_reorg", "indexer_divergence", "mempool_anomaly"]);
     for (const s of sigs) {
       expect(s).toMatchObject({ available: false });
-      // The reason must mention RPC + cite issue #233 — locks the v1 framing.
-      expect((s as { reason: string }).reason).toMatch(/RPC|#233/);
+      // Reason must point to the right env var + cite the new issue ref so
+      // the agent can give the user actionable setup guidance.
+      expect((s as { reason: string }).reason).toMatch(/BITCOIN_RPC_URL/);
+      expect((s as { reason: string }).reason).toMatch(/#248/);
+    }
+  });
+
+  it("uses the chain-specific env var name in the unavailable reason for LTC", async () => {
+    const sigs = await utxoSignals.rpcGatedSignalsUnconfigured("LITECOIN_RPC_URL");
+    for (const s of sigs) {
+      expect((s as { reason: string }).reason).toMatch(/LITECOIN_RPC_URL/);
     }
   });
 });

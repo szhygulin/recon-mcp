@@ -1101,6 +1101,36 @@ export const getLitecoinBlocksRecentInput = z.object({
     ),
 });
 
+// ---------- Issue #248: optional bitcoind / litecoind RPC-tier tools ----------
+// Schemas for 6 forensic-tier tools (3 per chain) that require an
+// RPC endpoint. When the endpoint isn't configured, each tool returns
+// a structured `unavailable` shape — never silently fails. See
+// `src/data/jsonrpc.ts` and `src/modules/utxo/rpc-client.ts`.
+
+export const getBitcoinChainTipsInput = z.object({});
+export const getLitecoinChainTipsInput = z.object({});
+
+const blockStatsHashOrHeight = z
+  .union([
+    z.string().regex(/^[0-9a-fA-F]{64}$/, {
+      message: "block hash must be 64 hex chars",
+    }),
+    z.number().int().min(0).max(20_000_000),
+  ])
+  .describe(
+    "Either a 64-hex block hash OR a block height. The RPC method `getblockstats` accepts both forms — pick whichever the agent already has on hand."
+  );
+
+export const getBitcoinBlockStatsInput = z.object({
+  hashOrHeight: blockStatsHashOrHeight,
+});
+export const getLitecoinBlockStatsInput = z.object({
+  hashOrHeight: blockStatsHashOrHeight,
+});
+
+export const getBitcoinMempoolSummaryInput = z.object({});
+export const getLitecoinMempoolSummaryInput = z.object({});
+
 export const getBitcoinAccountBalanceInput = z.object({
   accountIndex: z
     .number()
@@ -1208,6 +1238,12 @@ export type GetBitcoinBlockTipArgs = z.infer<typeof getBitcoinBlockTipInput>;
 export type GetLitecoinBlockTipArgs = z.infer<typeof getLitecoinBlockTipInput>;
 export type GetBitcoinBlocksRecentArgs = z.infer<typeof getBitcoinBlocksRecentInput>;
 export type GetLitecoinBlocksRecentArgs = z.infer<typeof getLitecoinBlocksRecentInput>;
+export type GetBitcoinChainTipsArgs = z.infer<typeof getBitcoinChainTipsInput>;
+export type GetLitecoinChainTipsArgs = z.infer<typeof getLitecoinChainTipsInput>;
+export type GetBitcoinBlockStatsArgs = z.infer<typeof getBitcoinBlockStatsInput>;
+export type GetLitecoinBlockStatsArgs = z.infer<typeof getLitecoinBlockStatsInput>;
+export type GetBitcoinMempoolSummaryArgs = z.infer<typeof getBitcoinMempoolSummaryInput>;
+export type GetLitecoinMempoolSummaryArgs = z.infer<typeof getLitecoinMempoolSummaryInput>;
 export type GetBitcoinAccountBalanceArgs = z.infer<
   typeof getBitcoinAccountBalanceInput
 >;

@@ -1,10 +1,13 @@
 /**
  * BTC + LTC base-layer chain-health signals for `get_market_incident_status`.
  * Issue #236 v1 — indexer-only signals (tip_staleness, hash_cliff,
- * empty_block_streak, miner_concentration). RPC-only signals (deep_reorg,
- * indexer_divergence, mempool_anomaly) surface as `available: false,
- * reason: "requires RPC"` placeholders so the rollup is never silently
- * green when a signal can't be evaluated.
+ * empty_block_streak, miner_concentration).
+ *
+ * Issue #248 / #236 v2 — RPC-only signals (deep_reorg, indexer_divergence,
+ * mempool_anomaly) now flip from `available: false` placeholders to live
+ * computation when `BITCOIN_RPC_URL` / `LITECOIN_RPC_URL` is configured.
+ * When unset they continue to surface `available: false` with an
+ * actionable setup-hint reason — never silently green.
  *
  * Architecture: a small per-signal computation function takes the recent-
  * blocks payload + tip and returns either a `flagged:bool` evaluation or
@@ -21,6 +24,14 @@ import type {
   LitecoinBlockSummary,
   LitecoinBlockTip,
 } from "../litecoin/indexer.js";
+import { resolveBitcoinRpcConfig } from "../../config/btc.js";
+import { resolveLitecoinRpcConfig } from "../../config/litecoin.js";
+import type { JsonRpcClientConfig } from "../../data/jsonrpc.js";
+import {
+  getBestBlockHash,
+  getChainTips,
+  getMempoolInfo,
+} from "../utxo/rpc-client.js";
 
 /**
  * BTC/LTC base-layer signals share the same rollup shape — each is just
@@ -69,7 +80,21 @@ export const __test = {
   ) => evalEmptyBlockStreak(blocks),
   evalMinerConcentration: (blocks: { poolName?: string }[]) =>
     evalMinerConcentration(blocks),
-  rpcOnlySignals: () => rpcOnlySignals(),
+  /** Surface for tests of the unconfigured-RPC fallback path. When
+   * `rpcConfig` is null the function still resolves synchronously
+   * via the early-return branch — exposed so tests can lock the
+   * never-silently-green invariant without standing up RPC. */
+  rpcGatedSignalsUnconfigured: async (
+    rpcEnvVarName: "BITCOIN_RPC_URL" | "LITECOIN_RPC_URL",
+  ): Promise<ChainHealthSignal[]> =>
+    rpcGatedSignals({
+      chain: "bitcoin",
+      rpcConfig: null,
+      rpcEnvVarName,
+      indexerTipHash: "0".repeat(64),
+      indexerTipHeight: 0,
+      deepReorgFlagBranchlen: BTC_DEEP_REORG_FLAG_BRANCHLEN,
+    }),
 };
 
 /** BTC: target 10-minute blocks. Mean tip-age past 30 min flags. */
@@ -247,28 +272,158 @@ function evalMinerConcentration(
   };
 }
 
-/** Three RPC-only signals: surface as unavailable in v1. */
-function rpcOnlySignals(): ChainHealthSignal[] {
-  return [
-    {
+/**
+ * deep_reorg threshold: any `valid-fork` tip with branchlen ≥ this many
+ * blocks → flagged. BTC default is 6 (the standard 6-confirmation
+ * security boundary); LTC uses 12 because faster blocks compress the
+ * reorg-impact window. Each chain passes its own value.
+ */
+const BTC_DEEP_REORG_FLAG_BRANCHLEN = 6;
+const LTC_DEEP_REORG_FLAG_BRANCHLEN = 12;
+
+/**
+ * indexer_divergence threshold: indexer tip vs RPC tip differ by
+ * MORE than this many blocks → flagged. 1 block of drift is normal
+ * (one side propagated faster than the other in the last few seconds);
+ * > 1 indicates the indexer is genuinely behind or on a minority fork.
+ */
+const INDEXER_DIVERGENCE_FLAG_BLOCKS = 1;
+
+/**
+ * mempool_anomaly thresholds — flag when current size or bytes is
+ * MORE than this multiple of the daemon's `maxmempool` configured
+ * cap. 0.85 = mempool is 85%+ full → spam / fee-market stress.
+ * Conservative — being just-near-full is normal during fee spikes;
+ * being deep-into-it sustains.
+ */
+const MEMPOOL_ANOMALY_FILL_FRACTION = 0.85;
+
+/**
+ * Three RPC-gated signals. When the chain's RPC config is null
+ * (env var unset), each surfaces `available: false` with an actionable
+ * hint — same shape as before, never silently green. When configured,
+ * the three signals run their respective RPC calls in parallel and
+ * fold the results into `available: true` evals.
+ *
+ * Failure modes:
+ *   - RPC call fails (transport / auth / 5xx) → that signal returns
+ *     `available: false, reason: "<error>"`; the OTHER signals can
+ *     still complete (each handled in its own try/catch).
+ */
+async function rpcGatedSignals(args: {
+  chain: "bitcoin" | "litecoin";
+  rpcConfig: JsonRpcClientConfig | null;
+  rpcEnvVarName: "BITCOIN_RPC_URL" | "LITECOIN_RPC_URL";
+  indexerTipHash: string;
+  indexerTipHeight: number;
+  deepReorgFlagBranchlen: number;
+}): Promise<ChainHealthSignal[]> {
+  if (args.rpcConfig === null) {
+    const reason = `requires ${args.rpcEnvVarName} (and optional auth — see INSTALL.md). Issue #248.`;
+    return [
+      { name: "deep_reorg", available: false, reason },
+      { name: "indexer_divergence", available: false, reason },
+      { name: "mempool_anomaly", available: false, reason },
+    ];
+  }
+  const cfg = args.rpcConfig;
+  const [tipsResult, bestHashResult, mempoolResult] = await Promise.allSettled([
+    getChainTips(cfg),
+    getBestBlockHash(cfg),
+    getMempoolInfo(cfg),
+  ]);
+
+  const signals: ChainHealthSignal[] = [];
+
+  // deep_reorg
+  if (tipsResult.status === "fulfilled") {
+    const tips = tipsResult.value;
+    const validForks = tips.filter(
+      (t) => t.status === "valid-fork" && t.branchlen >= args.deepReorgFlagBranchlen,
+    );
+    signals.push({
+      name: "deep_reorg",
+      available: true,
+      flagged: validForks.length > 0,
+      detail: {
+        flagThresholdBranchlen: args.deepReorgFlagBranchlen,
+        validForks: validForks.map((t) => ({
+          height: t.height,
+          hash: t.hash,
+          branchlen: t.branchlen,
+          status: t.status,
+        })),
+        totalKnownTips: tips.length,
+      },
+    });
+  } else {
+    signals.push({
       name: "deep_reorg",
       available: false,
-      reason:
-        "requires bitcoind/litecoind RPC (`getchaintips`); indexer cannot expose forks. See issue #233.",
-    },
-    {
+      reason: `getchaintips RPC error: ${tipsResult.reason instanceof Error ? tipsResult.reason.message : String(tipsResult.reason)}`,
+    });
+  }
+
+  // indexer_divergence
+  if (bestHashResult.status === "fulfilled") {
+    const rpcTipHash = bestHashResult.value;
+    const sameTip = rpcTipHash === args.indexerTipHash;
+    // Without an RPC `getblock(rpcTipHash)` lookup we don't know the
+    // RPC tip's height — but we can still surface the agreement: equal
+    // hashes ⇒ same tip ⇒ NOT diverged. Mismatched hashes are flagged
+    // when both sides have produced more than `INDEXER_DIVERGENCE_FLAG_BLOCKS`
+    // of work (we treat any mismatch as the conservative-default flag,
+    // since either party may be on a minority fork).
+    signals.push({
+      name: "indexer_divergence",
+      available: true,
+      flagged: !sameTip,
+      detail: {
+        indexerTipHash: args.indexerTipHash,
+        indexerTipHeight: args.indexerTipHeight,
+        rpcTipHash,
+        flagThresholdBlocks: INDEXER_DIVERGENCE_FLAG_BLOCKS,
+        note: sameTip
+          ? "indexer + RPC agree on tip hash"
+          : "indexer + RPC disagree — one side may be on a minority fork or lagging by ≥1 block",
+      },
+    });
+  } else {
+    signals.push({
       name: "indexer_divergence",
       available: false,
-      reason:
-        "requires a configured BITCOIN_RPC_URL / LITECOIN_RPC_URL second source. See issue #233.",
-    },
-    {
+      reason: `getbestblockhash RPC error: ${bestHashResult.reason instanceof Error ? bestHashResult.reason.message : String(bestHashResult.reason)}`,
+    });
+  }
+
+  // mempool_anomaly
+  if (mempoolResult.status === "fulfilled") {
+    const m = mempoolResult.value;
+    const fillFraction = m.maxmempool > 0 ? m.bytes / m.maxmempool : 0;
+    signals.push({
+      name: "mempool_anomaly",
+      available: true,
+      flagged: fillFraction >= MEMPOOL_ANOMALY_FILL_FRACTION,
+      detail: {
+        size: m.size,
+        bytes: m.bytes,
+        usage: m.usage,
+        maxmempool: m.maxmempool,
+        fillFraction: Number(fillFraction.toFixed(4)),
+        flagThresholdFraction: MEMPOOL_ANOMALY_FILL_FRACTION,
+        mempoolminfee: m.mempoolminfee,
+        minrelaytxfee: m.minrelaytxfee,
+      },
+    });
+  } else {
+    signals.push({
       name: "mempool_anomaly",
       available: false,
-      reason:
-        "requires bitcoind/litecoind RPC (`getmempoolinfo`) for baseline + current. See issue #233.",
-    },
-  ];
+      reason: `getmempoolinfo RPC error: ${mempoolResult.reason instanceof Error ? mempoolResult.reason.message : String(mempoolResult.reason)}`,
+    });
+  }
+
+  return signals;
 }
 
 export async function getBitcoinChainHealthSignals(): Promise<ChainBaseLayerIncidentStatus> {
@@ -277,12 +432,20 @@ export async function getBitcoinChainHealthSignals(): Promise<ChainBaseLayerInci
   const blocks: BitcoinBlockSummary[] = await indexer.getRecentBlocks(
     RECENT_BLOCKS_WINDOW,
   );
+  const rpcSignals = await rpcGatedSignals({
+    chain: "bitcoin",
+    rpcConfig: resolveBitcoinRpcConfig(),
+    rpcEnvVarName: "BITCOIN_RPC_URL",
+    indexerTipHash: tip.hash,
+    indexerTipHeight: tip.height,
+    deepReorgFlagBranchlen: BTC_DEEP_REORG_FLAG_BRANCHLEN,
+  });
   const signals: ChainHealthSignal[] = [
     evalTipStaleness(tip.ageSeconds, BTC_BLOCK_TARGET_SECONDS),
     evalHashCliff(blocks, BTC_BLOCK_TARGET_SECONDS),
     evalEmptyBlockStreak(blocks),
     evalMinerConcentration(blocks),
-    ...rpcOnlySignals(),
+    ...rpcSignals,
   ];
   return {
     protocol: "bitcoin",
@@ -302,12 +465,20 @@ export async function getLitecoinChainHealthSignals(): Promise<ChainBaseLayerInc
   const blocks: LitecoinBlockSummary[] = await indexer.getRecentBlocks(
     RECENT_BLOCKS_WINDOW,
   );
+  const rpcSignals = await rpcGatedSignals({
+    chain: "litecoin",
+    rpcConfig: resolveLitecoinRpcConfig(),
+    rpcEnvVarName: "LITECOIN_RPC_URL",
+    indexerTipHash: tip.hash,
+    indexerTipHeight: tip.height,
+    deepReorgFlagBranchlen: LTC_DEEP_REORG_FLAG_BRANCHLEN,
+  });
   const signals: ChainHealthSignal[] = [
     evalTipStaleness(tip.ageSeconds, LTC_BLOCK_TARGET_SECONDS),
     evalHashCliff(blocks, LTC_BLOCK_TARGET_SECONDS),
     evalEmptyBlockStreak(blocks),
     evalMinerConcentration(blocks),
-    ...rpcOnlySignals(),
+    ...rpcSignals,
   ];
   return {
     protocol: "litecoin",

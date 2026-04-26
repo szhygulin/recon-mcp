@@ -458,6 +458,30 @@ relay timed out. Check your Ledger Live mobile app is open, has
 internet, and is on a recent build. Hit Ctrl-C and re-run setup with
 `--skip-pairing` (you can pair later via `pair_ledger_live`).
 
+**Optional: bitcoind / litecoind RPC for forensic chain reads.** Six BTC/LTC tools (`get_*_chain_tips`, `get_*_block_stats`, `get_*_mempool_summary`) and three incident signals (`deep_reorg`, `indexer_divergence`, `mempool_anomaly`) require a Bitcoin Core or Litecoin Core JSON-RPC endpoint — Esplora indexers (mempool.space / litecoinspace.org) cannot expose forks, mempool census, or fee percentiles. Configuration is opt-in; portfolio/wallet tools never need it.
+
+Three backend options, in increasing setup cost:
+
+1. **Hosted RPC provider** — Quicknode, Getblock, NOWNodes all offer BTC mainnet RPC (LTC support is thinner; Getblock and NOWNodes have it). Set `BITCOIN_RPC_URL` (and/or `LITECOIN_RPC_URL`) to the provider URL plus their auth header:
+   ```
+   BITCOIN_RPC_URL=https://btc.getblock.io/<token>/mainnet/
+   BITCOIN_RPC_AUTH_HEADER_NAME=X-API-KEY
+   BITCOIN_RPC_AUTH_HEADER_VALUE=<your-token>
+   ```
+2. **Self-hosted pruned bitcoind** — `bitcoind -prune=10000` is ~10 GB on disk, ~2 days to IBD on a residential connection. Trustless, no provider dependency. Use the cookie-auth path:
+   ```
+   BITCOIN_RPC_URL=http://127.0.0.1:8332
+   BITCOIN_RPC_COOKIE=/home/<user>/.bitcoin/.cookie
+   ```
+   Or basic auth if you set `rpcuser` / `rpcpassword` in `bitcoin.conf`:
+   ```
+   BITCOIN_RPC_USER=...
+   BITCOIN_RPC_PASSWORD=...
+   ```
+3. **Self-hosted pruned litecoind** — `litecoind -prune=5000` is ~5 GB on disk, ~6 hours to IBD on a residential connection. **Cheaper than self-hosting bitcoind by an order of magnitude on time AND disk** — for users who want an indexer-independent second opinion specifically on Litecoin, self-hosting is the most accessible route. Same auth shape as BTC with the `LITECOIN_RPC_*` prefix.
+
+When unset, the RPC-gated tools return a structured `available: false` response with a setup hint — they never silently fail. Wallet-tier tools (balances, fee estimates, tx history) keep using the existing Esplora indexer paths.
+
 **WalletConnect "peer not currently reachable" on `send_transaction`.**
 Closing the WalletConnect subapp inside Ledger Live — or putting the
 host machine to sleep — temporarily breaks reachability without ending
