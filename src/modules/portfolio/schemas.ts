@@ -28,6 +28,15 @@ const bitcoinAddressSchema = z
       "segwit (bc1q...), and taproot (bc1p...). Testnet/signet not supported."
   );
 
+const litecoinAddressSchema = z
+  .string()
+  .min(26)
+  .max(64)
+  .describe(
+    "Litecoin mainnet address. Accepts legacy (L...), P2SH (M.../3...), " +
+      "native segwit (ltc1q...), and taproot (ltc1p...). Testnet/MWEB not supported."
+  );
+
 /**
  * Raw shape — MCP requires a bare ZodObject (no .refine) so it can expose `.shape`
  * to build the JSON schema. Cross-field validation is enforced in the handler.
@@ -111,6 +120,27 @@ export const getPortfolioSummaryInput = z.object({
         "per-address fetch errors degrade via `coverage.bitcoin`. Multi-wallet " +
         "mode aggregates ALL passed addresses into a single `nonEvm.bitcoin` " +
         "slice. Mutually exclusive with `bitcoinAddress`."
+    ),
+  litecoinAddress: litecoinAddressSchema
+    .optional()
+    .describe(
+      "Single Litecoin mainnet address. Mirrors `bitcoinAddress`: with a " +
+        "single `wallet`, LTC balance × USD price folds into per-wallet totals " +
+        "(`breakdown.litecoin`, `litecoinUsd`); with `wallets[]`, surfaced in " +
+        "`nonEvm.litecoin`. Mutually exclusive with `litecoinAddresses`. " +
+        "Issue #274."
+    ),
+  litecoinAddresses: z
+    .array(litecoinAddressSchema)
+    .min(1)
+    .max(20)
+    .optional()
+    .describe(
+      "Multiple Litecoin addresses (e.g. legacy + segwit + taproot for the " +
+        "same Ledger account). 1-20 entries; per-address fetch errors degrade " +
+        "via `coverage.litecoin`. Multi-wallet mode aggregates ALL passed " +
+        "addresses into a single `nonEvm.litecoin` slice. Mutually exclusive " +
+        "with `litecoinAddress`."
     ),
 });
 

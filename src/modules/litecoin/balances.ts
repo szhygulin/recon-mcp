@@ -4,6 +4,7 @@ import {
   type LitecoinAddressBalance,
 } from "./indexer.js";
 import { LTC_DECIMALS, LTC_SYMBOL, LITOSHIS_PER_LTC } from "../../config/litecoin.js";
+import { fetchLitecoinPrice } from "./price.js";
 
 /**
  * Litecoin balance reader. Mirror of `src/modules/btc/balances.ts` —
@@ -29,6 +30,17 @@ export interface LitecoinBalance {
   decimals: typeof LTC_DECIMALS;
   /** Number of total tx (confirmed + mempool) the address has been involved in. */
   txCount: number;
+  /**
+   * USD price per 1 LTC at lookup time (DefiLlama). Issue #274 — folds
+   * pricing into the read so the agent doesn't need to compose
+   * `get_ltc_balance` + `get_coin_price`. Absent when DefiLlama was
+   * unreachable.
+   */
+  priceUsd?: number;
+  /** Confirmed-balance LTC × `priceUsd`. Absent when `priceUsd` is absent. */
+  valueUsd?: number;
+  /** True iff DefiLlama returned no price; set so callers can flag it without checking undefined. */
+  priceMissing?: boolean;
 }
 
 /**
@@ -47,8 +59,9 @@ function litoshisToLtcString(litoshis: bigint): string {
 function projectBalance(
   raw: LitecoinAddressBalance,
   addressType: LitecoinAddressType,
+  priceUsd: number | undefined,
 ): LitecoinBalance {
-  return {
+  const base: LitecoinBalance = {
     address: raw.address,
     addressType,
     confirmedSats: raw.confirmedSats,
@@ -60,12 +73,25 @@ function projectBalance(
     decimals: LTC_DECIMALS,
     txCount: raw.txCount,
   };
+  if (priceUsd === undefined) {
+    base.priceMissing = true;
+    return base;
+  }
+  base.priceUsd = priceUsd;
+  const confirmedLtcNum = Number(litoshisToLtcString(raw.confirmedSats));
+  if (Number.isFinite(confirmedLtcNum)) {
+    base.valueUsd = Math.round(confirmedLtcNum * priceUsd * 100) / 100;
+  }
+  return base;
 }
 
 export async function getLitecoinBalance(address: string): Promise<LitecoinBalance> {
   const addressType = assertLitecoinAddress(address);
-  const raw = await getLitecoinIndexer().getBalance(address);
-  return projectBalance(raw, addressType);
+  const [raw, priceUsd] = await Promise.all([
+    getLitecoinIndexer().getBalance(address),
+    fetchLitecoinPrice(),
+  ]);
+  return projectBalance(raw, addressType, priceUsd);
 }
 
 export type MultiLitecoinBalance =

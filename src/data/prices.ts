@@ -109,3 +109,57 @@ export async function getTokenPrice(chain: SupportedChain, address: `0x${string}
   const map = await getTokenPrices([{ chain, address }]);
   return map.get(queryToLlamaKey({ chain, address }));
 }
+
+/**
+ * DefiLlama price for an arbitrary CoinGecko ID via the `coingecko:`
+ * key prefix (issue #274). Same endpoint, same cache, different key
+ * shape. Used by the public `get_coin_price` tool — the EVM-only
+ * `getTokenPrices` above is wrong-shaped for assets without a contract
+ * address (LTC, BTC, SOL, XMR, etc.).
+ *
+ * Returns the raw CoinGecko entry: price + symbol + decimals + timestamp +
+ * (optional) confidence. Caller decides how to project it; the public
+ * tool surfaces the full envelope. Returns undefined when DefiLlama
+ * has no entry for the ID (typo, illiquid, brand-new listing).
+ */
+export interface DefillamaCoinEntry {
+  price: number;
+  symbol?: string;
+  decimals?: number;
+  /** Unix seconds of the last upstream price tick. */
+  timestamp?: number;
+  /** DefiLlama's 0–1 confidence score; absent for very-low-liquidity coins. */
+  confidence?: number;
+}
+
+interface LlamaResponseExt {
+  coins: Record<string, DefillamaCoinEntry>;
+}
+
+export async function getDefillamaCoinPrice(
+  coingeckoId: string,
+): Promise<DefillamaCoinEntry | undefined> {
+  const trimmed = coingeckoId.trim().toLowerCase();
+  if (trimmed.length === 0) return undefined;
+  const key = `coingecko:${trimmed}`;
+  const cacheK = `price:${key}`;
+  // Reuse the same cache the EVM-side prices.ts already uses, so a
+  // portfolio call that hits both EVM tokens AND a coin-price lookup
+  // doesn't double-pay.
+  const hit = cache.get<DefillamaCoinEntry>(cacheK);
+  if (hit) return hit;
+  const url = `${DEFILLAMA_BASE}/prices/current/${encodeURIComponent(key)}`;
+  try {
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) return undefined;
+    const body = (await res.json()) as LlamaResponseExt;
+    const entry = body.coins[key];
+    if (!entry || typeof entry.price !== "number") return undefined;
+    cache.set(cacheK, entry, CACHE_TTL.PRICE);
+    return entry;
+  } catch {
+    // Same swallow-and-degrade posture as getTokenPrices — callers
+    // surface "price missing" rather than crashing the parent flow.
+    return undefined;
+  }
+}

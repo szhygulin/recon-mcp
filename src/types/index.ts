@@ -150,6 +150,12 @@ export interface PortfolioCoverage {
    * failed and BTC totals are missing.
    */
   bitcoin?: CoverageStatus;
+  /**
+   * Litecoin balance fetch coverage. Mirrors `bitcoin` — covered:false +
+   * errored:false means no LTC address was queried; errored:true means
+   * the indexer call failed and LTC totals are missing. Issue #274.
+   */
+  litecoin?: CoverageStatus;
   /** Number of token balances whose USD valuation could not be resolved. */
   unpricedAssets: number;
   /**
@@ -170,7 +176,7 @@ export interface PortfolioCoverage {
  * cross-chain set without needing per-chain buckets.
  */
 export interface UnpricedAsset {
-  chain: SupportedChain | "tron" | "solana" | "bitcoin";
+  chain: SupportedChain | "tron" | "solana" | "bitcoin" | "litecoin";
   symbol: string;
   /** Human-readable balance (already-decimals-applied), e.g. "705.141". */
   amount: string;

@@ -20,6 +20,7 @@ import type { GetPortfolioSummaryArgs } from "./schemas.js";
 import type {
   BitcoinPortfolioSlice,
   LendingPositionUnion,
+  LitecoinPortfolioSlice,
   MultiWalletPortfolioSummary,
   PortfolioCoverage,
   PortfolioSummary,
@@ -34,7 +35,7 @@ import type {
   UnpricedAsset,
 } from "../../types/index.js";
 import { getBitcoinBalances } from "../btc/balances.js";
-import { fetchBitcoinPrice } from "../btc/price.js";
+import { getLitecoinBalances } from "../litecoin/balances.js";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
 
 function zeroNative(wallet: `0x${string}`, chain: SupportedChain): TokenAmount {
@@ -149,6 +150,17 @@ export async function getPortfolioSummary(
     ? [args.bitcoinAddress]
     : [];
 
+  if (args.litecoinAddress && args.litecoinAddresses && args.litecoinAddresses.length > 0) {
+    throw new Error(
+      "Pass `litecoinAddress` (single) OR `litecoinAddresses` (array), not both.",
+    );
+  }
+  const litecoinAddresses = args.litecoinAddresses?.length
+    ? args.litecoinAddresses
+    : args.litecoinAddress
+    ? [args.litecoinAddress]
+    : [];
+
   // Single-wallet branch: keep the existing fold-non-EVM-into-totals
   // shape (backwards compat). Multi-address TRON/Solana don't have a
   // single-slice projection in this shape; reject explicitly so the
@@ -178,6 +190,7 @@ export async function getPortfolioSummary(
       tronAddresses[0],
       solanaAddresses[0],
       bitcoinAddresses,
+      litecoinAddresses,
     );
   }
 
@@ -210,6 +223,7 @@ export async function getPortfolioSummary(
       tronAddresses,
       solanaAddresses,
       bitcoinAddresses,
+      litecoinAddresses,
     }),
   ]);
   void evmPrefetchDone;
@@ -231,7 +245,8 @@ export async function getPortfolioSummary(
       (nonEvm.solanaUsd ?? 0) +
       (nonEvm.solanaLendingUsd ?? 0) +
       (nonEvm.solanaStakingUsd ?? 0) +
-      (nonEvm.bitcoinUsd ?? 0),
+      (nonEvm.bitcoinUsd ?? 0) +
+      (nonEvm.litecoinUsd ?? 0),
     2,
   );
   const totalUsd = round(evmTotal + nonEvmContribution, 2);
@@ -304,6 +319,7 @@ export async function getPortfolioSummary(
       ? { solanaStakingUsd: nonEvm.solanaStakingUsd }
       : {}),
     ...(nonEvm.bitcoinUsd !== undefined ? { bitcoinUsd: nonEvm.bitcoinUsd } : {}),
+    ...(nonEvm.litecoinUsd !== undefined ? { litecoinUsd: nonEvm.litecoinUsd } : {}),
     coverage: mergedCoverage,
   };
 }
@@ -413,7 +429,10 @@ async function fetchBitcoinSlice(
   addresses: string[],
 ): Promise<{ slice: BitcoinPortfolioSlice; unpriced: UnpricedAsset[] } | null> {
   // getBitcoinBalances returns per-address ok/err entries; `null` is reserved
-  // for catastrophic failure (every address errored).
+  // for catastrophic failure (every address errored). Each balance now
+  // carries its own priceUsd / valueUsd from the reader (issue #274 —
+  // the reader handles the DefiLlama lookup centrally), so we don't
+  // double-fetch the price here.
   let results: Awaited<ReturnType<typeof getBitcoinBalances>>;
   try {
     results = await getBitcoinBalances(addresses);
@@ -422,7 +441,6 @@ async function fetchBitcoinSlice(
   }
   const okBalances = results.filter((r) => r.ok);
   if (okBalances.length === 0) return null;
-  const price = await fetchBitcoinPrice();
   const unpriced: UnpricedAsset[] = [];
   let walletBalancesUsd = 0;
   const balances = results.map((r) => {
@@ -445,14 +463,9 @@ async function fetchBitcoinSlice(
       };
     }
     const b = r.balance;
-    let valueUsd: number | undefined;
-    let priceMissing: boolean | undefined;
-    if (price !== undefined && b.confirmedSats > 0n) {
-      valueUsd = Number(b.confirmedBtc) * price;
-      walletBalancesUsd += valueUsd;
-    } else if (b.confirmedSats > 0n) {
-      // Non-zero balance but no price → flag for the unpriced-assets list.
-      priceMissing = true;
+    if (b.valueUsd !== undefined && b.confirmedSats > 0n) {
+      walletBalancesUsd += b.valueUsd;
+    } else if (b.priceMissing && b.confirmedSats > 0n) {
       unpriced.push({
         chain: "bitcoin",
         symbol: "BTC",
@@ -470,8 +483,79 @@ async function fetchBitcoinSlice(
       symbol: b.symbol,
       decimals: b.decimals,
       txCount: b.txCount,
-      ...(valueUsd !== undefined ? { valueUsd: round(valueUsd, 2) } : {}),
-      ...(priceMissing ? { priceMissing: true } : {}),
+      ...(b.valueUsd !== undefined ? { valueUsd: round(b.valueUsd, 2) } : {}),
+      ...(b.priceMissing ? { priceMissing: true } : {}),
+    };
+  });
+  return {
+    slice: {
+      addresses,
+      balances,
+      walletBalancesUsd: round(walletBalancesUsd, 2),
+    },
+    unpriced,
+  };
+}
+
+/**
+ * Mirror of fetchBitcoinSlice for Litecoin (issue #274). Same fan-out
+ * + per-address fail-soft + price-via-fetchLitecoinPrice posture; only
+ * the symbol/precision/slice-type differ.
+ */
+async function fetchLitecoinSlice(
+  addresses: string[],
+): Promise<{ slice: LitecoinPortfolioSlice; unpriced: UnpricedAsset[] } | null> {
+  // Same DRY pattern as fetchBitcoinSlice — the reader supplies
+  // priceUsd / valueUsd per balance (issue #274), no double-fetch.
+  let results: Awaited<ReturnType<typeof getLitecoinBalances>>;
+  try {
+    results = await getLitecoinBalances(addresses);
+  } catch {
+    return null;
+  }
+  const okBalances = results.filter((r) => r.ok);
+  if (okBalances.length === 0) return null;
+  const unpriced: UnpricedAsset[] = [];
+  let walletBalancesUsd = 0;
+  const balances = results.map((r) => {
+    if (!r.ok) {
+      return {
+        address: r.address,
+        addressType: "p2wpkh" as const,
+        confirmedSats: "0",
+        mempoolSats: "0",
+        totalSats: "0",
+        confirmedLtc: "0",
+        totalLtc: "0",
+        symbol: "LTC" as const,
+        decimals: 8 as const,
+        txCount: 0,
+        priceMissing: true,
+      };
+    }
+    const b = r.balance;
+    if (b.valueUsd !== undefined && b.confirmedSats > 0n) {
+      walletBalancesUsd += b.valueUsd;
+    } else if (b.priceMissing && b.confirmedSats > 0n) {
+      unpriced.push({
+        chain: "litecoin",
+        symbol: "LTC",
+        amount: b.confirmedLtc,
+      });
+    }
+    return {
+      address: b.address,
+      addressType: b.addressType,
+      confirmedSats: b.confirmedSats.toString(),
+      mempoolSats: b.mempoolSats.toString(),
+      totalSats: b.totalSats.toString(),
+      confirmedLtc: b.confirmedLtc,
+      totalLtc: b.totalLtc,
+      symbol: b.symbol,
+      decimals: b.decimals,
+      txCount: b.txCount,
+      ...(b.valueUsd !== undefined ? { valueUsd: round(b.valueUsd, 2) } : {}),
+      ...(b.priceMissing ? { priceMissing: true } : {}),
     };
   });
   return {
@@ -509,30 +593,36 @@ async function aggregateNonEvm(args: {
   tronAddresses: string[];
   solanaAddresses: string[];
   bitcoinAddresses: string[];
+  litecoinAddresses: string[];
 }): Promise<{
   tron?: TronPortfolioSlice[];
   solana?: SolanaPortfolioSlice[];
   bitcoin?: BitcoinPortfolioSlice;
+  litecoin?: LitecoinPortfolioSlice;
   tronUsd?: number;
   tronStakingUsd?: number;
   solanaUsd?: number;
   solanaLendingUsd?: number;
   solanaStakingUsd?: number;
   bitcoinUsd?: number;
+  litecoinUsd?: number;
   coverage?: Pick<
     PortfolioCoverage,
-    "tron" | "tronStaking" | "solana" | "marginfi" | "kamino" | "solanaStaking" | "bitcoin"
+    "tron" | "tronStaking" | "solana" | "marginfi" | "kamino" | "solanaStaking" | "bitcoin" | "litecoin"
   >;
   unpricedAssetsDetail?: UnpricedAsset[];
 }> {
-  // Fan out all three chain groups in parallel — they don't share
-  // network paths so latency stacks pessimistically only inside a
-  // single chain group.
-  const [tronResult, solanaResult, bitcoinResult] = await Promise.all([
+  // Fan out all chain groups in parallel — they don't share network
+  // paths so latency stacks pessimistically only inside a single chain
+  // group.
+  const [tronResult, solanaResult, bitcoinResult, litecoinResult] = await Promise.all([
     aggregateTron(args.tronAddresses),
     aggregateSolana(args.solanaAddresses),
     args.bitcoinAddresses.length > 0
       ? fetchBitcoinSlice(args.bitcoinAddresses)
+      : Promise.resolve(null),
+    args.litecoinAddresses.length > 0
+      ? fetchLitecoinSlice(args.litecoinAddresses)
       : Promise.resolve(null),
   ]);
 
@@ -632,6 +722,23 @@ async function aggregateNonEvm(args: {
         note:
           "Bitcoin indexer fetch failed — BTC balances not included in totals. " +
           "Check `BITCOIN_INDEXER_URL` env var or `bitcoinIndexerUrl` user config.",
+      };
+    }
+  }
+
+  if (args.litecoinAddresses.length > 0) {
+    if (litecoinResult) {
+      out.litecoin = litecoinResult.slice;
+      out.litecoinUsd = litecoinResult.slice.walletBalancesUsd;
+      unpricedAssetsDetail.push(...litecoinResult.unpriced);
+      coverage.litecoin = { covered: true };
+    } else {
+      coverage.litecoin = {
+        covered: false,
+        errored: true,
+        note:
+          "Litecoin indexer fetch failed — LTC balances not included in totals. " +
+          "Check `LITECOIN_INDEXER_URL` env var or `litecoinIndexerUrl` user config.",
       };
     }
   }
@@ -920,6 +1027,7 @@ async function buildWalletSummary(
   tronAddress?: string,
   solanaAddress?: string,
   bitcoinAddresses: string[] = [],
+  litecoinAddresses: string[] = [],
 ): Promise<PortfolioSummary> {
   // Each subquery is independent — one failing shouldn't kill the summary. We swap
   // Promise.all for per-task catchers that return empty payloads on error, so a flaky
@@ -944,6 +1052,7 @@ async function buildWalletSummary(
     kamino: false,
     solanaStaking: false,
     bitcoin: false,
+    litecoin: false,
   };
   // Per-market Compound V3 failure detail, populated when at least one market
   // read errored. Surfaced in coverage.compound.note so the agent can tell
@@ -985,6 +1094,7 @@ async function buildWalletSummary(
     kaminoPositionsRaw,
     solanaStakingRaw,
     bitcoinFetch,
+    litecoinFetch,
   ] = await Promise.all([
       Promise.all(
         chains.map((c) =>
@@ -1162,12 +1272,24 @@ async function buildWalletSummary(
         : (Promise.resolve(null) as Promise<Awaited<
             ReturnType<typeof fetchBitcoinSlice>
           > | null>),
+      // Litecoin reads — same shape + degradation as Bitcoin (issue #274).
+      litecoinAddresses.length > 0
+        ? fetchLitecoinSlice(litecoinAddresses).catch(() => {
+            errors.litecoin = true;
+            return null as Awaited<ReturnType<typeof fetchLitecoinSlice>>;
+          })
+        : (Promise.resolve(null) as Promise<Awaited<
+            ReturnType<typeof fetchLitecoinSlice>
+          > | null>),
     ]);
   if (bitcoinAddresses.length > 0 && bitcoinFetch === null) {
     // fetchBitcoinSlice returns null when every per-address read errored
     // (or the indexer call itself threw). Distinct from "not attempted":
     // surface as coverage.bitcoin.errored.
     errors.bitcoin = true;
+  }
+  if (litecoinAddresses.length > 0 && litecoinFetch === null) {
+    errors.litecoin = true;
   }
   const morphoPositions = morphoByChain.flatMap((r) => r.positions);
 
@@ -1189,6 +1311,9 @@ async function buildWalletSummary(
   const bitcoinSlice = bitcoinFetch?.slice;
   const bitcoinBalancesUsd = bitcoinSlice?.walletBalancesUsd ?? 0;
   const bitcoinUnpriced = bitcoinFetch?.unpriced ?? [];
+  const litecoinSlice = litecoinFetch?.slice;
+  const litecoinBalancesUsd = litecoinSlice?.walletBalancesUsd ?? 0;
+  const litecoinUnpriced = litecoinFetch?.unpriced ?? [];
   // Project the reader's full MarginfiPosition into the thin slice the
   // types module exposes. Dropping bank/mint keeps the portfolio JSON
   // compact — callers who want the full per-bank detail call
@@ -1295,7 +1420,8 @@ async function buildWalletSummary(
     [...native, ...erc20].reduce((sum, t) => sum + (t.valueUsd ?? 0), 0) +
       tronBalancesUsd +
       solanaBalancesUsd +
-      bitcoinBalancesUsd,
+      bitcoinBalancesUsd +
+      litecoinBalancesUsd,
     2
   );
   const lendingNetUsd = round(
@@ -1373,6 +1499,7 @@ async function buildWalletSummary(
     ...tronUnpricedDetail,
     ...solanaUnpricedDetail,
     ...bitcoinUnpriced,
+    ...litecoinUnpriced,
   ];
   const unpricedAssets = unpricedAssetsDetail.length;
   const coverage: PortfolioCoverage = {
@@ -1433,6 +1560,20 @@ async function buildWalletSummary(
                   "Bitcoin indexer fetch failed — BTC balances not included in totals. " +
                   "Check `bitcoinIndexerUrl` config or BITCOIN_INDEXER_URL env var; " +
                   "mempool.space's free public API is the default.",
+              }
+            : { covered: true },
+        }
+      : {}),
+    ...(litecoinAddresses.length > 0
+      ? {
+          litecoin: errors.litecoin
+            ? {
+                covered: false,
+                errored: true,
+                note:
+                  "Litecoin indexer fetch failed — LTC balances not included in totals. " +
+                  "Check `litecoinIndexerUrl` config or LITECOIN_INDEXER_URL env var; " +
+                  "litecoinspace.org's free public API is the default.",
               }
             : { covered: true },
         }
@@ -1508,6 +1649,7 @@ async function buildWalletSummary(
       ? { solanaStakingUsd: round(solanaStakingUsd, 2) }
       : {}),
     ...(bitcoinSlice ? { bitcoinUsd: round(bitcoinBalancesUsd, 2) } : {}),
+    ...(litecoinSlice ? { litecoinUsd: round(litecoinBalancesUsd, 2) } : {}),
     breakdown: {
       native,
       erc20,
@@ -1516,6 +1658,7 @@ async function buildWalletSummary(
       staking: staking.positions,
       ...(tronBreakdown ? { tron: tronBreakdown } : {}),
       ...(bitcoinSlice ? { bitcoin: bitcoinSlice } : {}),
+      ...(litecoinSlice ? { litecoin: litecoinSlice } : {}),
       ...(solanaSlice
         ? {
             solana: {

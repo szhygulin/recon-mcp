@@ -99,7 +99,10 @@ afterEach(() => {
 
 describe("portfolio BTC integration", () => {
   it("folds BTC balance × price into breakdown.bitcoin + bitcoinUsd", async () => {
-    fetchBitcoinPriceMock.mockResolvedValueOnce(50_000);
+    // mockResolvedValue (not Once) — issue #274 moved BTC pricing into
+    // getBitcoinBalance (the per-address reader), so a multi-address call
+    // hits fetchBitcoinPrice once per address rather than once per slice.
+    fetchBitcoinPriceMock.mockResolvedValue(50_000);
     getBalanceMock.mockResolvedValueOnce({
       address: SEGWIT_ADDR,
       confirmedSats: 200_000n, // 0.002 BTC
@@ -171,7 +174,10 @@ describe("portfolio BTC integration", () => {
   });
 
   it("supports multiple BTC addresses (legacy + segwit + taproot)", async () => {
-    fetchBitcoinPriceMock.mockResolvedValueOnce(50_000);
+    // mockResolvedValue (not Once) — issue #274 moved BTC pricing into
+    // getBitcoinBalance (the per-address reader), so a multi-address call
+    // hits fetchBitcoinPrice once per address rather than once per slice.
+    fetchBitcoinPriceMock.mockResolvedValue(50_000);
     getBalanceMock
       .mockResolvedValueOnce({
         address: SEGWIT_ADDR,

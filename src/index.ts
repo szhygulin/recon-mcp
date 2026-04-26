@@ -308,7 +308,12 @@ import {
   prepareMorphoWithdrawCollateralInput,
 } from "./modules/morpho/schemas.js";
 
-import { getTokenPriceInput, getTokenPriceTool } from "./modules/prices/index.js";
+import {
+  getTokenPriceInput,
+  getTokenPriceTool,
+  getCoinPriceInput,
+  getCoinPriceTool,
+} from "./modules/prices/index.js";
 
 import { simulateTransaction } from "./modules/simulation/index.js";
 import { simulateTransactionInput } from "./modules/simulation/schemas.js";
@@ -2751,14 +2756,28 @@ async function main() {
     handler(getTokenBalance)
   );
 
-  registerTool(server, 
+  registerTool(server,
     "get_token_price",
     {
       description:
-        "Fetch the USD price of a token via DefiLlama. Pass `token: \"native\"` for the chain's native asset (ETH on ethereum/arbitrum, MATIC on polygon) or an ERC-20 contract address. Prefer this over get_swap_quote for pure price lookups — no wallet or liquidity simulation needed.",
+        "Fetch the USD price of a token via DefiLlama. Pass `token: \"native\"` for the chain's native asset (ETH on ethereum/arbitrum, MATIC on polygon) or an ERC-20 contract address. Prefer this over get_swap_quote for pure price lookups — no wallet or liquidity simulation needed. EVM-only — for non-EVM natives (BTC, LTC, SOL, XMR, etc.) or any well-known coin without an EVM contract address, use `get_coin_price` instead.",
       inputSchema: getTokenPriceInput.shape,
     },
     handler(getTokenPriceTool)
+  );
+
+  registerTool(server,
+    "get_coin_price",
+    {
+      description:
+        "Fetch the USD price of any well-known cryptocurrency by ticker symbol or CoinGecko ID — no contract address required. Sister tool to `get_token_price`; use this for non-EVM natives (BTC, LTC, SOL, TRX, XMR, DOGE, etc.) and any asset that doesn't have an EVM ERC-20 representation. Two input modes: " +
+        "(a) `symbol` — case-insensitive ticker from a curated allowlist (~120 entries covering top market-cap coins, all native chain currencies VaultPilot supports, major LSTs, top stablecoins, top DeFi governance tokens, and high-question-volume memecoins). The allowlist hardcodes the canonical CoinGecko ID per ticker so scam-token collisions can't poison the result. " +
+        "(b) `coingeckoId` — escape hatch for long-tail assets. Pass the URL slug from coingecko.com/en/coins/<id>. " +
+        "Returns: { symbol, priceUsd, source: \"defillama-coingecko\", resolvedKey, asOf, confidence }. The `confidence` field is DefiLlama's 0–1 thin-liquidity score; surface it to the user when it's below 0.9. " +
+        "When the agent sees a portfolio response with `priceMissing: true` for a non-EVM asset, this is the tool to call.",
+      inputSchema: getCoinPriceInput.shape,
+    },
+    handler(getCoinPriceTool)
   );
 
   registerTool(server, 

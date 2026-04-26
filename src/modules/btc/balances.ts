@@ -4,6 +4,7 @@ import {
   type BitcoinAddressBalance,
 } from "./indexer.js";
 import { BTC_DECIMALS, BTC_SYMBOL, SATS_PER_BTC } from "../../config/btc.js";
+import { fetchBitcoinPrice } from "./price.js";
 
 /**
  * Bitcoin balance reader. Single + multi-address surface; multi fans out
@@ -41,6 +42,20 @@ export interface BitcoinBalance {
   decimals: typeof BTC_DECIMALS;
   /** Number of total tx (confirmed + mempool) the address has been involved in. */
   txCount: number;
+  /**
+   * USD price per 1 BTC at lookup time (DefiLlama). Issue #274 — folds
+   * pricing into the read so callers don't need to compose `get_btc_balance`
+   * + `get_coin_price` themselves. Absent when DefiLlama was unreachable.
+   */
+  priceUsd?: number;
+  /**
+   * Confirmed balance × `priceUsd`. Absent when `priceUsd` is absent.
+   * Computed from the confirmed amount only — mempool deltas can flip
+   * sign and aren't load-bearing for "what's this wallet worth".
+   */
+  valueUsd?: number;
+  /** True iff DefiLlama returned no price; set so callers can flag it without checking undefined. */
+  priceMissing?: boolean;
 }
 
 /**
@@ -61,8 +76,9 @@ function satsToBtcString(sats: bigint): string {
 function projectBalance(
   raw: BitcoinAddressBalance,
   addressType: BitcoinAddressType,
+  priceUsd: number | undefined,
 ): BitcoinBalance {
-  return {
+  const base: BitcoinBalance = {
     address: raw.address,
     addressType,
     confirmedSats: raw.confirmedSats,
@@ -74,12 +90,26 @@ function projectBalance(
     decimals: BTC_DECIMALS,
     txCount: raw.txCount,
   };
+  if (priceUsd === undefined) {
+    base.priceMissing = true;
+    return base;
+  }
+  base.priceUsd = priceUsd;
+  // Confirmed-only valuation (mempool can be negative). 8 decimals.
+  const confirmedBtcNum = Number(satsToBtcString(raw.confirmedSats));
+  if (Number.isFinite(confirmedBtcNum)) {
+    base.valueUsd = Math.round(confirmedBtcNum * priceUsd * 100) / 100;
+  }
+  return base;
 }
 
 export async function getBitcoinBalance(address: string): Promise<BitcoinBalance> {
   const addressType = assertBitcoinAddress(address);
-  const raw = await getBitcoinIndexer().getBalance(address);
-  return projectBalance(raw, addressType);
+  const [raw, priceUsd] = await Promise.all([
+    getBitcoinIndexer().getBalance(address),
+    fetchBitcoinPrice(),
+  ]);
+  return projectBalance(raw, addressType, priceUsd);
 }
 
 /**

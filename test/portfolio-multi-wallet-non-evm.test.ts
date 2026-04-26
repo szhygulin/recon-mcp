@@ -224,6 +224,10 @@ describe("get_portfolio_summary — multi-wallet + all three non-EVM (issue #201
       spl: [],
       walletBalancesUsd: 25,
     });
+    // Issue #274: pricing moved into the BTC reader, so the mocked
+    // balance now needs to include priceUsd / valueUsd directly. The
+    // separate fetchBitcoinPrice mock below is preserved for compat
+    // but is no longer load-bearing for this test path.
     (getBitcoinBalances as ReturnType<typeof vi.fn>).mockResolvedValue([
       {
         ok: true as const,
@@ -238,6 +242,8 @@ describe("get_portfolio_summary — multi-wallet + all three non-EVM (issue #201
           symbol: "BTC",
           decimals: 8,
           txCount: 1,
+          priceUsd: 50_000,
+          valueUsd: 100,
         },
       },
       {
@@ -253,6 +259,8 @@ describe("get_portfolio_summary — multi-wallet + all three non-EVM (issue #201
           symbol: "BTC",
           decimals: 8,
           txCount: 1,
+          priceUsd: 50_000,
+          valueUsd: 50,
         },
       },
     ]);
