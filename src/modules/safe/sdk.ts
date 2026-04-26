@@ -38,6 +38,34 @@ const SafeApiKit = requireCjs("@safe-global/api-kit").default as new (config: {
     safeAddress: string,
     options?: { executed?: boolean; limit?: number; offset?: number; ordering?: string },
   ): Promise<{ count: number; results: SafeServiceMultisigTx[] }>;
+  /**
+   * Returns the next nonce the Safe Transaction Service expects for a new
+   * proposal. This may be HIGHER than the Safe contract's on-chain nonce
+   * when there are already-pending proposals queued in the service —
+   * using the on-chain nonce in that case would conflict.
+   */
+  getNextNonce(safeAddress: string): Promise<string>;
+  getTransaction(safeTxHash: string): Promise<SafeServiceMultisigTx>;
+  proposeTransaction(args: {
+    safeAddress: string;
+    safeTransactionData: {
+      to: string;
+      value: string;
+      data?: string;
+      operation: number;
+      safeTxGas: string;
+      baseGas: string;
+      gasPrice: string;
+      gasToken: string;
+      refundReceiver: string;
+      nonce: string;
+    };
+    safeTxHash: string;
+    senderAddress: string;
+    senderSignature: string;
+    origin?: string;
+  }): Promise<void>;
+  confirmTransaction(safeTxHash: string, signature: string): Promise<{ signature: string }>;
 };
 type SafeApiKitInstance = InstanceType<typeof SafeApiKit>;
 
