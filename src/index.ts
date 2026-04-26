@@ -101,6 +101,7 @@ import {
   getLitecoinBalance,
   prepareLitecoinNativeSend,
   signLtcMessage,
+  rescanLitecoinAccount,
   getMarginfiPositions,
   getSolanaStakingPositions,
   getMarginfiDiagnostics,
@@ -166,6 +167,7 @@ import {
   getLitecoinBalanceInput,
   prepareLitecoinNativeSendInput,
   signLtcMessageInput,
+  rescanLitecoinAccountInput,
   getMarginfiPositionsInput,
   getSolanaStakingPositionsInput,
   getMarginfiDiagnosticsInput,
@@ -2055,6 +2057,32 @@ async function main() {
       inputSchema: signLtcMessageInput.shape,
     },
     handler(signLtcMessage, { toolName: "sign_message_ltc" })
+  );
+
+  server.registerTool(
+    "rescan_ltc_account",
+    {
+      description:
+        "READ-ONLY — refresh the cached on-chain `txCount` for every paired " +
+        "Litecoin address under one Ledger account by re-querying the indexer. " +
+        "Pure indexer-side: NO Ledger / USB interaction. Use this after the " +
+        "user has received funds (so a previously-empty cached address now " +
+        "has history) or when the indexer was stale at the original " +
+        "`pair_ledger_ltc` scan time. Updates the persisted cache, so " +
+        "subsequent `get_ltc_balance` reflects the refresh without another " +
+        "rescan. Three-state extend signal: `needsExtend: true` (trailing " +
+        "buffer address on any cached chain has on-chain history — re-run " +
+        "`pair_ledger_ltc` to extend the walked window); `unverifiedChains: " +
+        "[...]` (tail probe REJECTED for that chain — indeterminate, usually " +
+        "a transient indexer hiccup, re-run `rescan_ltc_account` rather than " +
+        "re-pairing); neither field present → all walked chains confirmed " +
+        "healthy. Indexer fan-out is bounded to `LITECOIN_INDEXER_PARALLELISM` " +
+        "concurrent requests (default 8) to stay under litecoinspace.org's " +
+        "free-tier rate limits; transient 429s and network errors are retried " +
+        "once internally.",
+      inputSchema: rescanLitecoinAccountInput.shape,
+    },
+    handler(rescanLitecoinAccount, { toolName: "rescan_ltc_account" })
   );
 
   server.registerTool(

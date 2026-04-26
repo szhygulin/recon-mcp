@@ -144,6 +144,7 @@ import type {
   GetLitecoinBalanceArgs,
   PrepareLitecoinNativeSendArgs,
   SignLtcMessageArgs,
+  RescanLitecoinAccountArgs,
   GetMarginfiPositionsArgs,
   GetSolanaStakingPositionsArgs,
   PreviewSendArgs,
@@ -1199,6 +1200,159 @@ export async function prepareLitecoinNativeSend(
 export async function signLtcMessage(args: SignLtcMessageArgs) {
   const { signLitecoinMessage } = await import("../litecoin/actions.js");
   return signLitecoinMessage({ wallet: args.wallet, message: args.message });
+}
+
+/**
+ * Refresh the cached `txCount` for every paired Litecoin address under
+ * one Ledger account by re-querying the indexer. Pure indexer fan-out:
+ * no Ledger / USB interaction. Mirror of `rescanBitcoinAccount` for
+ * Litecoin — same three-state extend signal, same persistence side
+ * effects, same parallelism cap (`LITECOIN_INDEXER_PARALLELISM`).
+ *
+ * Issue #229.
+ */
+export async function rescanLitecoinAccount(args: RescanLitecoinAccountArgs) {
+  const { getPairedLtcAddresses, setPairedLtcAddress } = await import(
+    "../../signing/ltc-usb-signer.js"
+  );
+  const all = getPairedLtcAddresses();
+  const forAccount = all.filter(
+    (e) => e.accountIndex === args.accountIndex,
+  );
+  if (forAccount.length === 0) {
+    throw new Error(
+      `No paired Litecoin entries cached for accountIndex=${args.accountIndex}. ` +
+        `Run \`pair_ledger_ltc({ accountIndex: ${args.accountIndex} })\` first ` +
+        `to populate the cache. \`rescan_ltc_account\` only refreshes existing ` +
+        `entries — it cannot derive new addresses (that needs the Ledger device).`,
+    );
+  }
+  const { getLitecoinIndexer } = await import("../litecoin/indexer.js");
+  const indexer = getLitecoinIndexer();
+  const { pLimitMap } = await import("../../data/http.js");
+  const { resolveLitecoinIndexerParallelism } = await import(
+    "../../config/litecoin.js"
+  );
+  // Same rationale as the BTC twin: cap fan-out under litecoinspace.org's
+  // free-tier rate limit. Self-hosted Esplora users with no rate concerns
+  // can override via `LITECOIN_INDEXER_PARALLELISM`.
+  const parallelism = resolveLitecoinIndexerParallelism();
+  const probes = await pLimitMap(forAccount, parallelism, (e) =>
+    indexer.getBalance(e.address),
+  );
+
+  type LTCEntry = (typeof forAccount)[number];
+  type ChainKey = `${LTCEntry["addressType"]}:${0 | 1}`;
+  const chainBuckets = new Map<ChainKey, LTCEntry[]>();
+  const refreshed: Array<{
+    address: string;
+    addressType: LTCEntry["addressType"];
+    chain: 0 | 1 | null;
+    addressIndex: number | null;
+    path: string;
+    previousTxCount: number;
+    txCount: number;
+    delta: number;
+    fetchOk: boolean;
+  }> = [];
+  for (let i = 0; i < forAccount.length; i++) {
+    const entry = forAccount[i];
+    const probe = probes[i];
+    const previousTxCount = entry.txCount ?? 0;
+    let liveTxCount = previousTxCount;
+    let fetchOk = false;
+    if (probe.status === "fulfilled") {
+      liveTxCount = probe.value.txCount;
+      fetchOk = true;
+      if (liveTxCount !== previousTxCount) {
+        setPairedLtcAddress({ ...entry, txCount: liveTxCount });
+      }
+    }
+    refreshed.push({
+      address: entry.address,
+      addressType: entry.addressType,
+      chain: entry.chain ?? null,
+      addressIndex: entry.addressIndex ?? null,
+      path: entry.path,
+      previousTxCount,
+      txCount: liveTxCount,
+      delta: liveTxCount - previousTxCount,
+      fetchOk,
+    });
+    if (entry.chain === 0 || entry.chain === 1) {
+      const key: ChainKey = `${entry.addressType}:${entry.chain}`;
+      const bucket = chainBuckets.get(key);
+      if (bucket) bucket.push(entry);
+      else chainBuckets.set(key, [entry]);
+    }
+  }
+
+  let needsExtend = false;
+  const extendChains: Array<{
+    addressType: LTCEntry["addressType"];
+    chain: 0 | 1;
+    lastAddressIndex: number;
+  }> = [];
+  const unverifiedChains: Array<{
+    addressType: LTCEntry["addressType"];
+    chain: 0 | 1;
+    lastAddressIndex: number;
+  }> = [];
+  for (const [key, bucket] of chainBuckets) {
+    const tail = bucket.reduce((max, e) =>
+      (e.addressIndex ?? -1) > (max.addressIndex ?? -1) ? e : max,
+    );
+    const i = forAccount.indexOf(tail);
+    const probe = probes[i];
+    const [addressTypeStr, chainStr] = key.split(":");
+    const chainEntry = {
+      addressType: addressTypeStr as LTCEntry["addressType"],
+      chain: Number(chainStr) as 0 | 1,
+      lastAddressIndex: tail.addressIndex ?? -1,
+    };
+    if (probe.status === "rejected") {
+      unverifiedChains.push(chainEntry);
+      continue;
+    }
+    if (probe.value.txCount > 0) {
+      needsExtend = true;
+      extendChains.push(chainEntry);
+    }
+  }
+
+  const fetchFailures = refreshed.filter((r) => !r.fetchOk).length;
+  const txCountChanges = refreshed.filter((r) => r.delta !== 0).length;
+  let note: string | undefined;
+  if (needsExtend) {
+    note =
+      "The trailing empty address on at least one cached chain now has " +
+      "on-chain history. The original gap-limit window may miss funds " +
+      "past it. Run `pair_ledger_ltc({ accountIndex: " +
+      args.accountIndex +
+      " })` to extend the scan with fresh on-device derivations." +
+      (unverifiedChains.length > 0
+        ? " (Some other chains' tail probes failed and are reported as " +
+          "`unverifiedChains` — those are independent of the extend signal.)"
+        : "");
+  } else if (unverifiedChains.length > 0) {
+    note =
+      "Some chains' tail probes failed this run, so we can't confirm the " +
+      "gap window is still healthy for them — see `unverifiedChains`. " +
+      "This is usually a transient indexer hiccup (rate limit / 5xx); " +
+      "re-run `rescan_ltc_account` after a moment. Don't re-pair on this " +
+      "alone — `needsExtend: true` is the signal for that.";
+  }
+  return {
+    accountIndex: args.accountIndex,
+    addressesScanned: refreshed.length,
+    txCountChanges,
+    fetchFailures,
+    needsExtend,
+    ...(needsExtend ? { extendChains } : {}),
+    ...(unverifiedChains.length > 0 ? { unverifiedChains } : {}),
+    refreshed,
+    ...(note ? { note } : {}),
+  };
 }
 
 export async function getMarginfiPositions(args: GetMarginfiPositionsArgs) {

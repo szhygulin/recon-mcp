@@ -13,6 +13,7 @@ import {
   type AccountNode,
 } from "./ltc-bip32-derive.js";
 import { getConfigPath, patchUserConfig, readUserConfig } from "../config/user-config.js";
+import { isLitecoinAddress } from "../modules/litecoin/address.js";
 import type { PairedLitecoinEntry } from "../types/index.js";
 
 const requireCjs = createRequire(import.meta.url);
@@ -825,8 +826,19 @@ let pairedLtcHydrated = false;
 function ensurePairedLtcHydrated(): void {
   if (pairedLtcHydrated) return;
   pairedLtcHydrated = true;
-  const persisted = readUserConfig()?.pairings?.bitcoin ?? [];
+  const persisted = readUserConfig()?.pairings?.litecoin ?? [];
+  let polluted = false;
   for (const entry of persisted) {
+    // Defensive filter: drop any entry whose address isn't a valid LTC
+    // mainnet format. Issue #228 silently overwrote `pairings.litecoin`
+    // with bitcoin entries; the persisted JSON on affected installs
+    // still holds those rows. Filtering at hydrate time auto-recovers
+    // those users without forcing them to hand-edit user-config.json
+    // (and re-persists the cleaned list on the next mutation).
+    if (!isLitecoinAddress(entry.address)) {
+      polluted = true;
+      continue;
+    }
     // Backfill chain/addressIndex from the path for pre-#189 entries
     // (which only ever had chain=0, addressIndex=0). Keeps callers
     // from having to handle the absence at every read site.
@@ -842,6 +854,7 @@ function ensurePairedLtcHydrated(): void {
     }
     pairedLtcByPath.set(entry.path, entry);
   }
+  if (polluted) persistPairedLtc();
 }
 
 function persistPairedLtc(): void {

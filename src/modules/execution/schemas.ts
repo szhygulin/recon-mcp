@@ -1305,7 +1305,28 @@ export const signLtcMessageInput = z.object({
     .describe("UTF-8 message to sign."),
 });
 
+export const rescanLitecoinAccountInput = z.object({
+  accountIndex: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .describe(
+      "Ledger Litecoin account slot to rescan. Must already be paired (call " +
+        "`pair_ledger_ltc` first). Re-queries the indexer for the live " +
+        "`txCount` of every cached address under this account and updates " +
+        "the persisted cache — useful after the user has received funds or " +
+        "the indexer was stale at original scan time. Pure indexer-side: no " +
+        "Ledger / USB interaction. Returns: `needsExtend: true` when the " +
+        "trailing empty address on any cached chain now has history (re-pair " +
+        "to extend the walked window); `unverifiedChains: [...]` when the " +
+        "tail probe ITSELF rejected (transient indexer hiccup, status " +
+        "indeterminate — re-run `rescan_ltc_account` rather than re-pairing)."
+    ),
+});
+
 export type PairLedgerLitecoinArgs = z.infer<typeof pairLedgerLitecoinInput>;
 export type GetLitecoinBalanceArgs = z.infer<typeof getLitecoinBalanceInput>;
 export type PrepareLitecoinNativeSendArgs = z.infer<typeof prepareLitecoinNativeSendInput>;
 export type SignLtcMessageArgs = z.infer<typeof signLtcMessageInput>;
+export type RescanLitecoinAccountArgs = z.infer<typeof rescanLitecoinAccountInput>;
