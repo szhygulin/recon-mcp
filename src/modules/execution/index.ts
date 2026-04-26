@@ -1881,6 +1881,7 @@ async function sendBitcoinTransaction(args: SendTransactionArgs): Promise<{
     path: paired.path,
     accountPath: tx.accountPath,
     addressFormat: tx.addressFormat,
+    ...(tx.change ? { change: tx.change } : {}),
   });
   const { getBitcoinIndexer } = await import("../btc/indexer.js");
   const txid = await getBitcoinIndexer().broadcastTx(rawTxHex);
@@ -1913,6 +1914,7 @@ async function sendLitecoinTransaction(args: SendTransactionArgs): Promise<{
     path: paired.path,
     accountPath: tx.accountPath,
     addressFormat: tx.addressFormat,
+    ...(tx.change ? { change: tx.change } : {}),
   });
   const { getLitecoinIndexer } = await import("../litecoin/indexer.js");
   const txid = await getLitecoinIndexer().broadcastTx(rawTxHex);

@@ -634,6 +634,22 @@ export async function signBtcPsbtOnLedger(args: {
   path: string;
   accountPath: string;
   addressFormat: "legacy" | "p2sh" | "bech32" | "bech32m";
+  /**
+   * BIP-32 chain=1 change-output derivation (issue #254). When set, the
+   * signer adds a second `knownAddressDerivations` entry so the SDK
+   * populates the change output's bip32Derivation, which the Ledger BTC
+   * app uses to recognize the address as same-account change and skip
+   * the "unusual change path" warning. The pairings cache is the source
+   * of truth — we trust it to point at a real device-derivable address;
+   * if the cache is stale the device's own derivation check (run inside
+   * the BTC app at sign time) will refuse before the user sees a wrong
+   * address.
+   */
+  change?: {
+    address: string;
+    path: string;
+    publicKey: string;
+  };
 }): Promise<{ rawTxHex: string }> {
   return withBtcUsbLock(async () => {
     const { app, transport, rawTransport } = await openLedger();
@@ -665,26 +681,37 @@ export async function signBtcPsbtOnLedger(args: {
         );
       }
 
-      // Build the knownAddressDerivations map. Phase 1 sends keep change
-      // on the source address, so a single entry covers both inputs and
-      // any same-address output. The SDK keys the map by the witness-
-      // program payload extracted from each scriptPubKey — bytes 2..22
-      // (hash160 of pubkey) for P2WPKH, bytes 2..34 (tweaked x-only key)
-      // for P2TR. Mirrors @ledgerhq/psbtv2 `extractHashFromScriptPubKey`,
-      // which is what `populateMissingBip32Derivations` looks up against.
-      // Issue #206: an earlier sha256(scriptPubKey) key never matched, so
-      // the library left the PSBT without bip32Derivation and the Ledger
+      // Build the knownAddressDerivations map. The SDK keys the map by
+      // the witness-program payload extracted from each scriptPubKey —
+      // bytes 2..22 (hash160 of pubkey) for P2WPKH, bytes 2..34 (tweaked
+      // x-only key) for P2TR. Mirrors @ledgerhq/psbtv2
+      // `extractHashFromScriptPubKey`, which is what
+      // `populateMissingBip32Derivations` looks up against. Issue #206:
+      // an earlier sha256(scriptPubKey) key never matched, so the
+      // library left the PSBT without bip32Derivation and the Ledger
       // BTC app v2.x rejected with 0x6a80 before any UI.
-      const scriptPubKey = bitcoinjs.address.toOutputScript(
+      //
+      // Two entries today: the source (input + same-address-as-recipient
+      // edge case) and the BIP-32 chain=1 change output (issue #254).
+      const known = new Map<string, { pubkey: Buffer; path: number[] }>();
+      const sourceScript = bitcoinjs.address.toOutputScript(
         args.expectedFrom,
         bitcoinjs.networks.bitcoin,
       );
-      const lookupKey = extractWitnessProgramHex(scriptPubKey);
-      const known = new Map<string, { pubkey: Buffer; path: number[] }>();
-      known.set(lookupKey, {
+      known.set(extractWitnessProgramHex(sourceScript), {
         pubkey: compressPubkey(Buffer.from(derived.publicKey, "hex")),
         path: pathStringToNumbers(args.path),
       });
+      if (args.change) {
+        const changeScript = bitcoinjs.address.toOutputScript(
+          args.change.address,
+          bitcoinjs.networks.bitcoin,
+        );
+        known.set(extractWitnessProgramHex(changeScript), {
+          pubkey: compressPubkey(Buffer.from(args.change.publicKey, "hex")),
+          path: pathStringToNumbers(args.change.path),
+        });
+      }
 
       const psbtBuffer = Buffer.from(args.psbtBase64, "base64");
       const result = await app.signPsbtBuffer(psbtBuffer, {

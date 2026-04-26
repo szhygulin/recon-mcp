@@ -5,6 +5,7 @@ import { selectInputs, type CoinSelectInput } from "./coin-select.js";
 import { issueBitcoinHandle } from "../../signing/btc-tx-store.js";
 import {
   getPairedBtcByAddress,
+  getPairedBtcAddresses,
   type BtcAddressType as PairedBtcAddressType,
 } from "../../signing/btc-usb-signer.js";
 import type { UnsignedBitcoinTx } from "../../types/index.js";
@@ -18,14 +19,20 @@ import { BTC_DECIMALS, SATS_PER_BTC } from "../../config/btc.js";
  * registered with the in-memory tx-store. The Ledger BTC app consumes
  * the PSBT bytes at signing time via `signPsbtBuffer`.
  *
- * Phase 1 simplification — change goes back to the source address.
- * Proper BIP-32 internal-chain change (`<purpose>'/0'/<account>'/1/<idx>`)
- * is a follow-up; deriving it requires either the account-level xpub
- * (which pairing doesn't currently cache) or an extra device round-trip
- * at prepare time. Sending change back to the source is functionally
- * correct and the Ledger still clear-signs every output — the user
- * recognizes their own address on the device. Trade-off documented in
- * the plan; the on-device review surface is unchanged.
+ * Change derivation (issue #254). Change goes to the BIP-44 internal
+ * chain (`<purpose>'/0'/<account>'/1/<idx>`), looked up from the
+ * pairings cache (`pair_ledger_btc` derives the first 20 chain=1
+ * addresses per account during the gap-limit scan). The change leaf's
+ * `path` and compressed `publicKey` are threaded onto the unsigned tx
+ * envelope so the signer can register the change output in
+ * `signPsbtBuffer.knownAddressDerivations` — the Ledger BTC app then
+ * recognizes it as a same-account change output, labels it "Change"
+ * on-screen, and skips the previous "unusual change path" warning.
+ *
+ * For now the lowest available `addressIndex` (= 0) is used. Address
+ * rotation across multiple sends in one session is out of scope for
+ * this PR (each send currently reuses the same chain=1 address; the
+ * Ledger app does not warn on address reuse).
  *
  * RBF — sequence `0xFFFFFFFD` on every input by default (BIP-125
  * replaceable). Pass `rbf: false` to set `0xFFFFFFFE` (final, not
@@ -99,6 +106,35 @@ function accountPathFromLeaf(leafPath: string): string {
 /** Estimate vbytes for a P2WPKH/P2TR tx — same shape coinselect uses. */
 function roughVbytes(inputCount: number, outputCount: number): number {
   return 10 + inputCount * 68 + outputCount * 31;
+}
+
+/**
+ * Pick the chain=1 (BIP-32 internal/change) entry from the pairings
+ * cache that matches the source's (accountIndex, addressType). Lowest
+ * `addressIndex` wins. Returns null when none is cached — caller
+ * surfaces a re-pair instruction (the gap-limit scan in
+ * `pair_ledger_btc` skips chain=1 when chain=0 has zero history, so
+ * fresh wallets need a re-pair after their first received tx).
+ *
+ * Issue #254.
+ */
+function pickChangeEntry(
+  paired: ReturnType<typeof getPairedBtcByAddress>,
+): { address: string; path: string; publicKey: string } | null {
+  if (!paired) return null;
+  const all = getPairedBtcAddresses();
+  const candidates = all
+    .filter(
+      (e) =>
+        e.accountIndex === paired.accountIndex &&
+        e.addressType === paired.addressType &&
+        e.chain === 1 &&
+        typeof e.addressIndex === "number",
+    )
+    .sort((a, b) => (a.addressIndex ?? 0) - (b.addressIndex ?? 0));
+  const c = candidates[0];
+  if (!c) return null;
+  return { address: c.address, path: c.path, publicKey: c.publicKey };
 }
 
 /** Format sats as a BTC decimal string (8-decimal padding, trailing-zero strip). */
@@ -188,6 +224,24 @@ export async function buildBitcoinNativeSend(
     );
   }
 
+  // Resolve the change address (BIP-32 chain=1) from the pairings
+  // cache. Same accountIndex + addressType as the source; lowest
+  // available addressIndex. `pair_ledger_btc` walks both chains and
+  // caches them — if the user paired before any chain=0 history, the
+  // change-chain walk was skipped (no UTXOs → no spends → no change
+  // can exist anyway). Once they have UTXOs to send, re-pairing
+  // populates chain=1 entries. Issue #254.
+  const changeEntry = pickChangeEntry(paired);
+  if (!changeEntry) {
+    throw new Error(
+      `No paired chain=1 (change) address found for ${args.wallet}'s account ` +
+        `(${paired.addressType}, accountIndex=${paired.accountIndex}). The pairings cache ` +
+        `was likely populated when the wallet had no on-chain history (the gap-limit scan ` +
+        `skips the change-chain walk in that case). Re-run \`pair_ledger_btc({ accountIndex: ` +
+        `${paired.accountIndex} })\` now that this address has UTXOs and retry.`,
+    );
+  }
+
   const indexer = getBitcoinIndexer();
 
   // 3. Resolve fee rate.
@@ -255,13 +309,13 @@ export async function buildBitcoinNativeSend(
     );
   }
 
-  // 6. Coin-selection. Phase-1 simplification: change goes back to the
-  //    source address (see file docstring for the reasoning).
+  // 6. Coin-selection. Change goes to the BIP-44 internal-chain address
+  //    we resolved above (issue #254).
   const selection = selectInputs({
     utxos: csUtxos,
     outputs: [{ address: args.to, value: Number(amountSats) }],
     feeRate,
-    changeAddress: args.wallet,
+    changeAddress: changeEntry.address,
     ...(args.allowHighFee !== undefined ? { allowHighFee: args.allowHighFee } : {}),
   });
 
@@ -302,7 +356,7 @@ export async function buildBitcoinNativeSend(
   }
   for (const output of selection.outputs) {
     const outScript = bitcoinjs.address.toOutputScript(
-      output.address ?? args.wallet,
+      output.address ?? changeEntry.address,
       NETWORK,
     );
     psbt.addOutput({ script: outScript, value: output.value });
@@ -313,12 +367,20 @@ export async function buildBitcoinNativeSend(
   //    output gets a sats + BTC-decimal string + isChange flag. The
   //    Ledger walks every entry on-screen — this projection is what
   //    `render-verification.ts` mirrors for the user to cross-check.
-  const decodedOutputs = selection.outputs.map((o) => ({
-    address: o.address ?? args.wallet,
-    amountSats: o.value.toString(),
-    amountBtc: satsToBtcString(BigInt(o.value)),
-    isChange: o.isChange,
-  }));
+  //    For the change output (BIP-32 chain=1) we surface its full leaf
+  //    path so the user — and the second-LLM verifier — can see the
+  //    derivation that backs the on-screen "Change" label.
+  const decodedOutputs = selection.outputs.map((o) => {
+    const isChange = o.isChange;
+    const address = o.address ?? changeEntry.address;
+    return {
+      address,
+      amountSats: o.value.toString(),
+      amountBtc: satsToBtcString(BigInt(o.value)),
+      isChange,
+      ...(isChange ? { changePath: changeEntry.path } : {}),
+    };
+  });
 
   const accountPath = accountPathFromLeaf(paired.path);
   const vsize = roughVbytes(selection.inputs.length, selection.outputs.length);
@@ -331,6 +393,11 @@ export async function buildBitcoinNativeSend(
     psbtBase64,
     accountPath,
     addressFormat: ADDRESS_FORMAT_BY_TYPE[paired.addressType],
+    change: {
+      address: changeEntry.address,
+      path: changeEntry.path,
+      publicKey: changeEntry.publicKey,
+    },
     description,
     decoded: {
       functionName: "bitcoin.native_send",
