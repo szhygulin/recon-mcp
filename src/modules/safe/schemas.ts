@@ -116,6 +116,28 @@ export const submitSafeTxSignatureInput = z.object({
   safeTxHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/),
 });
 
+/**
+ * `prepare_safe_tx_execute` builds the final `execTransaction` UnsignedTx
+ * that lands the multi-sig payload on chain. The executor doesn't need to
+ * have pre-approved on-chain — when `msg.sender` is an owner, the Safe
+ * contract treats their inline `(r=msg.sender, s=0, v=1)` signature as
+ * implicit consent. So one of the threshold "signatures" can be the
+ * executor themselves; the rest come from the on-chain `approvedHashes`
+ * registry filled in by previous `prepare_safe_tx_propose` /
+ * `prepare_safe_tx_approve` calls.
+ *
+ * The handler refuses to build the tx when fewer than `threshold` owners
+ * (counting the executor) have approved on-chain — which would just
+ * revert at execute time.
+ */
+export const prepareSafeTxExecuteInput = z.object({
+  executor: z.string().regex(EVM_ADDRESS),
+  safeAddress: z.string().regex(EVM_ADDRESS),
+  chain: evmChainEnum.default("ethereum"),
+  safeTxHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/),
+});
+
 export type PrepareSafeTxProposeArgs = z.infer<typeof prepareSafeTxProposeInput>;
 export type PrepareSafeTxApproveArgs = z.infer<typeof prepareSafeTxApproveInput>;
 export type SubmitSafeTxSignatureArgs = z.infer<typeof submitSafeTxSignatureInput>;
+export type PrepareSafeTxExecuteArgs = z.infer<typeof prepareSafeTxExecuteInput>;

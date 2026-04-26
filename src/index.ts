@@ -31,9 +31,11 @@ import {
   prepareSafeTxPropose,
   submitSafeTxSignature,
 } from "./modules/safe/actions.js";
+import { prepareSafeTxExecute } from "./modules/safe/execute.js";
 import {
   getSafePositionsInput,
   prepareSafeTxApproveInput,
+  prepareSafeTxExecuteInput,
   prepareSafeTxProposeInput,
   submitSafeTxSignatureInput,
 } from "./modules/safe/schemas.js";
@@ -1384,6 +1386,16 @@ async function main() {
       inputSchema: submitSafeTxSignatureInput.shape,
     },
     handler(submitSafeTxSignature)
+  );
+
+  registerTool(server,
+    "prepare_safe_tx_execute",
+    {
+      description:
+        "Build the final on-chain `execTransaction` UnsignedTx that lands a Safe (Gnosis Safe) multisig payload. The executor doesn't need to have pre-approved on-chain — when `msg.sender` is an owner, the Safe contract treats their inline `(r=msg.sender, s=0, v=1)` signature as implicit consent. So one of the threshold \"signatures\" can be the executor themselves; the rest come from the on-chain `approvedHashes` registry filled by previous `prepare_safe_tx_propose` / `prepare_safe_tx_approve` calls. Refuses to build the tx when the threshold isn't met (which would just revert at execute time). Resolves the SafeTx body from the local store first, falling back to Safe Transaction Service. Returns an UnsignedTx the executor broadcasts via `send_transaction` — the OUTER tx sends 0 ETH (the inner value, if any, is paid by the Safe from its own balance during the inner CALL).",
+      inputSchema: prepareSafeTxExecuteInput.shape,
+    },
+    txHandler("prepare_safe_tx_execute", prepareSafeTxExecute)
   );
 
   // ---- Module 2: Security ----
