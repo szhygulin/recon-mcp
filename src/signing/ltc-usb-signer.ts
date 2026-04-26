@@ -19,6 +19,19 @@ import type { PairedLitecoinEntry } from "../types/index.js";
 const requireCjs = createRequire(import.meta.url);
 const bitcoinjs = requireCjs("bitcoinjs-lib") as {
   address: { toOutputScript(addr: string, network?: unknown): Buffer };
+  Psbt: {
+    fromBase64(b64: string): {
+      data: {
+        inputs: Array<{
+          nonWitnessUtxo?: Buffer;
+          witnessUtxo?: { script: Buffer; value: number };
+        }>;
+      };
+      txInputs: Array<{ hash: Buffer; index: number; sequence: number }>;
+      txOutputs: Array<{ address?: string; script: Buffer; value: number }>;
+      locktime: number;
+    };
+  };
 };
 
 /**
@@ -718,23 +731,184 @@ export async function signLtcPsbtOnLedger(args: {
       });
 
       const psbtBuffer = Buffer.from(args.psbtBase64, "base64");
-      const result = await app.signPsbtBuffer(psbtBuffer, {
-        finalizePsbt: true,
-        accountPath: args.accountPath,
-        addressFormat: args.addressFormat,
-        knownAddressDerivations: known,
-      });
-      if (!result.tx) {
-        throw new Error(
-          `Ledger Litecoin app returned no finalized tx hex from signPsbtBuffer. ` +
-            `The PSBT may have been signed but not finalized — check the device for an ` +
-            `unexpected approval state and retry.`,
-        );
+      try {
+        const result = await app.signPsbtBuffer(psbtBuffer, {
+          finalizePsbt: true,
+          accountPath: args.accountPath,
+          addressFormat: args.addressFormat,
+          knownAddressDerivations: known,
+        });
+        if (!result.tx) {
+          throw new Error(
+            `Ledger Litecoin app returned no finalized tx hex from signPsbtBuffer. ` +
+              `The PSBT may have been signed but not finalized — check the device for an ` +
+              `unexpected approval state and retry.`,
+          );
+        }
+        return { rawTxHex: result.tx };
+      } catch (err) {
+        // Issue #240: the Ledger Litecoin app at v2.4.11 still exposes the
+        // LEGACY signing API (`createPaymentTransaction`); the modern
+        // `signPsbtBuffer` path the BTC app uses isn't implemented and
+        // hw-app-btc raises this exact string when it detects the legacy
+        // surface. Fall back to the legacy API rebuilt from the PSBT.
+        // The error message is stable across hw-app-btc 10.x versions
+        // and is the cleanest signal we have without a separate getApp
+        // capability probe.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (
+          msg.includes("signPsbtBuffer is not supported with the legacy Bitcoin app")
+        ) {
+          return { rawTxHex: await signLtcPsbtViaLegacyApi(app, args) };
+        }
+        throw err;
       }
-      return { rawTxHex: result.tx };
     } finally {
       await (transport as LtcLedgerTransport).close().catch(() => {});
     }
+  });
+}
+
+/**
+ * Encode a single varint per Bitcoin's `serialize.h`: 1 / 3 / 5 / 9 bytes
+ * depending on magnitude. Used to assemble the `outputScriptHex` payload
+ * the legacy `createPaymentTransaction` API expects.
+ */
+function encodeVarInt(n: number | bigint): Buffer {
+  const v = typeof n === "bigint" ? n : BigInt(n);
+  if (v < 0xfdn) {
+    const b = Buffer.alloc(1);
+    b.writeUInt8(Number(v), 0);
+    return b;
+  }
+  if (v <= 0xffffn) {
+    const b = Buffer.alloc(3);
+    b.writeUInt8(0xfd, 0);
+    b.writeUInt16LE(Number(v), 1);
+    return b;
+  }
+  if (v <= 0xffffffffn) {
+    const b = Buffer.alloc(5);
+    b.writeUInt8(0xfe, 0);
+    b.writeUInt32LE(Number(v), 1);
+    return b;
+  }
+  const b = Buffer.alloc(9);
+  b.writeUInt8(0xff, 0);
+  b.writeBigUInt64LE(v, 1);
+  return b;
+}
+
+/** Map our internal addressFormat → the legacy API's `additionals` flags. */
+function additionalsForAddressFormat(
+  format: "legacy" | "p2sh" | "bech32" | "bech32m",
+): string[] {
+  if (format === "bech32") return ["bech32"];
+  if (format === "bech32m") return ["bech32m"];
+  return [];
+}
+
+/**
+ * Issue #240 fallback path. Re-issues the same signing intent against
+ * the Ledger Litecoin app's legacy `createPaymentTransaction` API,
+ * rebuilding the inputs + outputs from the PSBT.
+ *
+ *   - Each PSBT input has `nonWitnessUtxo` populated (issue #213's fix
+ *     made that mandatory) — we feed that hex into `app.splitTransaction`
+ *     to get the legacy-API `Transaction` object.
+ *   - The `associatedKeysets` array carries one path per input. Phase 1
+ *     LTC sends are single-source-address, so every input shares
+ *     `args.path`.
+ *   - `outputScriptHex` is constructed manually as varint(N) ||
+ *     foreach( uint64LE(value) || varint(scriptLen) || script ) — the
+ *     exact serialization the BTC tx format expects in the outputs
+ *     section.
+ *   - `changePath` is set when an output's address matches the source
+ *     (Phase 1 LTC keeps change on the source address); the legacy API
+ *     uses this to render the change output as "yours" on the device
+ *     screen instead of as a second external recipient.
+ *
+ * Restricted to native segwit / taproot for now (matches the build-side
+ * Phase 1 scope in `actions.ts`). Legacy / P2SH-wrapped sends are
+ * rejected upstream, so we never reach here with `addressFormat` outside
+ * the `bech32`/`bech32m` set in practice — but the `additionals` map
+ * handles the four formats anyway in case future scope expands.
+ */
+async function signLtcPsbtViaLegacyApi(
+  app: LtcLedgerApp,
+  args: {
+    psbtBase64: string;
+    expectedFrom: string;
+    path: string;
+    accountPath: string;
+    addressFormat: "legacy" | "p2sh" | "bech32" | "bech32m";
+  },
+): Promise<string> {
+  const psbt = bitcoinjs.Psbt.fromBase64(args.psbtBase64);
+  if (psbt.data.inputs.length === 0) {
+    throw new Error("Litecoin legacy-API fallback: PSBT has zero inputs.");
+  }
+  const additionals = additionalsForAddressFormat(args.addressFormat);
+  const segwit =
+    args.addressFormat === "bech32" || args.addressFormat === "bech32m";
+
+  // Build the legacy-API input tuples from the PSBT.
+  const inputs: Array<
+    [
+      ReturnType<LtcLedgerApp["splitTransaction"]>,
+      number,
+      string | null,
+      number | null,
+    ]
+  > = [];
+  for (let i = 0; i < psbt.data.inputs.length; i++) {
+    const inputData = psbt.data.inputs[i];
+    if (!inputData.nonWitnessUtxo) {
+      throw new Error(
+        `Litecoin legacy-API fallback: PSBT input ${i} has no nonWitnessUtxo. ` +
+          `Issue #213's fix should have populated this on every input — was the PSBT ` +
+          `built by an older version of vaultpilot-mcp?`,
+      );
+    }
+    const prevHex = inputData.nonWitnessUtxo.toString("hex");
+    const prevTx = app.splitTransaction(prevHex, true, false, additionals);
+    const txInput = psbt.txInputs[i];
+    inputs.push([prevTx, txInput.index, null, txInput.sequence]);
+  }
+
+  // Build outputScriptHex manually: varint(N) || (uint64LE(value) ||
+  // varint(scriptLen) || script) per output. The legacy API parses this
+  // verbatim into the tx's outputs section before signing.
+  const outChunks: Buffer[] = [encodeVarInt(psbt.txOutputs.length)];
+  let changePath: string | undefined;
+  const sourceScript = bitcoinjs.address.toOutputScript(
+    args.expectedFrom,
+    LITECOIN_NETWORK,
+  );
+  for (const o of psbt.txOutputs) {
+    const value = Buffer.alloc(8);
+    value.writeBigUInt64LE(BigInt(o.value), 0);
+    outChunks.push(value);
+    outChunks.push(encodeVarInt(o.script.length));
+    outChunks.push(o.script);
+    // Phase 1 LTC sends keep change on the source address — flag that
+    // output to the device as "yours" via changePath. Compare scripts
+    // byte-equal rather than addresses to handle the bech32/bech32m
+    // case where the same address renders identically on both sides.
+    if (o.script.equals(sourceScript)) {
+      changePath = args.path;
+    }
+  }
+  const outputScriptHex = Buffer.concat(outChunks).toString("hex");
+
+  return app.createPaymentTransaction({
+    inputs,
+    associatedKeysets: psbt.txInputs.map(() => args.path),
+    ...(changePath !== undefined ? { changePath } : {}),
+    outputScriptHex,
+    lockTime: psbt.locktime,
+    segwit,
+    additionals,
   });
 }
 
@@ -771,7 +945,7 @@ export async function signLtcMessageOnLedger(args: {
     throw new Error(
       "Taproot (P2TR) message signing requires BIP-322, which the Ledger Litecoin app " +
         "does not yet expose. Sign with a paired segwit (`ltc1q…`), P2SH-wrapped " +
-        "(`3…`), or legacy (`1…`) address instead. The 4 address types share a " +
+        "(`M…`), or legacy (`L…`) address instead. The 4 address types share a " +
         "Ledger account — `pair_ledger_ltc` derives all four — so picking a " +
         "non-taproot address from the same Ledger wallet is one tool call away.",
     );

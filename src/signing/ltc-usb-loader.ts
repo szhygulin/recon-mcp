@@ -63,6 +63,38 @@ export interface LtcLedgerApp {
       knownAddressDerivations: Map<string, { pubkey: Buffer; path: number[] }>;
     },
   ): Promise<{ psbt: Buffer; tx?: string }>;
+  /**
+   * Legacy `createPaymentTransaction` API. Required for the Ledger
+   * Litecoin app v2.4.x which still ships the legacy signing surface
+   * (issue #240) — the modern `signPsbtBuffer` rejects with "is not
+   * supported with the legacy Bitcoin app" against this app build, so
+   * the LTC PSBT signer falls back to this path. The opaque return is
+   * the signed transaction hex ready to broadcast.
+   */
+  createPaymentTransaction(arg: {
+    inputs: Array<
+      [unknown, number, string | null | undefined, number | null | undefined]
+    >;
+    associatedKeysets: string[];
+    changePath?: string;
+    outputScriptHex: string;
+    lockTime?: number;
+    segwit?: boolean;
+    additionals: string[];
+  }): Promise<string>;
+  /**
+   * Parse a raw transaction hex into the SDK's internal `Transaction`
+   * shape so it can be passed back into `createPaymentTransaction` as
+   * an input. The legacy signing path needs the previous transaction
+   * for every input it signs (BIP-143 amount commitment is the same as
+   * issue #213's nonWitnessUtxo requirement, just rebuilt via this API).
+   */
+  splitTransaction(
+    transactionHex: string,
+    isSegwitSupported?: boolean | null,
+    hasExtraData?: boolean,
+    additionals?: string[],
+  ): unknown;
 }
 
 export interface LtcAppAndVersion {
