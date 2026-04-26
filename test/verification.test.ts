@@ -11,6 +11,7 @@ import {
 import { decodeCalldata } from "../src/signing/decode-calldata.js";
 import {
   renderPostSendPollBlock,
+  renderTronAgentTaskBlock,
   renderTronVerificationBlock,
   renderVerificationBlock,
   shouldRenderVerificationBlock,
@@ -514,6 +515,105 @@ describe("renderVerificationBlock includes URL, hash, and the encouragement nudg
   });
 });
 
+describe("renderTronAgentTaskBlock — TRON parallel of EVM CHECK 1 + CHECKS PERFORMED template", () => {
+  // Canonical TRC-20 transfer parameter (recipient = TR2r4...Far1, amount = 5929 USDT).
+  // Address slot is the last 20 bytes of base58check decode left-padded to 32.
+  const TRC20_PARAM_HEX =
+    "000000000000000000000000a53a13412d0e415ead45c09752ee1676faef03fa" +
+    "0000000000000000000000000000000000000000000000000000000161655c40";
+
+  it("trc20_send carries swiss-knife URL, recipient cross-check one-liner, and CHECKS PERFORMED template", () => {
+    const stamped = issueTronHandle({
+      chain: "tron",
+      action: "trc20_send",
+      from: "TPoaKtYTEPMj4LxWE3J5q3NdZVcX6HYUay",
+      txID: "d".repeat(64),
+      rawData: {},
+      rawDataHex: "ff00",
+      description: "Send 5929 USDT to TR2r4r7VzQrBopR9xpUU75HUijyLwcFar1",
+      decoded: {
+        functionName: "transfer(address,uint256)",
+        args: {
+          to: "TR2r4r7VzQrBopR9xpUU75HUijyLwcFar1",
+          amount: "5929",
+          symbol: "USDT",
+          contract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        },
+        parameterHex: TRC20_PARAM_HEX,
+      },
+      feeLimitSun: "100000000",
+    });
+    const block = renderTronAgentTaskBlock(
+      stamped as UnsignedTronTx & { verification: NonNullable<UnsignedTronTx["verification"]> },
+    );
+
+    // EVM-mirror header — agent runs the check unprompted, no menu.
+    expect(block).toMatch(/^\[AGENT TASK — RUN THIS CHECK NOW/);
+    expect(block).toContain("CHECKS PERFORMED");
+
+    // Single-line node -e recipient cross-check (mirror of EVM CHECK 2's
+    // viem one-liner). MUST be on one Bash line — multi-line scripts trip
+    // scary approval dialogs and "don't ask again" stops working.
+    expect(block).toMatch(
+      /node -e "console\.log\(Buffer\.from\(require\('bs58check'\)\.decode\('TR2r4r7VzQrBopR9xpUU75HUijyLwcFar1'\)\)\.slice\(1\)\.toString\('hex'\)\)"/,
+    );
+    const nodeLine = block
+      .split("\n")
+      .find((l) => l.includes("require('bs58check')"));
+    expect(nodeLine).toBeDefined();
+    expect(nodeLine!.split("\n").length).toBe(1);
+
+    // Swiss-knife decoder URL — calldata-only mode (no chainId/address)
+    // since TRON isn't in swiss-knife's chain dropdown; selector falls
+    // back to 4byte.directory.
+    expect(block).toContain(
+      `[Open in swiss-knife decoder](https://calldata.swiss-knife.xyz/decoder?calldata=0xa9059cbb${TRC20_PARAM_HEX})`,
+    );
+
+    // PAIR-CONSISTENCY HASH — N/A on TRON (clear-sign), mirror of EVM
+    // clear-sign branch dropping CHECK 2.
+    expect(block).toContain("⏸ PAIR-CONSISTENCY HASH — N/A on TRON (clear-sign)");
+
+    // Second-LLM check carried through unchanged from EVM template.
+    expect(block).toContain("□ SECOND-LLM CHECK");
+
+    // NEXT ON-DEVICE branch — clear-sign, char-by-char read.
+    expect(block).toContain("Recipient: TR2r4r7VzQrBopR9xpUU75HUijyLwcFar1");
+    expect(block).toMatch(/Token: USDT.*Amount: 5929/);
+
+    // Anti-regression: do NOT instruct the agent to use python3 or any
+    // multi-line script — past live runs improvised a python base58check
+    // decode that produced a scary multi-line Bash approval dialog.
+    expect(block).not.toMatch(/python3?/);
+    expect(block).not.toContain("<<");
+  });
+
+  it("native_send falls back to ACTION DECODE — no calldata, no swiss-knife URL", () => {
+    const stamped = issueTronHandle({
+      chain: "tron",
+      action: "native_send",
+      from: "TPoaKtYTEPMj4LxWE3J5q3NdZVcX6HYUay",
+      txID: "e".repeat(64),
+      rawData: {},
+      rawDataHex: "ff00",
+      description: "Send 1 TRX",
+      decoded: {
+        functionName: "TransferContract",
+        args: { to: "TR2r4r7VzQrBopR9xpUU75HUijyLwcFar1", amount: "1" },
+      },
+    });
+    const block = renderTronAgentTaskBlock(
+      stamped as UnsignedTronTx & { verification: NonNullable<UnsignedTronTx["verification"]> },
+    );
+    expect(block).toContain("ACTION DECODE");
+    expect(block).not.toContain("require('bs58check')");
+    expect(block).not.toContain("calldata.swiss-knife.xyz");
+    // Still emits the CHECKS PERFORMED template + clear-sign on-device branch.
+    expect(block).toContain("CHECKS PERFORMED");
+    expect(block).toContain("⏸ PAIR-CONSISTENCY HASH — N/A on TRON (clear-sign)");
+  });
+});
+
 describe("renderPostSendPollBlock — auto-poll directive after send_transaction", () => {
   it("tells the agent to poll get_transaction_status itself, not ask the user", () => {
     const block = renderPostSendPollBlock({
@@ -706,8 +806,13 @@ describe("get_tx_verification recovers a verification block by handle", () => {
     expect(recovered.verification?.payloadHash).toBe(stamped.verification?.payloadHash);
 
     const blocks = await collectVerificationBlocks(recovered, { verify: stubVerify });
-    expect(blocks).toHaveLength(1);
+    // verification block + agent-task block (the TRON parallel of EVM's
+    // preview-time CHECKS PERFORMED scaffolding — emitted at prepare time
+    // since TRON has no preview step).
+    expect(blocks).toHaveLength(2);
     expect(blocks[0]).toContain("VERIFY BEFORE SIGNING (TRON)");
+    expect(blocks[1]).toContain("[AGENT TASK");
+    expect(blocks[1]).toContain("CHECKS PERFORMED");
   });
 
   it("unknown handle throws with a single clear 'expired or unknown' message", async () => {
