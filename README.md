@@ -246,6 +246,12 @@ npm test         # vitest run
 npm run test:watch
 ```
 
+## Contributing
+
+Pull requests are welcome. Before your first contribution, the CLA Assistant bot will ask you to sign the [Contributor License Agreement](./CLA.md) by replying to your PR with a sign-off comment — one signature covers all your future PRs. The CLA grants the project the right to relicense your contribution under future license terms (since the project ships under BUSL-1.1 today and auto-converts to Apache 2.0 in 2030, the relicensing right matters); without it, future license changes get stuck.
+
+The repo owner and Dependabot are exempt from the CLA check.
+
 ## License
 
 **Business Source License 1.1** (BUSL-1.1) — see [LICENSE](./LICENSE).
