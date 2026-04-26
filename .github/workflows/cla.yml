@@ -49,7 +49,16 @@ jobs:
           # Repo owner doesn't sign their own CLA. Dependabot bumps are
           # mechanical (not "contributions" in the IP sense) so we skip
           # them too — same pattern most BUSL projects use.
-          allowlist: 'szhygulin,dependabot[bot]'
+          #
+          # `claude` covers Claude Code's `Co-Authored-By: Claude ...
+          # <noreply@anthropic.com>` trailer (resolves to the `claude`
+          # GitHub identity). Claude is a tool used by szhygulin to
+          # author commits, not a contributor in the IP sense — the
+          # human running the model holds the copyright. The trailing
+          # `*[bot]` wildcard catches any future bot accounts (renovate,
+          # release-please, etc.) so we don't have to amend this file
+          # every time a new bot lands a PR.
+          allowlist: 'szhygulin,claude,dependabot[bot],*[bot]'
           custom-notsigned-prcomment: |
             Thanks for the contribution! Before this PR can be merged, please sign the [Contributor License Agreement](https://github.com/szhygulin/vaultpilot-mcp/blob/main/CLA.md). The CLA grants the project the right to relicense your contribution under future license terms (the project ships under [BUSL-1.1](https://github.com/szhygulin/vaultpilot-mcp/blob/main/LICENSE) today, auto-converting to Apache 2.0 in 2030).
 
