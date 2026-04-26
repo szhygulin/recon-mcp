@@ -74,6 +74,8 @@ import { getDailyBriefing } from "./modules/digest/index.js";
 import { getDailyBriefingInput } from "./modules/digest/schemas.js";
 import { getPnlSummary } from "./modules/pnl/index.js";
 import { getPnlSummaryInput } from "./modules/pnl/schemas.js";
+import { explainTx } from "./modules/postmortem/index.js";
+import { explainTxInput } from "./modules/postmortem/schemas.js";
 import { getPortfolioSummaryInput } from "./modules/portfolio/schemas.js";
 
 import { getVaultPilotConfigStatus } from "./modules/diagnostics/index.js";
@@ -1537,6 +1539,16 @@ async function main() {
       inputSchema: getPnlSummaryInput.shape,
     },
     handler(getPnlSummary)
+  );
+
+  registerTool(server,
+    "explain_tx",
+    {
+      description:
+        "Narrative post-mortem for a single confirmed transaction. Walks what actually happened: top-level method/instruction call, decoded ERC-20/TRC-20 Transfer + Approval events (or Solana SPL balance deltas), per-token balance changes for the wallet, fee paid, and a heuristics block flagging surprises (failed status, unlimited approval, dust outflow, transfer-to-zero burn, high-gas vs. moved value, unexpected no-state-change). Returns BOTH a structured envelope and a pre-rendered narrative string for verbatim relay (control via `format`). Distinct from `get_transaction_status` (just confirmation status) and the prepare→preview→send pipeline (forward-looking). Useful for debugging (\"why did this swap return less than the quote?\"), learning (\"what does this contract call actually do?\"), forensics (\"what addresses did this tx touch?\"), and address-poisoning triage. v1 covers EVM (Ethereum/Arbitrum/Polygon/Base/Optimism), TRON, and Solana — Bitcoin is deferred. v1 reads top-level execution only; internal calls / CPI / DeFi compositions surface via balance & event effects rather than as separate step rows. Pricing is current spot via DefiLlama (not historical at tx time). Optional `wallet` arg recomputes balance/approval changes from THAT wallet's perspective — defaults to tx sender. Read-only — no signing, no broadcast.",
+      inputSchema: explainTxInput.shape,
+    },
+    handler(explainTx)
   );
 
   registerTool(server,
