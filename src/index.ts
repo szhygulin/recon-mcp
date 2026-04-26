@@ -65,6 +65,8 @@ import {
 import { getPortfolioSummary } from "./modules/portfolio/index.js";
 import { getPortfolioDiff } from "./modules/diff/index.js";
 import { getPortfolioDiffInput } from "./modules/diff/schemas.js";
+import { getDailyBriefing } from "./modules/digest/index.js";
+import { getDailyBriefingInput } from "./modules/digest/schemas.js";
 import { getPortfolioSummaryInput } from "./modules/portfolio/schemas.js";
 
 import { getVaultPilotConfigStatus } from "./modules/diagnostics/index.js";
@@ -1481,7 +1483,21 @@ async function main() {
     handler(getPortfolioDiff)
   );
 
-  registerTool(server, 
+  registerTool(server,
+    "get_daily_briefing",
+    {
+      description:
+        "One-paragraph 'what's going on with my portfolio right now' briefing — composed from existing tools, not new on-chain reads. Section coverage: " +
+        "(1) current portfolio total + window USD/% delta, (2) top 3 movers by absolute USD change across all chains, (3) Aave health-factor alerts (any HF < 1.5 surfaced with capitalized prefix and margin-to-liquidation %), (4) recent activity counts split into received / sent / swapped / supplied / borrowed / repaid / withdrew / other (action-type classification via 4byte-resolved methodName when present, directional fallback otherwise). " +
+        "Period: 24h (default — the morning-coffee briefing) / 7d / 30d. Address args mirror `get_portfolio_diff` (`wallet` / `tronAddress` / `solanaAddress` / `bitcoinAddress` — at least one required). " +
+        "Returns BOTH a structured envelope AND a pre-rendered markdown narrative (control via `format`). Sub-tool failures degrade to per-section `notes` rather than aborting (e.g. a Solana RPC outage doesn't void the EVM briefing). " +
+        "Two sections punted at v1 with explicit `available: false` reasons rather than silent omission: `bestStablecoinYield` (depends on the unshipped `compare_yields` tool) and `liquidationCalendar` (depends on the unshipped `schedule_tx` tool). Distinct from `get_portfolio_summary` (current state only) and `get_portfolio_diff` (window decomposition only) — this tool is the conversational AI rollup that sits on top of both.",
+      inputSchema: getDailyBriefingInput.shape,
+    },
+    handler(getDailyBriefing)
+  );
+
+  registerTool(server,
     "get_transaction_history",
     {
       description:
