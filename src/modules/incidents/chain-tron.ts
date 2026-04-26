@@ -1,17 +1,23 @@
 /**
  * Tron base-layer chain-health signals for `get_market_incident_status`.
- * Issue #238 v1.
+ * Issue #238 v1 + small-wins follow-up (sr_rotation_anomaly,
+ * tronGrid_divergence).
  *
  * Signals:
- *   - block_progression  (tip ageSeconds > 9 → production stalled)
- *   - missed_blocks_rate (last ~1h: > 10% missed → SR liveness degraded)
- *   - sr_concentration   (Nakamoto on SR vote-weight ≤ 6 → BFT halt risk)
+ *   - block_progression     (tip ageSeconds > 9 → production stalled)
+ *   - missed_blocks_rate    (last ~1h: > 10% missed → SR liveness degraded)
+ *   - sr_concentration      (Nakamoto on SR vote-weight ≤ 6 → BFT halt risk)
+ *   - sr_rotation_anomaly   (≥ 3 unknown producers in last 30 blocks →
+ *                            non-active-SR producing, or encoding mismatch
+ *                            we surface honestly via available:false)
+ *   - tronGrid_divergence   (block-height gap > 5 vs an optional second
+ *                            TronGrid-compatible endpoint set via
+ *                            TRON_RPC_URL_SECONDARY; mirror of the Solana
+ *                            rpc_divergence pattern)
  *
- * Deferred to v2 (per the v1 scope):
- *   - sr_rotation_anomaly (needs producer-history join)
- *   - usdt_blacklist_event (scoped, optional)
- *   - network_resource_exhaustion (needs baseline)
- *   - tronGrid_divergence (needs 2nd endpoint)
+ * Tracked separately as v2 follow-ups (out of this PR's scope):
+ *   - usdt_blacklist_event           — issue #249
+ *   - network_resource_exhaustion    — issue #250
  */
 import { TRONGRID_BASE_URL } from "../../config/tron.js";
 import { resolveTronApiKey, readUserConfig } from "../../config/user-config.js";
@@ -28,6 +34,12 @@ const MISSED_BLOCKS_FLAG = 0.10;
 const MISSED_BLOCKS_WINDOW = 1200;
 /** sr_concentration Nakamoto threshold: ≤ this many SRs hold > 33% → halt risk. */
 const SR_NAKAMOTO_FLAG = 6;
+/** sr_rotation_anomaly: scan last N blocks for unknown producers. */
+const SR_ROTATION_WINDOW = 30;
+/** sr_rotation_anomaly: ≥ this many unknown producers in window → flagged. */
+const SR_ROTATION_UNKNOWN_FLAG = 3;
+/** tronGrid_divergence: tip-block height gap > this vs secondary endpoint → flagged. */
+const TRONGRID_DIVERGENCE_BLOCK_GAP = 5;
 
 export interface TronChainIncidentStatus {
   protocol: "tron";
@@ -63,6 +75,11 @@ interface TronGridGetBlockByLimitNextResponse {
       raw_data?: {
         number?: number;
         timestamp?: number;
+        // Producer field is present in /wallet/getblockbylimitnext responses;
+        // encoding depends on whether `?visible=true` was passed (base58 vs
+        // hex). The sr_rotation_anomaly path uses `?visible=true` so we get
+        // base58, matching the SR set returned by listTronWitnesses.
+        witness_address?: string;
       };
     };
   }[];
@@ -73,17 +90,34 @@ async function trongridPost<T>(
   body: unknown,
   apiKey: string | undefined,
 ): Promise<T> {
+  return trongridPostUrl<T>(`${TRONGRID_BASE_URL}${path}`, body, apiKey);
+}
+
+/**
+ * Like `trongridPost` but takes a full URL instead of a path. Used by
+ * `tronGrid_divergence` which queries a user-configured secondary endpoint
+ * (`TRON_RPC_URL_SECONDARY`) — that endpoint may not be the canonical
+ * `api.trongrid.io` host. The API-key header is still forwarded; if the
+ * secondary endpoint doesn't honor TRON-PRO-API-KEY (most TronGrid-compat
+ * RPCs do, some private nodes don't) the call still succeeds — the header
+ * is just ignored.
+ */
+async function trongridPostUrl<T>(
+  fullUrl: string,
+  body: unknown,
+  apiKey: string | undefined,
+): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
   if (apiKey) headers["TRON-PRO-API-KEY"] = apiKey;
-  const res = await fetchWithTimeout(`${TRONGRID_BASE_URL}${path}`, {
+  const res = await fetchWithTimeout(fullUrl, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    throw new Error(`TronGrid ${path} returned ${res.status} ${res.statusText}`);
+    throw new Error(`TronGrid ${fullUrl} returned ${res.status} ${res.statusText}`);
   }
   return (await res.json()) as T;
 }
@@ -180,20 +214,36 @@ export async function getTronChainHealthSignals(): Promise<TronChainIncidentStat
     });
   }
 
-  // sr_concentration — Nakamoto coefficient over witness vote-weight.
-  // Reuses listTronWitnesses (already wired). Top-127 includes SRs +
-  // candidates, but only the top 27 are actively producing; concentration
-  // analysis is on the active set.
+  // Fetch the active SR set ONCE — both sr_concentration and
+  // sr_rotation_anomaly need it. On failure both signals degrade to
+  // available:false rather than each retrying.
+  let activeWitnessAddresses: string[] | null = null;
+  let activeWitnessStakes: number[] | null = null;
+  let witnessFetchError: string | null = null;
   try {
     const witnessList = await listTronWitnesses(undefined, true);
-    // voteCount is a decimal-string of vote weight (1 frozen TRX = 1 vote);
-    // parse to number for the Nakamoto sum. Top-27 are the active SRs
-    // (witness ranks 1..27); concentration analysis runs on this set.
-    const stakes = witnessList.witnesses
-      .slice(0, 27)
+    // listTronWitnesses(_, includeCandidates=true) returns the full set;
+    // top-27 (by witness rank) are the active SRs. The witnesses array is
+    // pre-sorted by vote weight, so slicing 0..27 gives the active set.
+    const top27 = witnessList.witnesses.slice(0, 27);
+    activeWitnessAddresses = top27.map((w) => w.address);
+    activeWitnessStakes = top27
       .map((w) => Number(w.voteCount))
       .filter((v) => Number.isFinite(v))
       .sort((a, b) => b - a);
+  } catch (err) {
+    witnessFetchError = err instanceof Error ? err.message : String(err);
+  }
+
+  // sr_concentration — Nakamoto coefficient over witness vote-weight.
+  if (witnessFetchError !== null) {
+    signals.push({
+      name: "sr_concentration",
+      available: false,
+      reason: `listTronWitnesses error: ${witnessFetchError}`,
+    });
+  } else {
+    const stakes = activeWitnessStakes!;
     const total = stakes.reduce((sum, s) => sum + s, 0);
     if (total === 0) {
       signals.push({
@@ -222,12 +272,128 @@ export async function getTronChainHealthSignals(): Promise<TronChainIncidentStat
         },
       });
     }
-  } catch (err) {
+  }
+
+  // sr_rotation_anomaly — fetch last SR_ROTATION_WINDOW blocks and check
+  // each producer against the active SR set. Producers OUTSIDE the active
+  // set indicate rotation anomalies (or, if the encoding mismatches,
+  // we surface that as available:false rather than silently flag-everything).
+  // Uses ?visible=true so witness_address comes back base58, matching the
+  // base58 addresses in the SR list.
+  if (witnessFetchError !== null) {
     signals.push({
-      name: "sr_concentration",
+      name: "sr_rotation_anomaly",
       available: false,
-      reason: `listTronWitnesses error: ${err instanceof Error ? err.message : String(err)}`,
+      reason: `requires the SR list; listTronWitnesses error: ${witnessFetchError}`,
     });
+  } else {
+    try {
+      const startNum = Math.max(1, tipNumber - SR_ROTATION_WINDOW + 1);
+      const blocks = await trongridPost<TronGridGetBlockByLimitNextResponse>(
+        "/wallet/getblockbylimitnext?visible=true",
+        { startNum, endNum: tipNumber + 1 },
+        apiKey,
+      );
+      const producers = (blocks.block ?? [])
+        .map((b) => b.block_header?.raw_data?.witness_address)
+        .filter((w): w is string => typeof w === "string" && w.length > 0);
+      if (producers.length === 0) {
+        signals.push({
+          name: "sr_rotation_anomaly",
+          available: false,
+          reason:
+            "TronGrid /wallet/getblockbylimitnext returned no decodable witness_address fields",
+        });
+      } else {
+        const activeSet = new Set(activeWitnessAddresses!);
+        const knownProducers = producers.filter((p) => activeSet.has(p));
+        const unknownProducers = producers.filter((p) => !activeSet.has(p));
+        // Defensive sanity check: if NONE of the producers match the
+        // active SR set, that almost certainly means address-encoding
+        // mismatch (block returned hex, SR list returned base58, or vice
+        // versa) rather than every block being produced by a non-SR.
+        // Surface the ambiguity rather than flagging the full window.
+        if (knownProducers.length === 0) {
+          signals.push({
+            name: "sr_rotation_anomaly",
+            available: false,
+            reason: `0/${producers.length} block producers matched the active SR set — likely an address-encoding mismatch between TronGrid block witness_address and listTronWitnesses output. Skipping rotation analysis to avoid a false-positive flood.`,
+          });
+        } else {
+          signals.push({
+            name: "sr_rotation_anomaly",
+            available: true,
+            flagged: unknownProducers.length >= SR_ROTATION_UNKNOWN_FLAG,
+            detail: {
+              windowBlocks: SR_ROTATION_WINDOW,
+              producersObserved: producers.length,
+              knownProducers: knownProducers.length,
+              unknownProducers: unknownProducers.length,
+              flagThreshold: SR_ROTATION_UNKNOWN_FLAG,
+              ...(unknownProducers.length > 0
+                ? { unknownProducerSamples: unknownProducers.slice(0, 5) }
+                : {}),
+            },
+          });
+        }
+      }
+    } catch (err) {
+      signals.push({
+        name: "sr_rotation_anomaly",
+        available: false,
+        reason: `TronGrid error during producer-window fetch: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  // tronGrid_divergence — when TRON_RPC_URL_SECONDARY is set, probe the
+  // secondary endpoint for its tip block and flag if it disagrees with
+  // the primary tip by > TRONGRID_DIVERGENCE_BLOCK_GAP blocks. Mirrors
+  // the Solana rpc_divergence shape; degrades to available:false when
+  // the env var is unset.
+  const secondaryUrl = process.env.TRON_RPC_URL_SECONDARY;
+  if (!secondaryUrl) {
+    signals.push({
+      name: "tronGrid_divergence",
+      available: false,
+      reason: "requires TRON_RPC_URL_SECONDARY env var pointing at a second TronGrid-compatible endpoint",
+    });
+  } else {
+    try {
+      const secondaryTip = await trongridPostUrl<TronGridGetNowBlockResponse>(
+        `${secondaryUrl.replace(/\/$/, "")}/wallet/getnowblock`,
+        {},
+        apiKey,
+      );
+      const secondaryNumber = secondaryTip.block_header?.raw_data?.number;
+      if (typeof secondaryNumber !== "number") {
+        signals.push({
+          name: "tronGrid_divergence",
+          available: false,
+          reason: "secondary endpoint returned malformed getnowblock response",
+        });
+      } else {
+        const gap = Math.abs(tipNumber - secondaryNumber);
+        signals.push({
+          name: "tronGrid_divergence",
+          available: true,
+          flagged: gap > TRONGRID_DIVERGENCE_BLOCK_GAP,
+          detail: {
+            primaryTip: tipNumber,
+            secondaryTip: secondaryNumber,
+            blockGap: gap,
+            flagThreshold: TRONGRID_DIVERGENCE_BLOCK_GAP,
+            secondaryEndpoint: secondaryUrl,
+          },
+        });
+      }
+    } catch (err) {
+      signals.push({
+        name: "tronGrid_divergence",
+        available: false,
+        reason: `secondary endpoint error: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   }
 
   return {
