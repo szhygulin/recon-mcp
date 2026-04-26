@@ -6,6 +6,7 @@
 ## Git/PR Workflow
 - Always use PR-based workflow: never push directly to main, and never push feature work to the wrong branch. Open a PR and let CI run.
 - Before force-pushing or rebasing, confirm with user.
+- **Each new feature/fix must be implemented inside its own dedicated `git worktree` under `.claude/worktrees/<branch-name>`** — NEVER do feature work in the main worktree at `/home/szhygulin/dev/recon-mcp`. Multiple agents may work this repo in parallel; if two agents share a single worktree they will race on the working tree, the index, and the npm install state. Recipe: `git fetch origin main && git worktree add .claude/worktrees/<short-name> -b <branch-name> origin/main`. Worktrees are auto-cleaned on PR merge by `git worktree prune`. The main worktree stays on `main` and is for sync/inspection only — don't edit files there. Exception: cross-project `claude-work/` plan files (gitignored) and `~/.claude/projects/.../memory/` (per-user) can be edited from anywhere; they're not under git's control in this repo.
 
 ## Tool Usage Discipline
 - Do not repeat the same informational tool call (e.g., lending_positions, compound_positions) within a single turn. Cache results mentally and reuse.
