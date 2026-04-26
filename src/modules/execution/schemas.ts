@@ -716,6 +716,31 @@ export const prepareTokenSendInput = z.object({
     ),
 });
 
+/**
+ * `prepare_revoke_approval` — build an `approve(spender, 0)` tx that
+ * sets the allowance `wallet` previously granted `spender` on `token`
+ * back to zero. Read-side counterpart is the planned
+ * `get_token_allowances`. Refuses when the current allowance is
+ * already 0 — that call would be a no-op gas burn.
+ */
+export const prepareRevokeApprovalInput = z.object({
+  wallet: walletSchema.describe(
+    "EVM wallet that owns the existing allowance. Must be the address that " +
+      "originally called approve(spender, value); only the owner can set the " +
+      "allowance back to zero."
+  ),
+  chain: chainEnum.default("ethereum"),
+  token: addressSchema.describe(
+    "ERC-20 contract address. Must be the actual token contract — wrappers " +
+      "and aTokens have their own approval surfaces and aren't supported here."
+  ),
+  spender: addressSchema.describe(
+    "Address whose allowance to revoke. Typically a protocol contract " +
+      "(Aave V3 Pool, Uniswap SwapRouter, etc.) or any EOA the user previously " +
+      "approved. Get the live list via the read-side allowances tool."
+  ),
+});
+
 export const sendTransactionInput = z.object({
   handle: z
     .string()
@@ -894,6 +919,7 @@ export type PrepareEigenLayerDepositArgs = z.infer<typeof prepareEigenLayerDepos
 export type PrepareNativeSendArgs = z.infer<typeof prepareNativeSendInput>;
 export type PrepareWethUnwrapArgs = z.infer<typeof prepareWethUnwrapInput>;
 export type PrepareTokenSendArgs = z.infer<typeof prepareTokenSendInput>;
+export type PrepareRevokeApprovalArgs = z.infer<typeof prepareRevokeApprovalInput>;
 export type PreviewSendArgs = z.infer<typeof previewSendInput>;
 export type SendTransactionArgs = z.infer<typeof sendTransactionInput>;
 export type GetTransactionStatusArgs = z.infer<typeof getTransactionStatusInput>;

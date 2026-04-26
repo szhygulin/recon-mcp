@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { encodeFunctionData, formatUnits, isAddress, parseEther, parseUnits } from "viem";
+import { CONTRACTS } from "../../config/contracts.js";
 import qrcodeTerminal from "qrcode-terminal";
 import {
   initiatePairing,
@@ -106,6 +107,7 @@ import type {
   PrepareNativeSendArgs,
   PrepareWethUnwrapArgs,
   PrepareTokenSendArgs,
+  PrepareRevokeApprovalArgs,
   PrepareSolanaNativeSendArgs,
   PrepareSolanaSplSendArgs,
   PrepareSolanaNonceInitArgs,
@@ -2261,6 +2263,122 @@ export async function prepareTokenSend(args: PrepareTokenSendArgs): Promise<Unsi
       args: { to, amount: displayAmount, symbol: meta.symbol },
     },
   });
+}
+
+/**
+ * Build an `approve(spender, 0)` tx to revoke the allowance `wallet`
+ * previously granted `spender` on `token`. Pre-flight check refuses
+ * when the live allowance is already 0 — the on-chain call would still
+ * succeed but burns gas for nothing, and the user almost certainly
+ * meant a different (token, spender) pair.
+ *
+ * Resolves a friendly spender label from the canonical CONTRACTS table
+ * when one matches (Aave V3 Pool, Uniswap V3 SwapRouter02, etc.) so
+ * the description + Ledger-screen preview is more meaningful than a
+ * raw hex address.
+ *
+ * No `approvalCap`-style logic — revoke is a strict zero. The shared
+ * `buildApprovalTx` helper covers the raise-then-spend path; this is
+ * the inverse one-shot.
+ */
+export async function prepareRevokeApproval(
+  args: PrepareRevokeApprovalArgs,
+): Promise<UnsignedTx> {
+  const wallet = args.wallet as `0x${string}`;
+  const chain = args.chain as SupportedChain;
+  const token = args.token as `0x${string}`;
+  const spender = args.spender as `0x${string}`;
+
+  const client = getClient(chain);
+  const currentAllowance = (await client.readContract({
+    address: token,
+    abi: erc20Abi,
+    functionName: "allowance",
+    args: [wallet, spender],
+  })) as bigint;
+
+  if (currentAllowance === 0n) {
+    throw new Error(
+      `${wallet} has no allowance to revoke for spender ${spender} on token ` +
+        `${token} (${chain}). Current allowance is already 0 — calling ` +
+        `approve(spender, 0) would be a no-op gas burn. If you intended a ` +
+        `different (token, spender) pair, double-check the inputs.`,
+    );
+  }
+
+  const meta = await resolveTokenMeta(chain, token);
+  const knownLabel = lookupKnownSpender(chain, spender);
+  const spenderDisplay = knownLabel ? `${knownLabel} (${spender})` : spender;
+  const currentFormatted = formatUnits(currentAllowance, meta.decimals);
+
+  return enrichTx({
+    chain,
+    to: token,
+    data: encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [spender, 0n],
+    }),
+    value: "0",
+    from: wallet,
+    description:
+      `Revoke ${meta.symbol} allowance for ${spenderDisplay} on ${chain} ` +
+      `(was ${currentFormatted} ${meta.symbol})`,
+    decoded: {
+      functionName: "approve",
+      args: {
+        spender,
+        amount: "0",
+        note: "revoke",
+        symbol: meta.symbol,
+        ...(knownLabel ? { spenderLabel: knownLabel } : {}),
+      },
+    },
+  });
+}
+
+/**
+ * Resolve a friendly label for a spender address from the canonical
+ * `CONTRACTS` table on the given chain. Returns undefined for arbitrary
+ * (non-protocol) spender addresses. Mirrors the same lookup the read-
+ * side `get_token_allowances` tool uses for consistent labeling across
+ * the read + revoke surfaces.
+ */
+function lookupKnownSpender(
+  chain: SupportedChain,
+  spender: `0x${string}`,
+): string | undefined {
+  const c = CONTRACTS[chain] as Record<string, Record<string, string>> | undefined;
+  if (!c) return undefined;
+  const target = spender.toLowerCase();
+  for (const [protocol, addrs] of Object.entries(c)) {
+    if (protocol === "tokens") continue;
+    if (typeof addrs !== "object" || addrs === null) continue;
+    for (const [name, addr] of Object.entries(addrs)) {
+      if (typeof addr !== "string" || addr.toLowerCase() !== target) continue;
+      const protoLabel = (() => {
+        switch (protocol) {
+          case "aave":
+            return "Aave V3";
+          case "uniswap":
+            return "Uniswap V3";
+          case "lido":
+            return "Lido";
+          case "eigenlayer":
+            return "EigenLayer";
+          case "compound":
+            return "Compound V3";
+          case "morpho":
+            return "Morpho Blue";
+          default:
+            return protocol.charAt(0).toUpperCase() + protocol.slice(1);
+        }
+      })();
+      const niceName = name.charAt(0).toUpperCase() + name.slice(1);
+      return `${protoLabel} ${niceName}`;
+    }
+  }
+  return undefined;
 }
 
 // ----- Send + status -----
