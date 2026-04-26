@@ -12,6 +12,7 @@ import {
   getPrice,
   type PriceRequest,
 } from "./prices.js";
+import { annotatePoisoning } from "./poisoning.js";
 import type {
   GetTransactionHistoryArgs,
   HistoryItem,
@@ -216,6 +217,11 @@ export async function getTransactionHistory(
   } else {
     priceCoverage = "none";
   }
+
+  // Address-poisoning annotation (#220). Runs AFTER pricing so the
+  // dust signal can fall back to USD when native amounts aren't a
+  // direct heuristic (e.g. token transfers). Mutates items in place.
+  annotatePoisoning(items, wallet);
 
   const response: HistoryResponse = {
     chain,

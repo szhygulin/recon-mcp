@@ -47,6 +47,38 @@ export type HistoryItemType =
   | "internal"
   | "program_interaction";
 
+/**
+ * Address-poisoning annotation. Issue #220. Surfaced on history items
+ * when a strong heuristic fires; absent otherwise. Detection is
+ * precision-tuned (no warning fatigue) — we only flag the three signals
+ * with negligible false-positive rates.
+ *
+ * - `zero_amount_transfer`: token_transfer with `amount === "0"`. The
+ *   USDC `transferFrom` `>= 0` allowance bug lets anyone log a 0-token
+ *   transfer between arbitrary addresses; there is no legitimate
+ *   reason for an external party to do this.
+ * - `vanity_suffix_lookalike`: dust tx whose counterparty shares the
+ *   first-4 AND last-4 hex chars (after the `0x` prefix) with another
+ *   distinct counterparty in the same wallet's recent history. Set
+ *   `mimics` to the matched address.
+ * - `self_suffix_lookalike`: dust tx whose counterparty shares the
+ *   first-4 AND last-4 hex chars with the wallet itself. Bidirectional
+ *   inter-wallet variant. `mimics` is the wallet.
+ *
+ * EVM-only in v1: the suffix-lookalike rules require the hex shape.
+ * The zero-amount rule is chain-agnostic and applies on TRON too
+ * (TRC-20 has the same `transferFrom` allowance shape).
+ */
+export interface SuspectedPoisoning {
+  reasons: Array<
+    | "zero_amount_transfer"
+    | "vanity_suffix_lookalike"
+    | "self_suffix_lookalike"
+  >;
+  /** Legit address being impersonated, when known. Lowercased. */
+  mimics?: string;
+}
+
 interface HistoryItemBase {
   type: HistoryItemType;
   hash: string;
@@ -54,6 +86,11 @@ interface HistoryItemBase {
   from: string;
   to: string;
   status: "success" | "failed";
+  /**
+   * Set when an address-poisoning heuristic fires (#220). Absent when
+   * the entry is clean.
+   */
+  suspectedPoisoning?: SuspectedPoisoning;
 }
 
 export interface ExternalHistoryItem extends HistoryItemBase {
