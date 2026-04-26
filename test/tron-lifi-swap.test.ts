@@ -83,25 +83,28 @@ function encodeTronTriggerSmartContractRawData(
   diamondHex: string,
   abiCalldata: `0x${string}`,
 ): string {
-  function varint(n: number): string {
+  // BigInt-aware varint encoder. The original 32-bit `>>>=` form
+  // works for tags + small payloads but breaks on millisecond
+  // timestamps (~1.7T > 2^31), which the issue-#280 expiration
+  // extender requires.
+  function varint(n: bigint | number): string {
     let s = "";
-    let v = n;
-    while (v > 0x7f) {
-      s += (0x80 | (v & 0x7f)).toString(16).padStart(2, "0");
-      v >>>= 7;
+    let v = typeof n === "bigint" ? n : BigInt(n);
+    while (v > 0x7fn) {
+      s += (Number(0x80n | (v & 0x7fn))).toString(16).padStart(2, "0");
+      v >>= 7n;
     }
-    s += v.toString(16).padStart(2, "0");
+    s += Number(v).toString(16).padStart(2, "0");
     return s;
   }
   function tagBytes(tag: number, wireType: number): string {
-    // Tag itself is varint-encoded; for tag>=16 it needs multi-byte form.
     return varint((tag << 3) | wireType);
   }
   function lenDelim(tag: number, payloadHex: string): string {
     const len = payloadHex.length / 2;
     return tagBytes(tag, 2) + varint(len) + payloadHex;
   }
-  function tagVarint(tag: number, value: number): string {
+  function tagVarint(tag: number, value: bigint | number): string {
     return tagBytes(tag, 0) + varint(value);
   }
 
@@ -121,8 +124,22 @@ function encodeTronTriggerSmartContractRawData(
   // Contract: { type (1, varint=31), parameter (2, Any) }
   const contractInner = tagVarint(1, 31) + lenDelim(2, anyMessage);
 
-  // Transaction.raw: contract[0] (tag 11), fee_limit (tag 18, varint)
-  return lenDelim(11, contractInner) + tagVarint(18, 100_000_000);
+  // Transaction.raw: expiration (tag 8, varint), contract[0] (tag 11),
+  // timestamp (tag 14, varint), fee_limit (tag 18, varint).
+  //
+  // Issue #280 added a client-side `extendRawDataExpiration` step that
+  // requires fields 8 and 14 to be present (it surgically rewrites
+  // field 8 based on field 14). LiFi's quote-built rawData inherits
+  // these from TronGrid. Stamp realistic values: a fixed timestamp (so
+  // the fixture is reproducible) and an initial 60s expiration window.
+  const FIXTURE_TIMESTAMP_MS = 1_714_128_000_000n;
+  const INITIAL_EXPIRATION_MS = FIXTURE_TIMESTAMP_MS + 60_000n;
+  return (
+    tagVarint(8, INITIAL_EXPIRATION_MS) +
+    lenDelim(11, contractInner) +
+    tagVarint(14, FIXTURE_TIMESTAMP_MS) +
+    tagVarint(18, 100_000_000)
+  );
 }
 
 function makeTronLifiQuote(opts: {

@@ -172,6 +172,17 @@ describe("security: narrow agent-compromise (prompt injection, malicious skill)"
     vi.doMock("../src/modules/tron/verify-raw-data.js", () => ({
       assertTronRawDataMatches: () => {},
     }));
+    // Same posture for the expiration extender (issue #280). It also
+    // parses the protobuf and would reject our 50-zero-bytes mock.
+    // Make it a no-op return that satisfies the in-place mutator.
+    vi.doMock("../src/modules/tron/expiration.js", () => ({
+      EXTENDED_EXPIRATION_MS: 24 * 60 * 60 * 1000,
+      extendRawDataExpiration: (rawDataHex: string) => ({
+        rawDataHex,
+        txID: "f".repeat(64),
+        expirationMs: Date.now() + 24 * 60 * 60 * 1000,
+      }),
+    }));
 
     // Mock TronGrid HTTP surface. buildTronNativeSend hits three endpoints:
     //   (1) /wallet/createtransaction — tx builder

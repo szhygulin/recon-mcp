@@ -77,9 +77,23 @@ function wrapContract(type: number, innerBytes: Uint8Array, typeUrl: string): Ui
 }
 
 function wrapRaw(contractBytes: Uint8Array, feeLimit?: bigint): Uint8Array {
-  // Transaction.raw { contract (11, repeated bytes), fee_limit (18, int64) }
+  // Transaction.raw { expiration (8, int64), contract (11, repeated bytes),
+  //                   timestamp (14, int64), fee_limit (18, int64) }
+  //
+  // Issue #280 added a client-side `extendRawDataExpiration` step that
+  // requires fields 8 and 14 to be present (it surgically rewrites field 8
+  // based on field 14). Real TronGrid responses always include both —
+  // this fixture used to omit them because the verifier didn't care, but
+  // the extension step does, so we now stamp realistic values: a fixed
+  // timestamp (so the fixture is reproducible across test runs) and an
+  // initial 60s expiration (matching TronGrid's default and giving the
+  // extender a "from" value to bump).
+  const FIXTURE_TIMESTAMP_MS = 1_714_128_000_000n;
+  const INITIAL_EXPIRATION_MS = FIXTURE_TIMESTAMP_MS + 60_000n;
   const parts: number[] = [];
+  parts.push(...writeVarintField(8, INITIAL_EXPIRATION_MS));
   parts.push(...writeBytesField(11, contractBytes));
+  parts.push(...writeVarintField(14, FIXTURE_TIMESTAMP_MS));
   if (feeLimit !== undefined) parts.push(...writeVarintField(18, feeLimit));
   return Uint8Array.from(parts);
 }

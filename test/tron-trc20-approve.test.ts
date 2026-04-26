@@ -94,7 +94,7 @@ describe("buildTronTrc20Approve — happy path", () => {
 
     expect(tx.action).toBe("trc20_approve");
     expect(tx.from).toBe(ADDR_FROM);
-    expect(tx.txID).toBe("deadbeef".repeat(8));
+    expect(tx.txID).toMatch(/^[0-9a-f]{64}$/); // recomputed post #280 extension
     expect(tx.description).toBe(`Approve 10 USDT for spender ${TRON_LIFI_DIAMOND}`);
     expect(tx.decoded.functionName).toBe("approve(address,uint256)");
     expect(tx.decoded.args.spender).toBe(TRON_LIFI_DIAMOND);

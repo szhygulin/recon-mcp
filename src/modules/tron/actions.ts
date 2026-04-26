@@ -9,7 +9,46 @@ import { resolveTronApiKey, readUserConfig } from "../../config/user-config.js";
 import { issueTronHandle } from "../../signing/tron-tx-store.js";
 import { encodeTrc20TransferParam } from "./address.js";
 import { assertTronRawDataMatches } from "./verify-raw-data.js";
+import { extendRawDataExpiration } from "./expiration.js";
 import type { UnsignedTronTx } from "../../types/index.js";
+
+/**
+ * In-place mutate a TronGrid response so its `raw_data.expiration` is
+ * extended to the TRON protocol max (24h after `timestamp`). Issue #280.
+ *
+ * TronGrid's `/wallet/createtransaction` and `/wallet/triggersmartcontract`
+ * stamp expiration server-side via the fullnode's `defaultExpirationTime`
+ * config — typically 60s. Too tight for the prepare → CHECKS PERFORMED →
+ * user-verifies-on-Ledger → broadcast loop, especially for high-value
+ * sends where the on-device character-walk is the canonical defense
+ * against address substitution. Live evidence: a 5,929 USDT send
+ * round-tripped over the 60s ceiling on multiple consecutive attempts.
+ *
+ * Splice strategy: surgically replace field 8's varint in `raw_data_hex`
+ * (rather than re-encoding the whole protobuf, which would require
+ * decoding every contract type's nested message). Recompute
+ * `txID = sha256(raw_data_hex)`; mirror the new value on
+ * `raw_data.expiration` so the broadcast-time JSON matches the signed
+ * bytes. The extended bytes still pass `assertTronRawDataMatches`
+ * (which checks contract type / addresses / amounts / fee_limit, not
+ * timing).
+ *
+ * No-op when `raw_data_hex` is absent (TronGrid returned an error
+ * shape; the caller's existing `Error` checks will throw).
+ */
+function extendTronGridExpiration(res: {
+  txID?: string;
+  raw_data?: unknown;
+  raw_data_hex?: string;
+}): void {
+  if (!res.raw_data_hex) return;
+  const ext = extendRawDataExpiration(res.raw_data_hex);
+  res.raw_data_hex = ext.rawDataHex;
+  res.txID = ext.txID;
+  if (res.raw_data && typeof res.raw_data === "object") {
+    (res.raw_data as { expiration?: number }).expiration = ext.expirationMs;
+  }
+}
 
 /**
  * Default fee limit (100 TRX) for TRC-20 transfers. TronGrid's
@@ -369,6 +408,7 @@ export async function buildTronNativeSend(
   if (!res.txID || !res.raw_data_hex) {
     throw new Error("TronGrid createtransaction returned no transaction — unexpected shape.");
   }
+  extendTronGridExpiration(res);
 
   assertTronRawDataMatches(res.raw_data_hex, {
     kind: "native_send",
@@ -472,6 +512,7 @@ export async function buildTronTokenSend(
   if (!ttx?.txID || !ttx.raw_data_hex) {
     throw new Error("TronGrid triggersmartcontract returned no transaction — unexpected shape.");
   }
+  extendTronGridExpiration(ttx);
 
   assertTronRawDataMatches(ttx.raw_data_hex, {
     kind: "trc20_send",
@@ -611,6 +652,7 @@ export async function buildTronTrc20Approve(
   if (!ttx?.txID || !ttx.raw_data_hex) {
     throw new Error("TronGrid triggersmartcontract returned no transaction — unexpected shape.");
   }
+  extendTronGridExpiration(ttx);
 
   assertTronRawDataMatches(ttx.raw_data_hex, {
     kind: "trc20_approve",
@@ -713,6 +755,7 @@ export async function buildTronVote(args: BuildTronVoteArgs): Promise<UnsignedTr
   if (!res.txID || !res.raw_data_hex) {
     throw new Error("TronGrid votewitnessaccount returned no transaction — unexpected shape.");
   }
+  extendTronGridExpiration(res);
 
   const totalVotes = args.votes.reduce((s, v) => s + v.count, 0);
   const description =
@@ -793,6 +836,7 @@ export async function buildTronFreeze(
   if (!res.txID || !res.raw_data_hex) {
     throw new Error("TronGrid freezebalancev2 returned no transaction — unexpected shape.");
   }
+  extendTronGridExpiration(res);
 
   assertTronRawDataMatches(res.raw_data_hex, {
     kind: "freeze",
@@ -856,6 +900,7 @@ export async function buildTronUnfreeze(
   if (!res.txID || !res.raw_data_hex) {
     throw new Error("TronGrid unfreezebalancev2 returned no transaction — unexpected shape.");
   }
+  extendTronGridExpiration(res);
 
   assertTronRawDataMatches(res.raw_data_hex, {
     kind: "unfreeze",
@@ -906,6 +951,7 @@ export async function buildTronWithdrawExpireUnfreeze(
   if (!res.txID || !res.raw_data_hex) {
     throw new Error("TronGrid withdrawexpireunfreeze returned no transaction — unexpected shape.");
   }
+  extendTronGridExpiration(res);
 
   assertTronRawDataMatches(res.raw_data_hex, {
     kind: "withdraw_expire_unfreeze",
@@ -970,6 +1016,7 @@ export async function buildTronClaimRewards(
   if (!res.txID || !res.raw_data_hex) {
     throw new Error("TronGrid withdrawbalance returned no transaction — unexpected shape.");
   }
+  extendTronGridExpiration(res);
 
   assertTronRawDataMatches(res.raw_data_hex, {
     kind: "claim_rewards",

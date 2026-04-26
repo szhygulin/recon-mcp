@@ -166,7 +166,10 @@ describe("buildTronNativeSend (network stubbed)", () => {
     expect(tx.chain).toBe("tron");
     expect(tx.action).toBe("native_send");
     expect(tx.from).toBe(ADDR_FROM);
-    expect(tx.txID).toBe("deadbeef".repeat(8));
+    // txID is recomputed after the issue-#280 expiration extension
+    // (sha256 of the rewritten raw_data_hex) — assert canonical shape
+    // rather than the original sentinel from the mocked TronGrid response.
+    expect(tx.txID).toMatch(/^[0-9a-f]{64}$/);
     expect(tx.description).toBe(`Send 1.5 TRX to ${ADDR_TO}`);
     expect(tx.decoded.functionName).toBe("TransferContract");
     expect(tx.decoded.args).toEqual({ to: ADDR_TO, amount: "1.5", symbol: "TRX" });
@@ -270,7 +273,7 @@ describe("buildTronTokenSend (network stubbed)", () => {
       amount: "2",
     });
     expect(tx.action).toBe("trc20_send");
-    expect(tx.txID).toBe("cafebabe".repeat(8));
+    expect(tx.txID).toMatch(/^[0-9a-f]{64}$/); // recomputed post #280 extension
     expect(tx.description).toBe(`Send 2 USDT to ${ADDR_TO}`);
     expect(tx.decoded.args.symbol).toBe("USDT");
     expect(tx.decoded.args.contract).toBe(ADDR_USDT);

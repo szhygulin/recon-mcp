@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
 import { fetchQuote } from "../swap/lifi.js";
 import { base58ToHex } from "./address.js";
 import { isTronAddress } from "../../config/tron.js";
 import { issueTronHandle } from "../../signing/tron-tx-store.js";
+import { extendRawDataExpiration } from "./expiration.js";
 import {
   decodeTronTriggerSmartContract,
   type DecodedTronTriggerSmartContract,
@@ -133,11 +133,6 @@ export interface PreparedTronLifiSwapTx {
   description: string;
   decoded: { functionName: string; args: Record<string, string> };
   feeLimitSun?: string;
-}
-
-function sha256Hex(hex: string): string {
-  const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
-  return createHash("sha256").update(Buffer.from(clean, "hex")).digest("hex");
 }
 
 function assertCrossChainAddressing(p: PrepareTronLifiSwapParams): void {
@@ -278,13 +273,21 @@ export async function buildTronLifiSwap(
     : String(txReq.data);
   const trigger = decodeTronTriggerSmartContract(rawDataHex);
 
-  // Cross-check bridge intent on the inner ABI calldata.
+  // Cross-check bridge intent on the inner ABI calldata. Runs against
+  // the original LiFi-built bytes so the verifier sees what LiFi
+  // actually shaped — expiration extension below doesn't touch
+  // contract-side fields.
   const bridgeData = verifyTronLifiBridgeIntent(p, trigger);
 
-  // Compute txID. Same convention TronGrid uses: sha256 of the raw_data
-  // protobuf bytes. Ledger TRON app displays this on-device when
-  // blind-signing; user matches against the prepare receipt.
-  const txID = sha256Hex(rawDataHex);
+  // Issue #280: extend raw_data.expiration to the protocol max (24h).
+  // LiFi's quote-built rawData inherits the same ~60s window as
+  // TronGrid's defaults, which is too tight for the
+  // prepare → CHECKS PERFORMED → user-verifies-on-Ledger → broadcast
+  // loop. Recomputed txID is what the device displays for the user
+  // to match against the prepare receipt.
+  const extended = extendRawDataExpiration(rawDataHex);
+  const finalRawDataHex = extended.rawDataHex;
+  const txID = extended.txID;
 
   const fromSym =
     p.fromToken === "native"
@@ -302,7 +305,7 @@ export async function buildTronLifiSwap(
     from: p.wallet,
     txID,
     // rawData intentionally absent — broadcast.ts uses /broadcasthex.
-    rawDataHex,
+    rawDataHex: finalRawDataHex,
     description,
     decoded: {
       functionName: "lifi.tron.bridge",

@@ -5,6 +5,7 @@ import { join as pjoin } from "node:path";
 import { encodeTransferRawData } from "./helpers/tron-raw-data-encode.js";
 import { maybeTronBandwidthResponse } from "./helpers/tron-bandwidth-mock.js";
 import { setConfigDirForTesting } from "../src/config/user-config.js";
+import { extendRawDataExpiration } from "../src/modules/tron/expiration.js";
 
 /**
  * Phase-3 (TRON USB HID signing) tests.
@@ -45,6 +46,17 @@ const TRANSFER_1TRX_OTHER_TO_DEVICE = encodeTransferRawData({
   to: DEVICE_ADDRESS,
   amountSun: 1_000_000n,
 });
+// Issue #280: buildTronNativeSend now extends raw_data.expiration to
+// the protocol max (24h) after TronGrid returns. The bytes the Ledger
+// signs are the EXTENDED form, not the original fixture. Pre-compute
+// the extended versions so signTransaction-call assertions match what
+// the production path actually hands to the device.
+const TRANSFER_1TRX_DEVICE_TO_OTHER_EXTENDED = extendRawDataExpiration(
+  TRANSFER_1TRX_DEVICE_TO_OTHER,
+).rawDataHex;
+const TRANSFER_1TRX_OTHER_TO_DEVICE_EXTENDED = extendRawDataExpiration(
+  TRANSFER_1TRX_OTHER_TO_DEVICE,
+).rawDataHex;
 const GOOD_SIG = "a".repeat(130);
 
 function makeTrxStub(overrides: Partial<TrxStub> = {}): TrxStub {
@@ -253,7 +265,7 @@ describe("sendTransaction — TRON handle routing", () => {
     expect(hasTronHandle(tx.handle!)).toBe(false);
     expect(trxInstance.signTransaction).toHaveBeenCalledWith(
       "44'/195'/0'/0/0",
-      TRANSFER_1TRX_DEVICE_TO_OTHER,
+      TRANSFER_1TRX_DEVICE_TO_OTHER_EXTENDED,
       []
     );
   });
@@ -446,7 +458,7 @@ describe("pair_ledger_tron + get_ledger_status", () => {
     expect(result.txHash).toBe("ef".repeat(32));
     expect(trxInstance.signTransaction).toHaveBeenCalledWith(
       "44'/195'/1'/0/0",
-      TRANSFER_1TRX_OTHER_TO_DEVICE,
+      TRANSFER_1TRX_OTHER_TO_DEVICE_EXTENDED,
       []
     );
   });
