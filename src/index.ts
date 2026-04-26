@@ -67,6 +67,8 @@ import { getPortfolioDiff } from "./modules/diff/index.js";
 import { getPortfolioDiffInput } from "./modules/diff/schemas.js";
 import { getDailyBriefing } from "./modules/digest/index.js";
 import { getDailyBriefingInput } from "./modules/digest/schemas.js";
+import { getPnlSummary } from "./modules/pnl/index.js";
+import { getPnlSummaryInput } from "./modules/pnl/schemas.js";
 import { getPortfolioSummaryInput } from "./modules/portfolio/schemas.js";
 
 import { getVaultPilotConfigStatus } from "./modules/diagnostics/index.js";
@@ -1473,11 +1475,11 @@ async function main() {
     handler(getPortfolioSummary)
   );
 
-  registerTool(server, 
+  registerTool(server,
     "get_portfolio_diff",
     {
       description:
-        "Decompose what changed in the user's portfolio over a time window — the AI version of an account statement. Returns the top-level USD change, broken down by chain and per-asset into: price moves (USD impact of price change on what was held the entire window), net deposits / withdrawals (sum of priced external transfers), and 'other' (the residual — interest accrual, swap legs, MEV, anything not cleanly attributable to price or external flow). Supports `wallet` (EVM), `tronAddress`, `solanaAddress`, `bitcoinAddress` — at least one required. Window: 24h / 7d / 30d / ytd. Returns BOTH a structured envelope AND a pre-rendered narrative string suitable for verbatim relay (control via `format`). Distinct from `get_portfolio_summary` (which gives current state) and the planned `get_pnl_summary` (which gives a single number) — this tool gives narrative decomposition. v1 caveats: history fetcher caps at ~50 items per chain, so very active wallets may under-count flows (response surfaces `truncated: true`); DeFi-position interest accrual collapses into the `otherEffectUsd` residual rather than its own bucket; Solana program-interaction txs (Jupiter swaps, MarginFi actions, etc.) are skipped from net-flow accounting (their balance deltas mix swap legs); Bitcoin shows current balance only (no in-window flow accounting yet).",
+        "Decompose what changed in the user's portfolio over a time window — the AI version of an account statement. Returns the top-level USD change, broken down by chain and per-asset into: price moves (USD impact of price change on what was held the entire window), net deposits / withdrawals (sum of priced external transfers), and 'other' (the residual — interest accrual, swap legs, MEV, anything not cleanly attributable to price or external flow). Supports `wallet` (EVM), `tronAddress`, `solanaAddress`, `bitcoinAddress` — at least one required. Window: 24h / 7d / 30d / ytd. Returns BOTH a structured envelope AND a pre-rendered narrative string suitable for verbatim relay (control via `format`). Distinct from `get_portfolio_summary` (which gives current state) and `get_pnl_summary` (which gives the single net-PnL number) — this tool gives narrative decomposition. v1 caveats: history fetcher caps at ~50 items per chain, so very active wallets may under-count flows (response surfaces `truncated: true`); DeFi-position interest accrual collapses into the `otherEffectUsd` residual rather than its own bucket; Solana program-interaction txs (Jupiter swaps, MarginFi actions, etc.) are skipped from net-flow accounting (their balance deltas mix swap legs); Bitcoin shows current balance only (no in-window flow accounting yet).",
       inputSchema: getPortfolioDiffInput.shape,
     },
     handler(getPortfolioDiff)
@@ -1495,6 +1497,16 @@ async function main() {
       inputSchema: getDailyBriefingInput.shape,
     },
     handler(getDailyBriefing)
+  );
+
+  registerTool(server,
+    "get_pnl_summary",
+    {
+      description:
+        "Wallet-level net PnL over a preset time window across EVM (Ethereum/Arbitrum/Polygon/Base/Optimism), TRON, and Solana. Returns the headline `pnlUsd` (= ending value − starting value − net user contribution), with per-chain and per-asset breakdown. Math: starting quantity per asset is reconstructed as `currentQty − netFlowQty` (clamped at zero when negative — user received the asset entirely within the window), priced at the period's start via DefiLlama historical, then `pnlUsd = walletValueChange − (inflowsUsd − outflowsUsd)`. Use this for the simple 'how much did I make?' question; pair with `get_portfolio_diff` for the same window when the user wants the price-vs-quantity decomposition narrative. Periods: 24h / 7d / 30d / ytd / inception (capped at 365d in v1 — \"since wallet creation\" is not literal because the underlying history fetcher caps at ~50 items per chain). At least one of `wallet` / `tronAddress` / `solanaAddress` is required. v1 caveats: wallet token balances only (DeFi position interest accrual collapses into the residual); gas costs not subtracted; Solana program-interaction txs (Jupiter swaps, MarginFi actions, native staking actions) are skipped from net-flow accounting because their balance deltas mix intra-tx swap legs; truncation flagged when history caps. Bitcoin is intentionally NOT supported in v1 — the BTC path lacks in-window flow accounting and a price-effect-only number would be misleading.",
+      inputSchema: getPnlSummaryInput.shape,
+    },
+    handler(getPnlSummary)
   );
 
   registerTool(server,

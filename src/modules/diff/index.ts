@@ -156,17 +156,27 @@ async function snapshotBitcoin(address: string): Promise<AssetSnapshot[]> {
 }
 
 /**
- * Top-level entry. Reads inputs, fans out per-chain analysis, sums
- * everything, optionally renders the narrative.
+ * Compose per-chain diff slices for an arbitrary timestamp window. Shared
+ * core for `getPortfolioDiff` (this file's public entry point, fixed
+ * 24h/7d/30d/ytd windows) and `getPnlSummary` (`src/modules/pnl/index.ts`,
+ * adds `inception` capped at 365d). Both tools agree on the per-chain
+ * math by construction since they call this same composer — no risk of
+ * drift between the two surfaces' numbers.
  */
-export async function getPortfolioDiff(
-  args: GetPortfolioDiffArgs,
-): Promise<PortfolioDiffSummary> {
-  assertAtLeastOneAddress(args);
-  const { startSec, endSec } = resolveWindow(args.window);
-  const windowStartIso = new Date(startSec * 1000).toISOString();
-  const windowEndIso = new Date(endSec * 1000).toISOString();
-
+export async function composePerChainDiff(args: {
+  wallet?: string;
+  tronAddress?: string;
+  solanaAddress?: string;
+  bitcoinAddress?: string;
+  startSec: number;
+  endSec: number;
+}): Promise<{
+  slices: ChainDiffSlice[];
+  notes: string[];
+  anyMissedPrice: boolean;
+  anyTruncated: boolean;
+}> {
+  const { startSec, endSec } = args;
   const slices: ChainDiffSlice[] = [];
   const notes: string[] = [];
   let anyMissedPrice = false;
@@ -322,6 +332,33 @@ export async function getPortfolioDiff(
       notes.push(`Skipped BTC: ${(e as Error).message ?? "unknown error"}.`);
     }
   }
+
+  return { slices, notes, anyMissedPrice, anyTruncated };
+}
+
+/**
+ * Top-level entry. Reads inputs, fans out per-chain analysis (via
+ * `composePerChainDiff`), sums everything, optionally renders the
+ * narrative.
+ */
+export async function getPortfolioDiff(
+  args: GetPortfolioDiffArgs,
+): Promise<PortfolioDiffSummary> {
+  assertAtLeastOneAddress(args);
+  const { startSec, endSec } = resolveWindow(args.window);
+  const windowStartIso = new Date(startSec * 1000).toISOString();
+  const windowEndIso = new Date(endSec * 1000).toISOString();
+
+  const composed = await composePerChainDiff({
+    ...(args.wallet ? { wallet: args.wallet } : {}),
+    ...(args.tronAddress ? { tronAddress: args.tronAddress } : {}),
+    ...(args.solanaAddress ? { solanaAddress: args.solanaAddress } : {}),
+    ...(args.bitcoinAddress ? { bitcoinAddress: args.bitcoinAddress } : {}),
+    startSec,
+    endSec,
+  });
+  const { slices, anyMissedPrice, anyTruncated } = composed;
+  const notes = [...composed.notes];
 
   // Aggregate top-level numbers from slices.
   const startingValueUsd = round2(
