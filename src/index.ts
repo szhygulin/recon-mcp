@@ -160,6 +160,7 @@ import {
   prepareNativeSend,
   prepareWethUnwrap,
   prepareTokenSend,
+  prepareRevokeApproval,
   previewSend,
   previewSolanaSend,
   sendTransaction,
@@ -238,6 +239,7 @@ import {
   prepareNativeSendInput,
   prepareWethUnwrapInput,
   prepareTokenSendInput,
+  prepareRevokeApprovalInput,
   previewSendInput,
   previewSolanaSendInput,
   sendTransactionInput,
@@ -3087,7 +3089,7 @@ async function main() {
     txHandler("prepare_weth_unwrap", prepareWethUnwrap)
   );
 
-  registerTool(server, 
+  registerTool(server,
     "prepare_token_send",
     {
       description:
@@ -3095,6 +3097,16 @@ async function main() {
       inputSchema: prepareTokenSendInput.shape,
     },
     txHandler("prepare_token_send", prepareTokenSend)
+  );
+
+  registerTool(server,
+    "prepare_revoke_approval",
+    {
+      description:
+        "Build an unsigned `approve(spender, 0)` transaction that revokes the allowance the wallet previously granted to `spender` on `token`. Pre-flight check refuses when the live allowance is already 0 — that call would burn gas for nothing, and almost certainly means the user named the wrong (token, spender) pair. Resolves a friendly spender label from the canonical CONTRACTS table when one matches (Aave V3 Pool, Uniswap V3 SwapRouter02, Lido stETH, Compound V3 cUSDCv3, Morpho Blue, etc.) so the description + Ledger preview reads as \"Revoke USDC allowance for Aave V3 Pool (0x...)\" instead of a raw hex address. Description includes the previous allowance amount so the user sees what's being zeroed out. EVM-only — TRC-20 has the same `approve(spender, value)` shape but its prepare path runs through the TRON builder pipeline; surface in a `prepare_tron_trc20_revoke` if asked. Pair with the read-side `get_token_allowances` to enumerate what's currently approved.",
+      inputSchema: prepareRevokeApprovalInput.shape,
+    },
+    txHandler("prepare_revoke_approval", prepareRevokeApproval)
   );
 
   // ---- Module 8: Compound V3 ----
