@@ -1075,6 +1075,32 @@ export const getBitcoinFeeEstimatesInput = z.object({});
 
 export const getBitcoinBlockTipInput = z.object({});
 
+export const getLitecoinBlockTipInput = z.object({});
+
+export const getBitcoinBlocksRecentInput = z.object({
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .default(144)
+    .describe(
+      "How many recent blocks to fetch, newest-first. Default 144 (~one day on BTC). Capped at 200 to bound HTTP fan-out on free-tier indexers."
+    ),
+});
+
+export const getLitecoinBlocksRecentInput = z.object({
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .default(144)
+    .describe(
+      "How many recent blocks to fetch, newest-first. Default 144 (~6h on LTC at 2.5-min blocks). Capped at 200 to bound HTTP fan-out on litecoinspace.org's tighter free tier."
+    ),
+});
+
 export const getBitcoinAccountBalanceInput = z.object({
   accountIndex: z
     .number()
@@ -1179,6 +1205,9 @@ export type GetBitcoinBalanceArgs = z.infer<typeof getBitcoinBalanceInput>;
 export type GetBitcoinBalancesArgs = z.infer<typeof getBitcoinBalancesInput>;
 export type GetBitcoinFeeEstimatesArgs = z.infer<typeof getBitcoinFeeEstimatesInput>;
 export type GetBitcoinBlockTipArgs = z.infer<typeof getBitcoinBlockTipInput>;
+export type GetLitecoinBlockTipArgs = z.infer<typeof getLitecoinBlockTipInput>;
+export type GetBitcoinBlocksRecentArgs = z.infer<typeof getBitcoinBlocksRecentInput>;
+export type GetLitecoinBlocksRecentArgs = z.infer<typeof getLitecoinBlocksRecentInput>;
 export type GetBitcoinAccountBalanceArgs = z.infer<
   typeof getBitcoinAccountBalanceInput
 >;

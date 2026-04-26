@@ -92,6 +92,9 @@ import {
   getBitcoinBalances,
   getBitcoinFeeEstimates,
   getBitcoinBlockTip,
+  getLitecoinBlockTip,
+  getBitcoinBlocksRecent,
+  getLitecoinBlocksRecent,
   getBitcoinAccountBalance,
   rescanBitcoinAccount,
   getBitcoinTxHistory,
@@ -158,6 +161,9 @@ import {
   getBitcoinBalancesInput,
   getBitcoinFeeEstimatesInput,
   getBitcoinBlockTipInput,
+  getLitecoinBlockTipInput,
+  getBitcoinBlocksRecentInput,
+  getLitecoinBlocksRecentInput,
   getBitcoinAccountBalanceInput,
   rescanBitcoinAccountInput,
   getBitcoinTxHistoryInput,
@@ -1940,6 +1946,55 @@ async function main() {
       inputSchema: getBitcoinBlockTipInput.shape,
     },
     handler(getBitcoinBlockTip)
+  );
+
+  server.registerTool(
+    "get_btc_blocks_recent",
+    {
+      description:
+        "READ-ONLY — recent Bitcoin block headers, newest-first (default 144 ≈ one " +
+        "day; capped at 200). Each entry: height, 64-hex hash, header timestamp, " +
+        "tx count, size, weight (when exposed), and — on indexers that surface it " +
+        "(mempool.space) — the mining pool name. Backbone for chain-health " +
+        "questions: 'is the chain producing blocks at the expected rate?', 'any " +
+        "empty blocks recently?', 'who's mining most of the recent window?'. " +
+        "Used internally by `get_market_incident_status({ protocol: 'bitcoin' })` " +
+        "to compute hash_cliff, empty_block_streak, and miner_concentration. " +
+        "Issue #233 v1.",
+      inputSchema: getBitcoinBlocksRecentInput.shape,
+    },
+    handler(getBitcoinBlocksRecent)
+  );
+
+  server.registerTool(
+    "get_ltc_block_tip",
+    {
+      description:
+        "READ-ONLY — current Litecoin mainnet chain tip. Mirror of `get_btc_block_tip` " +
+        "for Litecoin: height, 64-hex hash, timestamp, ageSeconds, optional MTP + " +
+        "difficulty. Backed by the configured indexer (litecoinspace.org default; " +
+        "`LITECOIN_INDEXER_URL` env var or `litecoinIndexerUrl` user-config override " +
+        "for self-hosted Esplora). LTC blocks target 2.5 minutes — a 10-min gap is " +
+        "well within Poisson normal but worth surfacing. Issue #233 v1 (this tool " +
+        "was missing from the MCP surface despite the underlying indexer method " +
+        "existing in code).",
+      inputSchema: getLitecoinBlockTipInput.shape,
+    },
+    handler(getLitecoinBlockTip)
+  );
+
+  server.registerTool(
+    "get_ltc_blocks_recent",
+    {
+      description:
+        "READ-ONLY — recent Litecoin block headers, newest-first (default 144 ≈ 6h " +
+        "at 2.5-min blocks; capped at 200). Mirror of `get_btc_blocks_recent` for " +
+        "LTC. Used internally by `get_market_incident_status({ protocol: 'litecoin' })` " +
+        "to compute hash_cliff, empty_block_streak, and miner_concentration. " +
+        "Issue #233 v1.",
+      inputSchema: getLitecoinBlocksRecentInput.shape,
+    },
+    handler(getLitecoinBlocksRecent)
   );
 
   server.registerTool(

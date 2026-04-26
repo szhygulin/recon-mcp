@@ -366,6 +366,10 @@ describe("get_market_incident_status (compound-v3)", () => {
         protocol: "morpho-blue" as unknown as "compound-v3",
         chain: "ethereum",
       })
-    ).rejects.toThrow(/compound-v3|aave-v3/);
+      // After the v1 multi-mode refactor (compound-v3 / aave-v3 / bitcoin /
+      // litecoin / solana / tron / solana-protocols), the dispatcher's
+      // exhaustive `default:` branch surfaces the rejected protocol name in
+      // the error so the agent can tell the user what it asked for.
+    ).rejects.toThrow(/morpho-blue/);
   });
 });

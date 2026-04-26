@@ -200,6 +200,30 @@ export interface LitecoinIndexer {
    * sign cleanly. Issue #213.
    */
   getTxHex(txid: string): Promise<string>;
+  /**
+   * Fetch the most recent N block headers, newest-first. Mirrors
+   * `BitcoinIndexer.getRecentBlocks` — same Esplora pagination pattern,
+   * same 200-block cap. Backbone for chain-health signals
+   * (hash_cliff, empty_block_streak, miner_concentration). Issue #233 v1.
+   */
+  getRecentBlocks(n: number): Promise<LitecoinBlockSummary[]>;
+}
+
+/**
+ * Subset of Esplora's per-block JSON we surface for chain-health
+ * signals. Mirrors `BitcoinBlockSummary` shape exactly. `poolName` is
+ * indexer-specific (mempool.space-style `extras.pool.name`); plain
+ * Esplora deployments leave it undefined and `miner_concentration`
+ * degrades to `available: false`.
+ */
+export interface LitecoinBlockSummary {
+  height: number;
+  hash: string;
+  timestamp: number;
+  txCount: number;
+  size: number;
+  weight?: number;
+  poolName?: string;
 }
 
 /**
@@ -538,6 +562,57 @@ class EsploraIndexer implements LitecoinIndexer {
       );
     }
     return hex;
+  }
+
+  async getRecentBlocks(n: number): Promise<LitecoinBlockSummary[]> {
+    // Mirrors `BitcoinIndexer.getRecentBlocks` — same Esplora pagination,
+    // same 200-block cap. LTC's litecoinspace.org tier is tighter than
+    // mempool.space's so the cap matters more here; the existing
+    // LITECOIN_INDEXER_PARALLELISM=8 guardrail is unrelated (this method
+    // is sequential by page, not parallel).
+    const want = Math.min(Math.max(1, Math.floor(n)), 200);
+    interface EsploraBlockListEntry {
+      id?: string;
+      height?: number;
+      timestamp?: number;
+      tx_count?: number;
+      size?: number;
+      weight?: number;
+      extras?: { pool?: { name?: string } };
+    }
+    const out: LitecoinBlockSummary[] = [];
+    let cursor: string | undefined;
+    while (out.length < want) {
+      const path = cursor === undefined ? "/blocks" : `/blocks/${cursor}`;
+      const page = await this.getJson<EsploraBlockListEntry[]>(path);
+      if (!Array.isArray(page) || page.length === 0) break;
+      for (const b of page) {
+        if (
+          typeof b.height !== "number" ||
+          typeof b.timestamp !== "number" ||
+          typeof b.id !== "string"
+        ) {
+          continue;
+        }
+        out.push({
+          height: b.height,
+          hash: b.id,
+          timestamp: b.timestamp,
+          txCount: typeof b.tx_count === "number" ? b.tx_count : 0,
+          size: typeof b.size === "number" ? b.size : 0,
+          ...(typeof b.weight === "number" ? { weight: b.weight } : {}),
+          ...(b.extras?.pool?.name ? { poolName: b.extras.pool.name } : {}),
+        });
+        if (out.length >= want) break;
+      }
+      const lowest = page.reduce<number | null>((min, b) => {
+        if (typeof b.height !== "number") return min;
+        return min === null || b.height < min ? b.height : min;
+      }, null);
+      if (lowest === null || lowest <= 0) break;
+      cursor = String(lowest - 1);
+    }
+    return out;
   }
 
   async getBlockTip(): Promise<LitecoinBlockTip> {
