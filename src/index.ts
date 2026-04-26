@@ -2002,13 +2002,18 @@ async function main() {
         "app open on-screen. Ledger Live's WalletConnect relay does not expose " +
         "Litecoin accounts to dApps, so signing goes over USB HID via " +
         "`@ledgerhq/hw-app-btc` (the same SDK as Bitcoin, with `currency:'litecoin'` " +
-        "selecting Litecoin-specific encoding). One call enumerates all four " +
-        "address types (legacy `L…`, p2sh-segwit `M…`, native segwit `ltc1q…`, " +
-        "taproot `ltc1p…`) for the given account index. BIP-44 coin_type 2. " +
+        "selecting Litecoin-specific encoding). One call enumerates the four " +
+        "BIP-44 address types (legacy `L…`, p2sh-segwit `M…`, native segwit " +
+        "`ltc1q…`, taproot `ltc1p…`) for the given account index. BIP-44 coin_type 2. " +
+        "Per-type fault-tolerant: each address-type walk runs independently, so " +
+        "one type's failure (e.g. the Ledger Litecoin app currently rejects " +
+        "`bech32m`/taproot with 'Unsupported address format bech32m') does NOT " +
+        "abort the others — the failed type is recorded under `skipped[]` in " +
+        "the response and the remaining three are paired and persisted. " +
         "Note: Litecoin Core has not activated Taproot on mainnet, so `ltc1p…` " +
-        "outputs are not yet spendable — the address is derived for forward " +
-        "compat. All paired entries surface under the `litecoin: [...]` section " +
-        "of `get_ledger_status`.",
+        "outputs would not be spendable anyway — taproot pairing is effectively " +
+        "forward-compat only. All paired entries surface under the `litecoin: " +
+        "[...]` section of `get_ledger_status`.",
       inputSchema: pairLedgerLitecoinInput.shape,
     },
     handler(pairLedgerLitecoin, { toolName: "pair_ledger_ltc" })

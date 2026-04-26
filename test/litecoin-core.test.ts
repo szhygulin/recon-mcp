@@ -264,6 +264,91 @@ describe("pair_ledger_ltc", () => {
       /Litecoin is required/,
     );
   });
+
+  // Issue #231 regression: the Ledger Litecoin app throws unconditionally
+  // on `format: "bech32m"` (taproot). Pre-fix, this took out the entire
+  // pairing call and left legacy/p2sh/segwit unpaired. Fix: per-type
+  // fault tolerance — record taproot under `skipped[]`, persist the
+  // other three, return success.
+  it("survives taproot's bech32m rejection — pairs the other three types and records taproot under skipped[]", async () => {
+    const fixturesByPurpose = new Map<number, ReturnType<typeof makeAccountFixture>>();
+    for (const purpose of [44, 49, 84, 86]) {
+      fixturesByPurpose.set(purpose, makeAccountFixture(purpose, 0));
+    }
+    getWalletPublicKeyMock.mockImplementation(
+      (path: string, opts?: { format?: string }) => {
+        // Mirror the real Ledger LTC app behavior at
+        // node_modules/@ledgerhq/hw-app-btc/src/BtcOld.ts:93.
+        if (opts?.format === "bech32m") {
+          throw new Error("Unsupported address format bech32m");
+        }
+        const m = /^(\d+)'\/2'\/(\d+)'$/.exec(path);
+        if (!m) {
+          throw new Error(`unexpected non-account path: ${path}`);
+        }
+        const purpose = Number(m[1]);
+        const fixture = fixturesByPurpose.get(purpose);
+        if (!fixture) throw new Error(`no fixture for purpose ${purpose}`);
+        return Promise.resolve({
+          publicKey: fixture.publicKeyHex,
+          bitcoinAddress: "irrelevant-at-account-level",
+          chainCode: fixture.chainCodeHex,
+        });
+      },
+    );
+
+    const { pairLedgerLitecoin } = await import(
+      "../src/modules/execution/index.js"
+    );
+    const { getLitecoinIndexer } = await import(
+      "../src/modules/litecoin/indexer.js"
+    );
+    const indexer = getLitecoinIndexer();
+    vi.spyOn(indexer, "getBalance").mockResolvedValue({
+      address: "any",
+      confirmedSats: 0n,
+      mempoolSats: 0n,
+      totalSats: 0n,
+      txCount: 0,
+    });
+
+    const result = await pairLedgerLitecoin({ accountIndex: 0, gapLimit: 1 });
+    // Three types succeed (legacy / p2sh-segwit / segwit), taproot is
+    // skipped — pre-fix this whole call threw "Unsupported address
+    // format bech32m" with zero entries persisted.
+    expect(result.addresses.length).toBe(3);
+    const types = result.addresses.map((a) => a.addressType).sort();
+    expect(types).toEqual(["legacy", "p2sh-segwit", "segwit"]);
+    expect(result.skipped.length).toBe(1);
+    expect(result.skipped[0].addressType).toBe("taproot");
+    expect(result.skipped[0].reason).toMatch(/bech32m/);
+    expect(result.instructions).toMatch(/Skipped 1\/4 address types \(taproot\)/);
+
+    // The persisted cache must reflect the same shape — three entries,
+    // no taproot.
+    const { getPairedLtcAddresses } = await import(
+      "../src/signing/ltc-usb-signer.js"
+    );
+    const cached = getPairedLtcAddresses();
+    expect(cached.length).toBe(3);
+    expect(cached.some((c) => c.addressType === "taproot")).toBe(false);
+  });
+
+  // If EVERY type fails (e.g. wrong app version blocking all paths), we
+  // should not silently "succeed" with zero entries — that would clear
+  // the existing cache and leave the user worse off. Throw with the
+  // collected per-type reasons so the caller can diagnose.
+  it("throws when every address-type walk fails (does not wipe the cache)", async () => {
+    getWalletPublicKeyMock.mockImplementation(() => {
+      throw new Error("device disconnected mid-call");
+    });
+    const { pairLedgerLitecoin } = await import(
+      "../src/modules/execution/index.js"
+    );
+    await expect(
+      pairLedgerLitecoin({ accountIndex: 0, gapLimit: 1 }),
+    ).rejects.toThrow(/every address-type walk failed/);
+  });
 });
 
 // ---- Send-side rejection of legacy 3-prefix recipients ----------------

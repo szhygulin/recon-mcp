@@ -331,6 +331,7 @@ export async function scanLtcAccount(args: {
 }): Promise<{
   appVersion: string;
   entries: Array<DerivedAddress & { txCount: number }>;
+  skipped: Array<{ addressType: LtcAddressType; reason: string }>;
 }> {
   const accountIndex = args.accountIndex;
   const gapLimit = args.gapLimit ?? DEFAULT_LTC_GAP_LIMIT;
@@ -359,50 +360,65 @@ export async function scanLtcAccount(args: {
       }
 
       const all: Array<DerivedAddress & { txCount: number }> = [];
+      const skipped: Array<{ addressType: LtcAddressType; reason: string }> = [];
       for (const addressType of LTC_ADDRESS_TYPES) {
-        // ONE device call per type — pull the account-level (publicKey,
-        // chainCode). Everything below this in the BIP-44 tree is
-        // non-hardened and host-derivable.
-        const accountPath = ltcAccountLevelPath(accountIndex, addressType);
-        const { format } = TYPE_META[addressType];
-        const accountResp = await app.getWalletPublicKey(accountPath, {
-          format,
-        });
-        const node: AccountNode = accountNodeFromLedgerResponse({
-          publicKeyHex: accountResp.publicKey,
-          chainCodeHex: accountResp.chainCode,
-          addressFormat: format,
-        });
+        // Per-type fault tolerance (issue #231): the Ledger Litecoin app
+        // throws unconditionally on `format: "bech32m"` (taproot), and
+        // pre-#231 a single bech32m throw aborted the entire scan,
+        // leaving even legacy/p2sh/segwit unpaired. Wrap each type's
+        // device call + chain walks in try/catch so one type's failure
+        // is recorded as `skipped` and the rest of the address-types
+        // still pair. When Litecoin Core activates Taproot AND the
+        // Ledger LTC app gains bech32m support, this loop becomes a
+        // no-op skip-recording pass — no code change needed.
+        try {
+          // ONE device call per type — pull the account-level (publicKey,
+          // chainCode). Everything below this in the BIP-44 tree is
+          // non-hardened and host-derivable.
+          const accountPath = ltcAccountLevelPath(accountIndex, addressType);
+          const { format } = TYPE_META[addressType];
+          const accountResp = await app.getWalletPublicKey(accountPath, {
+            format,
+          });
+          const node: AccountNode = accountNodeFromLedgerResponse({
+            publicKeyHex: accountResp.publicKey,
+            chainCodeHex: accountResp.chainCode,
+            addressFormat: format,
+          });
 
-        const receive = await scanChainHostSide({
-          node,
-          accountIndex,
-          addressType,
-          chain: 0,
-          gapLimit,
-          appVersion: appVer.version,
-          fetchTxCount: args.fetchTxCount,
-        });
-        for (let i = 0; i < receive.addresses.length; i++) {
-          all.push({ ...receive.addresses[i], txCount: receive.txCounts[i] });
-        }
-        // No receives ever → no change can exist. Skip the change-chain
-        // walk entirely (saves the entire change-chain HTTP round).
-        if (receive.empty) continue;
-        const change = await scanChainHostSide({
-          node,
-          accountIndex,
-          addressType,
-          chain: 1,
-          gapLimit,
-          appVersion: appVer.version,
-          fetchTxCount: args.fetchTxCount,
-        });
-        for (let i = 0; i < change.addresses.length; i++) {
-          all.push({ ...change.addresses[i], txCount: change.txCounts[i] });
+          const receive = await scanChainHostSide({
+            node,
+            accountIndex,
+            addressType,
+            chain: 0,
+            gapLimit,
+            appVersion: appVer.version,
+            fetchTxCount: args.fetchTxCount,
+          });
+          for (let i = 0; i < receive.addresses.length; i++) {
+            all.push({ ...receive.addresses[i], txCount: receive.txCounts[i] });
+          }
+          // No receives ever → no change can exist. Skip the change-chain
+          // walk entirely (saves the entire change-chain HTTP round).
+          if (receive.empty) continue;
+          const change = await scanChainHostSide({
+            node,
+            accountIndex,
+            addressType,
+            chain: 1,
+            gapLimit,
+            appVersion: appVer.version,
+            fetchTxCount: args.fetchTxCount,
+          });
+          for (let i = 0; i < change.addresses.length; i++) {
+            all.push({ ...change.addresses[i], txCount: change.txCounts[i] });
+          }
+        } catch (e) {
+          const reason = e instanceof Error ? e.message : String(e);
+          skipped.push({ addressType, reason });
         }
       }
-      return { appVersion: appVer.version, entries: all };
+      return { appVersion: appVer.version, entries: all, skipped };
     } finally {
       await (transport as LtcLedgerTransport).close().catch(() => {});
     }

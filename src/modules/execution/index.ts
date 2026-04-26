@@ -1098,6 +1098,10 @@ export async function pairLedgerLitecoin(
     addressIndex: number;
     txCount: number;
   }>;
+  skipped: Array<{
+    addressType: "legacy" | "p2sh-segwit" | "segwit" | "taproot";
+    reason: string;
+  }>;
   summary: { totalDerived: number; used: number; unused: number };
   instructions: string;
 }> {
@@ -1131,6 +1135,19 @@ export async function pairLedgerLitecoin(
     }
     throw e;
   }
+  // Issue #231: scanLtcAccount is per-type fault-tolerant — a single
+  // type's failure (e.g. taproot's bech32m on the current Ledger LTC
+  // app) records into `skipped` rather than aborting. If EVERY type
+  // failed, treat that as a real pairing failure: don't drop the
+  // existing cache and don't claim success.
+  if (derived.entries.length === 0) {
+    const reasons = derived.skipped
+      .map((s) => `${s.addressType}: ${s.reason}`)
+      .join("; ");
+    throw new Error(
+      `pair_ledger_ltc: every address-type walk failed. ${reasons || "no per-type errors recorded"}`,
+    );
+  }
   clearPairedLtcAccount(accountIndex);
   for (const entry of derived.entries) {
     setPairedLtcAddress({
@@ -1146,6 +1163,11 @@ export async function pairLedgerLitecoin(
     });
   }
   const used = derived.entries.filter((e) => e.txCount > 0).length;
+  const succeededTypes = new Set(derived.entries.map((e) => e.addressType)).size;
+  const totalTypes = succeededTypes + derived.skipped.length;
+  const skippedNote = derived.skipped.length
+    ? ` Skipped ${derived.skipped.length}/${totalTypes} address types (${derived.skipped.map((s) => s.addressType).join(", ")}) — see \`skipped[]\` for per-type reasons. Common case: the Ledger Litecoin app does not support bech32m, so taproot (\`ltc1p…\`) derivation throws "Unsupported address format bech32m". Litecoin Core has not activated Taproot on mainnet anyway, so taproot pairing is effectively forward-compat only.`
+    : "";
   return {
     accountIndex,
     gapLimit,
@@ -1158,6 +1180,7 @@ export async function pairLedgerLitecoin(
       addressIndex: e.addressIndex,
       txCount: e.txCount,
     })),
+    skipped: derived.skipped,
     summary: {
       totalDerived: derived.entries.length,
       used,
@@ -1170,7 +1193,8 @@ export async function pairLedgerLitecoin(
       gapLimit +
       " consecutive empty addresses were observed. Use `get_ltc_balance` against " +
       "any cached address. Re-run `pair_ledger_ltc` to refresh; previously-cached " +
-      "entries for this accountIndex are dropped before the new scan persists.",
+      "entries for this accountIndex are dropped before the new scan persists." +
+      skippedNote,
   };
 }
 
