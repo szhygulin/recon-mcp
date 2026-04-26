@@ -8,6 +8,21 @@ import { readCometPausedActions, type CometPausedAction } from "../compound/inde
 import { round } from "../../data/format.js";
 import type { SupportedChain } from "../../types/index.js";
 import type { GetMarketIncidentStatusArgs } from "./schemas.js";
+import {
+  getBitcoinChainHealthSignals,
+  getLitecoinChainHealthSignals,
+  type ChainBaseLayerIncidentStatus,
+} from "./chain-utxo.js";
+import {
+  getSolanaChainHealthSignals,
+  getSolanaProgramLayerSignals,
+  type SolanaChainIncidentStatus,
+  type SolanaProgramIncidentStatus,
+} from "./chain-solana.js";
+import {
+  getTronChainHealthSignals,
+  type TronChainIncidentStatus,
+} from "./chain-tron.js";
 
 /**
  * "Is anything on fire right now in protocol X on chain Y."
@@ -74,7 +89,11 @@ export interface AaveMarketIncidentStatus {
 
 export type MarketIncidentStatus =
   | CompoundMarketIncidentStatus
-  | AaveMarketIncidentStatus;
+  | AaveMarketIncidentStatus
+  | ChainBaseLayerIncidentStatus
+  | SolanaChainIncidentStatus
+  | TronChainIncidentStatus
+  | SolanaProgramIncidentStatus;
 
 const HIGH_UTILIZATION_FLAG = 0.95;
 const RAY = 10n ** 27n;
@@ -86,15 +105,28 @@ export async function getMarketIncidentStatus(
   args: GetMarketIncidentStatusArgs
 ): Promise<MarketIncidentStatus> {
   const chain = args.chain as SupportedChain;
-  if (args.protocol === "compound-v3") {
-    return getCompoundIncidentStatus(chain);
+  switch (args.protocol) {
+    case "compound-v3":
+      return getCompoundIncidentStatus(chain);
+    case "aave-v3":
+      return getAaveIncidentStatus(chain);
+    case "bitcoin":
+      return getBitcoinChainHealthSignals();
+    case "litecoin":
+      return getLitecoinChainHealthSignals();
+    case "solana":
+      return getSolanaChainHealthSignals();
+    case "tron":
+      return getTronChainHealthSignals();
+    case "solana-protocols":
+      return getSolanaProgramLayerSignals(args.wallet);
+    default: {
+      const _exhaustive: never = args.protocol;
+      throw new Error(
+        `get_market_incident_status: unhandled protocol ${String(_exhaustive)}.`,
+      );
+    }
   }
-  if (args.protocol === "aave-v3") {
-    return getAaveIncidentStatus(chain);
-  }
-  throw new Error(
-    `get_market_incident_status supports protocol="compound-v3" or "aave-v3". Requested ${args.protocol}.`
-  );
 }
 
 async function getCompoundIncidentStatus(

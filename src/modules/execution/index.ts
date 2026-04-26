@@ -135,6 +135,9 @@ import type {
   GetBitcoinBalancesArgs,
   GetBitcoinFeeEstimatesArgs,
   GetBitcoinBlockTipArgs,
+  GetLitecoinBlockTipArgs,
+  GetBitcoinBlocksRecentArgs,
+  GetLitecoinBlocksRecentArgs,
   GetBitcoinAccountBalanceArgs,
   RescanBitcoinAccountArgs,
   GetBitcoinTxHistoryArgs,
@@ -738,6 +741,24 @@ export async function getBitcoinBlockTip(_args: GetBitcoinBlockTipArgs) {
   void _args;
   const { getBitcoinIndexer } = await import("../btc/indexer.js");
   return getBitcoinIndexer().getBlockTip();
+}
+
+export async function getLitecoinBlockTip(_args: GetLitecoinBlockTipArgs) {
+  void _args;
+  const { getLitecoinIndexer } = await import("../litecoin/indexer.js");
+  return getLitecoinIndexer().getBlockTip();
+}
+
+export async function getBitcoinBlocksRecent(args: GetBitcoinBlocksRecentArgs) {
+  const { getBitcoinIndexer } = await import("../btc/indexer.js");
+  const blocks = await getBitcoinIndexer().getRecentBlocks(args.limit);
+  return { chain: "bitcoin" as const, count: blocks.length, blocks };
+}
+
+export async function getLitecoinBlocksRecent(args: GetLitecoinBlocksRecentArgs) {
+  const { getLitecoinIndexer } = await import("../litecoin/indexer.js");
+  const blocks = await getLitecoinIndexer().getRecentBlocks(args.limit);
+  return { chain: "litecoin" as const, count: blocks.length, blocks };
 }
 
 /**

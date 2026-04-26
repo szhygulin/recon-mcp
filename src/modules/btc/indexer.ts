@@ -191,6 +191,15 @@ export interface BitcoinIndexer {
    */
   getBlockTip(): Promise<BitcoinBlockTip>;
   /**
+   * Fetch the most recent N block headers, newest-first. Backbone for
+   * chain-health signals (hash_cliff, empty_block_streak, miner_concentration).
+   * Esplora's `/blocks` endpoint returns 10 blocks per call from the tip;
+   * this helper paginates via `/blocks/<startHeight>` to assemble up to
+   * `n` blocks (capped at 200 to bound HTTP load on free-tier indexers).
+   * Issue #233 v1.
+   */
+  getRecentBlocks(n: number): Promise<BitcoinBlockSummary[]>;
+  /**
    * Fetch the raw hex of a previous transaction by txid. Required for
    * `nonWitnessUtxo` population on PSBT inputs — Ledger BTC app 2.x
    * cryptographically verifies the input amount against this prev-tx
@@ -212,6 +221,27 @@ export interface BitcoinIndexer {
  * standard Esplora fields but we tolerate their absence for self-
  * hosted forks that strip them.
  */
+/**
+ * Subset of Esplora's per-block JSON we surface for chain-health
+ * signals. Standard fields available on every Esplora-compatible
+ * indexer (mempool.space, Blockstream, self-hosted Esplora).
+ *
+ * `pool` is mempool.space-specific (`/v1/blocks/<height>` returns it
+ * but standard `/blocks/<startHeight>` does not). Surfaced as optional
+ * so the `miner_concentration` signal can degrade gracefully when the
+ * indexer doesn't expose pool tags.
+ */
+export interface BitcoinBlockSummary {
+  height: number;
+  hash: string;
+  timestamp: number;
+  txCount: number;
+  size: number;
+  weight?: number;
+  /** Mempool.space `extras.pool.name` (or similar) when the indexer surfaces it. Undefined on plain Esplora. */
+  poolName?: string;
+}
+
 export interface BitcoinBlockTip {
   /** Block height — e.g. 946598. */
   height: number;
@@ -539,6 +569,63 @@ class EsploraIndexer implements BitcoinIndexer {
       );
     }
     return hex;
+  }
+
+  async getRecentBlocks(n: number): Promise<BitcoinBlockSummary[]> {
+    // Cap at 200 to bound the worst-case HTTP fan-out on free-tier
+    // indexers (mempool.space limits unauthenticated requests to ~75
+    // /quote-equivalents per 2h; 200 blocks @ 10/call = 20 calls per
+    // invocation, well under the budget).
+    const want = Math.min(Math.max(1, Math.floor(n)), 200);
+    interface EsploraBlockListEntry {
+      id?: string;
+      height?: number;
+      timestamp?: number;
+      tx_count?: number;
+      size?: number;
+      weight?: number;
+      // mempool.space-only — `extras` is on `/v1/blocks/<height>` but
+      // some endpoints fold it into `/blocks/<startHeight>` too. Best-
+      // effort field; absent on plain Esplora.
+      extras?: { pool?: { name?: string } };
+    }
+    const out: BitcoinBlockSummary[] = [];
+    let cursor: string | undefined; // undefined → request newest 10
+    while (out.length < want) {
+      const path = cursor === undefined ? "/blocks" : `/blocks/${cursor}`;
+      const page = await this.getJson<EsploraBlockListEntry[]>(path);
+      if (!Array.isArray(page) || page.length === 0) break;
+      for (const b of page) {
+        if (
+          typeof b.height !== "number" ||
+          typeof b.timestamp !== "number" ||
+          typeof b.id !== "string"
+        ) {
+          // Malformed entry; skip rather than fail the whole walk.
+          continue;
+        }
+        out.push({
+          height: b.height,
+          hash: b.id,
+          timestamp: b.timestamp,
+          txCount: typeof b.tx_count === "number" ? b.tx_count : 0,
+          size: typeof b.size === "number" ? b.size : 0,
+          ...(typeof b.weight === "number" ? { weight: b.weight } : {}),
+          ...(b.extras?.pool?.name ? { poolName: b.extras.pool.name } : {}),
+        });
+        if (out.length >= want) break;
+      }
+      // Esplora's `/blocks/<startHeight>` returns blocks in
+      // descending order starting AT `startHeight`. To get the next
+      // page we ask for one below the lowest height we just saw.
+      const lowest = page.reduce<number | null>((min, b) => {
+        if (typeof b.height !== "number") return min;
+        return min === null || b.height < min ? b.height : min;
+      }, null);
+      if (lowest === null || lowest <= 0) break;
+      cursor = String(lowest - 1);
+    }
+    return out;
   }
 
   async getBlockTip(): Promise<BitcoinBlockTip> {
