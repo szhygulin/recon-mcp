@@ -166,7 +166,10 @@ describe("buildTronNativeSend (network stubbed)", () => {
     expect(tx.chain).toBe("tron");
     expect(tx.action).toBe("native_send");
     expect(tx.from).toBe(ADDR_FROM);
-    expect(tx.txID).toBe("deadbeef".repeat(8));
+    // txID is now derived from the (post-expiration-patch) rawDataHex per
+    // TRON protocol — the stubbed response txID is overwritten in
+    // tron-tx-store. We just assert the shape.
+    expect(tx.txID).toMatch(/^[0-9a-f]{64}$/);
     expect(tx.description).toBe(`Send 1.5 TRX to ${ADDR_TO}`);
     expect(tx.decoded.functionName).toBe("TransferContract");
     expect(tx.decoded.args).toEqual({ to: ADDR_TO, amount: "1.5", symbol: "TRX" });
@@ -270,7 +273,8 @@ describe("buildTronTokenSend (network stubbed)", () => {
       amount: "2",
     });
     expect(tx.action).toBe("trc20_send");
-    expect(tx.txID).toBe("cafebabe".repeat(8));
+    // See native_send test above for why we don't assert the stub txID.
+    expect(tx.txID).toMatch(/^[0-9a-f]{64}$/);
     expect(tx.description).toBe(`Send 2 USDT to ${ADDR_TO}`);
     expect(tx.decoded.args.symbol).toBe("USDT");
     expect(tx.decoded.args.contract).toBe(ADDR_USDT);

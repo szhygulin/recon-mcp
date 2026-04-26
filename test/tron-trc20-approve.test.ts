@@ -94,7 +94,10 @@ describe("buildTronTrc20Approve — happy path", () => {
 
     expect(tx.action).toBe("trc20_approve");
     expect(tx.from).toBe(ADDR_FROM);
-    expect(tx.txID).toBe("deadbeef".repeat(8));
+    // txID is derived from the (post-expiration-patch) rawDataHex per
+    // TRON protocol — the stubbed response txID is overwritten in
+    // tron-tx-store. We just assert the shape.
+    expect(tx.txID).toMatch(/^[0-9a-f]{64}$/);
     expect(tx.description).toBe(`Approve 10 USDT for spender ${TRON_LIFI_DIAMOND}`);
     expect(tx.decoded.functionName).toBe("approve(address,uint256)");
     expect(tx.decoded.args.spender).toBe(TRON_LIFI_DIAMOND);
