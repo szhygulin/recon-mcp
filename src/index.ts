@@ -26,7 +26,17 @@ import {
 } from "./modules/positions/schemas.js";
 
 import { getSafePositions } from "./modules/safe/index.js";
-import { getSafePositionsInput } from "./modules/safe/schemas.js";
+import {
+  prepareSafeTxApprove,
+  prepareSafeTxPropose,
+  submitSafeTxSignature,
+} from "./modules/safe/actions.js";
+import {
+  getSafePositionsInput,
+  prepareSafeTxApproveInput,
+  prepareSafeTxProposeInput,
+  submitSafeTxSignatureInput,
+} from "./modules/safe/schemas.js";
 
 import {
   checkContractSecurityHandler,
@@ -1344,6 +1354,36 @@ async function main() {
       inputSchema: getSafePositionsInput.shape,
     },
     handler(getSafePositions)
+  );
+
+  registerTool(server,
+    "prepare_safe_tx_propose",
+    {
+      description:
+        "Propose a new Safe (Gnosis Safe) multisig transaction. Wraps an inner action — either a previous prepare_*'s `handle` (recommended; pulls to/value/data from server-side state) OR raw `to / value / data` — into a SafeTx, computes its EIP-712 hash, and returns an UnsignedTx that calls `Safe.approveHash(safeTxHash)`. The proposer broadcasts that approveHash via `send_transaction`; once mined, call `submit_safe_tx_signature` to post the proposal to Safe Transaction Service. Uses the on-chain approveHash flow (NOT off-chain `eth_signTypedData_v4`) — preserves the WalletConnect anti-Permit2-phishing scope. Default `operation` is CALL (0); DELEGATECALL (1) is high-risk and is flagged in the receipt.",
+      inputSchema: prepareSafeTxProposeInput.shape,
+    },
+    txHandler("prepare_safe_tx_propose", prepareSafeTxPropose)
+  );
+
+  registerTool(server,
+    "prepare_safe_tx_approve",
+    {
+      description:
+        "Add an additional approveHash signature to a Safe (Gnosis Safe) transaction that's ALREADY in the queue (proposed elsewhere — Safe Web UI, another VaultPilot install, or a co-signer). Returns an UnsignedTx that calls `Safe.approveHash(safeTxHash)` for the given signer; broadcast via `send_transaction`, then call `submit_safe_tx_signature` to push the new signature to Safe Transaction Service. Use `prepare_safe_tx_propose` instead when you're proposing a NEW Safe tx.",
+      inputSchema: prepareSafeTxApproveInput.shape,
+    },
+    txHandler("prepare_safe_tx_approve", prepareSafeTxApprove)
+  );
+
+  registerTool(server,
+    "submit_safe_tx_signature",
+    {
+      description:
+        "After the on-chain `approveHash` tx has been mined (broadcast via `send_transaction` from the receipt of `prepare_safe_tx_propose` or `prepare_safe_tx_approve`), post the signature to Safe Transaction Service. Verifies on-chain that `approvedHashes(signer, safeTxHash) != 0` first — refuses to post when the underlying approval doesn't exist yet. Auto-detects whether to call `proposeTransaction` (creates a new queue entry — when this server proposed the tx) or `confirmTransaction` (adds a signature to an existing entry — when another client proposed it). Returns the Safe Web UI deep-link so the user / co-signers can see the queue state.",
+      inputSchema: submitSafeTxSignatureInput.shape,
+    },
+    handler(submitSafeTxSignature)
   );
 
   // ---- Module 2: Security ----
