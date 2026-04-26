@@ -65,6 +65,11 @@ import {
 import { getPortfolioSummary } from "./modules/portfolio/index.js";
 import { getPortfolioDiff } from "./modules/diff/index.js";
 import { getPortfolioDiffInput } from "./modules/diff/schemas.js";
+import { shareStrategy, importStrategy } from "./modules/strategy/index.js";
+import {
+  shareStrategyInput,
+  importStrategyInput,
+} from "./modules/strategy/schemas.js";
 import { getDailyBriefing } from "./modules/digest/index.js";
 import { getDailyBriefingInput } from "./modules/digest/schemas.js";
 import { getPortfolioSummaryInput } from "./modules/portfolio/schemas.js";
@@ -1473,7 +1478,7 @@ async function main() {
     handler(getPortfolioSummary)
   );
 
-  registerTool(server, 
+  registerTool(server,
     "get_portfolio_diff",
     {
       description:
@@ -1481,6 +1486,26 @@ async function main() {
       inputSchema: getPortfolioDiffInput.shape,
     },
     handler(getPortfolioDiff)
+  );
+
+  registerTool(server,
+    "share_strategy",
+    {
+      description:
+        "Generate a shareable, anonymized JSON snapshot of the user's portfolio STRUCTURE — protocol + asset + percentage of total — with NO addresses, NO absolute USD values, NO transaction hashes. Use this when the user wants to share their setup (\"here's my Solana yield-farming strategy\") with another VaultPilot user. Pass at least one of `wallet` / `tronAddress` / `solanaAddress` / `bitcoinAddress` / `litecoinAddress`, plus a `name` and optional `description` / `authorLabel` / `riskProfile`. The recipient pastes the returned `jsonString` into their own VaultPilot via `import_strategy` for read-only inspection. v1 emits JSON only; URL hosting is deferred to v2 (depends on hosted-MCP infra). Privacy guard: a regex scan runs on the output before emit and refuses (RedactionError) if any EVM 0x address, TRON T-address, Solana base58 pubkey, 64-hex tx hash, or Solana signature is detected anywhere in the JSON — including in user-supplied free-form fields. Percentages are rounded to 1 decimal to avoid wallet-fingerprint leakage. The strategy describes structure only; recipients cannot replicate amounts or addresses. Read-only — no signing, no broadcast.",
+      inputSchema: shareStrategyInput.shape,
+    },
+    handler(shareStrategy)
+  );
+
+  registerTool(server,
+    "import_strategy",
+    {
+      description:
+        "Parse and validate a shared-strategy JSON produced by `share_strategy` (someone else's, or one the user generated earlier). Pass either the stringified form or the parsed object via `json`. Returns the validated `SharedStrategy` for read-only inspection — protocol allocations, per-position percentages, optional health-factor / fee-tier / APR metadata. The same redaction scan that runs on emit also runs on import — addresses or tx hashes anywhere in the imported JSON cause a RedactionError, so a malicious sender cannot smuggle a wallet identifier through fields the recipient might not eyeball. Strict shape validation: unknown fields tolerated (forward-compat for v2 schema additions) but required fields must be present and well-typed. Read-only — no on-chain side effect, no signing.",
+      inputSchema: importStrategyInput.shape,
+    },
+    handler(importStrategy)
   );
 
   registerTool(server,
