@@ -248,4 +248,10 @@ npm run test:watch
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+**Business Source License 1.1** (BUSL-1.1) — see [LICENSE](./LICENSE).
+
+- **Personal self-custodial use is free.** Running `vaultpilot-mcp` on your own machine to manage your own portfolio — including earning yield, swapping, lending, or staking through DeFi protocols on your own behalf — is expressly permitted, even if it generates monetary returns to you.
+- **Internal organizational use is free.** Hosting or using the Licensed Work for internal purposes within an organization is not a competitive offering.
+- **Hosted services and embedded redistribution require a commercial license.** You may not offer the software (or substantial features of it) to third parties on a paid hosted, managed, or embedded basis without a separate agreement. Open an issue or contact the maintainer for licensing.
+- **Auto-converts to Apache 2.0 on 2030-04-26.** Each version's restrictions expire four years after its public release; on the Change Date the license switches to Apache 2.0.
+- **Versions ≤ 0.8.2 remain MIT-licensed.** The license change applies to v0.9.0 onward only.
