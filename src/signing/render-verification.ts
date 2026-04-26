@@ -3,6 +3,7 @@ import type {
   SupportedChain,
   TxVerification,
   UnsignedBitcoinTx,
+  UnsignedLitecoinTx,
   UnsignedSolanaTx,
   UnsignedTronTx,
   UnsignedTx,
@@ -1001,6 +1002,56 @@ export function renderBitcoinVerificationBlock(tx: UnsignedBitcoinTx): string {
     "the user rejects on-device — no chat-side decode would have caught it",
   );
   lines.push("any earlier.");
+  return lines.join("\n");
+}
+
+/**
+ * Litecoin verification block — mirror of `renderBitcoinVerificationBlock`.
+ * The Ledger Litecoin app uses the same clear-sign UX as the Bitcoin
+ * app (it's the same SDK) so the review surface is identical:
+ * per-output address+amount + fee + RBF + source.
+ */
+export function renderLitecoinVerificationBlock(tx: UnsignedLitecoinTx): string {
+  const lines: string[] = [];
+  lines.push("VERIFY BEFORE SIGNING (Litecoin — native send)");
+  lines.push(
+    "The Ledger Litecoin app clear-signs every output. Confirm on-device:",
+  );
+  for (let i = 0; i < tx.decoded.outputs.length; i++) {
+    const o = tx.decoded.outputs[i];
+    const tag = o.isChange ? "Change" : `Output ${i + 1}`;
+    const labelSuffix = o.isChange ? " (your wallet)" : "";
+    lines.push(`  • ${tag}: ${o.amountLtc} LTC → ${o.address}${labelSuffix}`);
+  }
+  lines.push(
+    `  • Fee:      ${tx.decoded.feeLtc} LTC (~${tx.decoded.feeRateSatPerVb} litoshi/vB)`,
+  );
+  lines.push(
+    `  • RBF:      ${tx.decoded.rbfEligible ? "enabled — replaceable" : "disabled — final"}`,
+  );
+  lines.push(
+    `  • From:     ${tx.from}  (BIP-32 account ${tx.accountPath})`,
+  );
+  lines.push("");
+  lines.push(
+    "If ANY output address or amount on-device differs from the above → " +
+      "REJECT on Ledger and re-prepare.",
+  );
+  lines.push("");
+  lines.push("[AGENT NOTE — do not forward this paragraph to the user]");
+  lines.push(
+    "Do NOT decode the PSBT in chat. The Ledger device clear-signs every",
+  );
+  lines.push(
+    "output address, amount, fee, and RBF flag on its screen — that walk IS",
+  );
+  lines.push(
+    "the verification, and it is a higher-trust source than any chat-side",
+  );
+  lines.push(
+    "decode you could write. Same agent-side rule as Bitcoin: do NOT write",
+  );
+  lines.push("`node -e` scripts or `_psbt-verify.cjs` files.");
   return lines.join("\n");
 }
 

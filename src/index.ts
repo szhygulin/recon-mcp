@@ -97,6 +97,10 @@ import {
   getBitcoinTxHistory,
   prepareBitcoinNativeSend,
   signBtcMessage,
+  pairLedgerLitecoin,
+  getLitecoinBalance,
+  prepareLitecoinNativeSend,
+  signLtcMessage,
   getMarginfiPositions,
   getSolanaStakingPositions,
   getMarginfiDiagnostics,
@@ -158,6 +162,10 @@ import {
   getBitcoinTxHistoryInput,
   prepareBitcoinNativeSendInput,
   signBtcMessageInput,
+  pairLedgerLitecoinInput,
+  getLitecoinBalanceInput,
+  prepareLitecoinNativeSendInput,
+  signLtcMessageInput,
   getMarginfiPositionsInput,
   getSolanaStakingPositionsInput,
   getMarginfiDiagnosticsInput,
@@ -275,6 +283,7 @@ import {
   renderPostBroadcastBlock,
   renderPostSendPollBlock,
   renderBitcoinVerificationBlock,
+  renderLitecoinVerificationBlock,
   renderPrepareReceiptBlock,
   renderPreviewVerifyAgentTaskBlock,
   renderSolanaAgentTaskBlock,
@@ -291,6 +300,7 @@ import type {
   SupportedChain,
   TxVerification,
   UnsignedBitcoinTx,
+  UnsignedLitecoinTx,
   UnsignedSolanaTx,
   UnsignedTronTx,
   UnsignedTx,
@@ -498,6 +508,10 @@ export async function collectVerificationBlocks(
   // early-return that the EVM branch relies on.
   if (chain === "bitcoin" && typeof r.psbtBase64 === "string") {
     blocks.push(renderBitcoinVerificationBlock(result as UnsignedBitcoinTx));
+    return blocks;
+  }
+  if (chain === "litecoin" && typeof r.psbtBase64 === "string") {
+    blocks.push(renderLitecoinVerificationBlock(result as UnsignedLitecoinTx));
     return blocks;
   }
   if (!verification) return blocks;
@@ -776,7 +790,7 @@ function previewSolanaSendHandler(
 function sendTransactionHandler(
   fn: (args: SendTransactionArgs) => Promise<{
     txHash: `0x${string}` | string;
-    chain: SupportedChain | "tron" | "solana" | "bitcoin";
+    chain: SupportedChain | "tron" | "solana" | "bitcoin" | "litecoin";
     nextHandle?: string;
     preSignHash?: `0x${string}`;
     to?: `0x${string}`;
@@ -1975,6 +1989,72 @@ async function main() {
       inputSchema: signBtcMessageInput.shape,
     },
     handler(signBtcMessage, { toolName: "sign_message_btc" })
+  );
+
+  server.registerTool(
+    "pair_ledger_ltc",
+    {
+      description:
+        "Pair the host's directly-connected Ledger device for Litecoin signing. " +
+        "REQUIREMENTS: Ledger plugged in over USB, device unlocked, the 'Litecoin' " +
+        "app open on-screen. Ledger Live's WalletConnect relay does not expose " +
+        "Litecoin accounts to dApps, so signing goes over USB HID via " +
+        "`@ledgerhq/hw-app-btc` (the same SDK as Bitcoin, with `currency:'litecoin'` " +
+        "selecting Litecoin-specific encoding). One call enumerates all four " +
+        "address types (legacy `L…`, p2sh-segwit `M…`, native segwit `ltc1q…`, " +
+        "taproot `ltc1p…`) for the given account index. BIP-44 coin_type 2. " +
+        "Note: Litecoin Core has not activated Taproot on mainnet, so `ltc1p…` " +
+        "outputs are not yet spendable — the address is derived for forward " +
+        "compat. All paired entries surface under the `litecoin: [...]` section " +
+        "of `get_ledger_status`.",
+      inputSchema: pairLedgerLitecoinInput.shape,
+    },
+    handler(pairLedgerLitecoin, { toolName: "pair_ledger_ltc" })
+  );
+
+  server.registerTool(
+    "get_ltc_balance",
+    {
+      description:
+        "Return the on-chain balance for one Litecoin mainnet address via the " +
+        "Esplora indexer (litecoinspace.org by default; override via " +
+        "`LITECOIN_INDEXER_URL` env var or `userConfig.litecoinIndexerUrl`). " +
+        "Returns confirmed + mempool litoshis and an LTC-decimal projection. " +
+        "Accepts L/M/3/ltc1q/ltc1p — the read path validates format only.",
+      inputSchema: getLitecoinBalanceInput.shape,
+    },
+    handler(getLitecoinBalance, { toolName: "get_ltc_balance" })
+  );
+
+  server.registerTool(
+    "prepare_litecoin_native_send",
+    {
+      description:
+        "Build an unsigned Litecoin native-send PSBT. Same pipeline as " +
+        "`prepare_btc_send`: fetch UTXOs + fee rate, run coin-selection, build a " +
+        "PSBT v0 with `nonWitnessUtxo` populated on every input (Ledger app 2.x " +
+        "requirement). Initial release: source addresses must be native segwit " +
+        "(`ltc1q…`) or taproot (`ltc1p…`); recipients can be L/M/ltc1q/ltc1p " +
+        "(legacy 3-prefix P2SH refused on send because bitcoinjs-lib ties the " +
+        "`scriptHash` byte to a single network object). Returns a handle " +
+        "consumed by `send_transaction`, which signs over USB HID with the " +
+        "Litecoin app and broadcasts via the indexer.",
+      inputSchema: prepareLitecoinNativeSendInput.shape,
+    },
+    handler(prepareLitecoinNativeSend, { toolName: "prepare_litecoin_native_send" })
+  );
+
+  server.registerTool(
+    "sign_message_ltc",
+    {
+      description:
+        "Sign a UTF-8 message with a paired Litecoin address using the BIP-137 " +
+        "compact-signature scheme (with Litecoin's `\\x19Litecoin Signed Message:\\n` " +
+        "prefix). Same on-device clear-sign UX as `sign_message_btc`. Taproot " +
+        "(`ltc1p…`) is refused — BIP-322 isn't exposed by the Ledger Litecoin app.",
+      inputSchema: signLtcMessageInput.shape,
+    },
+    handler(signLtcMessage, { toolName: "sign_message_ltc" })
   );
 
   server.registerTool(

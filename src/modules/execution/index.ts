@@ -27,9 +27,18 @@ import {
   hasBitcoinHandle,
 } from "../../signing/btc-tx-store.js";
 import {
+  consumeLitecoinHandle,
+  retireLitecoinHandle,
+  hasLitecoinHandle,
+} from "../../signing/ltc-tx-store.js";
+import {
   signBtcPsbtOnLedger,
   getPairedBtcByAddress,
 } from "../../signing/btc-usb-signer.js";
+import {
+  signLtcPsbtOnLedger,
+  getPairedLtcByAddress,
+} from "../../signing/ltc-usb-signer.js";
 import {
   getTronLedgerAddress,
   signTronTxOnLedger,
@@ -131,6 +140,10 @@ import type {
   GetBitcoinTxHistoryArgs,
   PrepareBitcoinNativeSendArgs,
   SignBtcMessageArgs,
+  PairLedgerLitecoinArgs,
+  GetLitecoinBalanceArgs,
+  PrepareLitecoinNativeSendArgs,
+  SignLtcMessageArgs,
   GetMarginfiPositionsArgs,
   GetSolanaStakingPositionsArgs,
   PreviewSendArgs,
@@ -1060,6 +1073,134 @@ export async function signBtcMessage(args: SignBtcMessageArgs) {
   return signBitcoinMessage({ wallet: args.wallet, message: args.message });
 }
 
+/**
+ * Pair the Ledger device for Litecoin signing. Mirror of
+ * `pairLedgerBitcoin`. The Ledger Litecoin app shares its host-side
+ * SDK (`@ledgerhq/hw-app-btc`) with the Bitcoin app, parametrized by
+ * `currency: "litecoin"` in our `ltc-usb-loader.ts`.
+ *
+ * One call enumerates all four address types for the given account
+ * index. BIP-44 coin_type 2 (`<purpose>'/2'/<account>'/...`) instead
+ * of 0.
+ */
+export async function pairLedgerLitecoin(
+  args: PairLedgerLitecoinArgs = {},
+): Promise<{
+  accountIndex: number;
+  gapLimit: number;
+  appVersion: string;
+  addresses: Array<{
+    addressType: "legacy" | "p2sh-segwit" | "segwit" | "taproot";
+    address: string;
+    path: string;
+    chain: 0 | 1;
+    addressIndex: number;
+    txCount: number;
+  }>;
+  summary: { totalDerived: number; used: number; unused: number };
+  instructions: string;
+}> {
+  const accountIndex = args.accountIndex ?? 0;
+  const {
+    scanLtcAccount,
+    setPairedLtcAddress,
+    clearPairedLtcAccount,
+    DEFAULT_LTC_GAP_LIMIT,
+  } = await import("../../signing/ltc-usb-signer.js");
+  const gapLimit = args.gapLimit ?? DEFAULT_LTC_GAP_LIMIT;
+
+  const { getLitecoinIndexer } = await import("../litecoin/indexer.js");
+  const indexer = getLitecoinIndexer();
+  const fetchTxCount = async (addr: string): Promise<number> => {
+    const bal = await indexer.getBalance(addr);
+    return bal.txCount;
+  };
+
+  let derived;
+  try {
+    derived = await scanLtcAccount({
+      accountIndex,
+      gapLimit,
+      fetchTxCount,
+    });
+  } catch (e) {
+    const hint = await getDeviceStateHint("Litecoin");
+    if (hint && e instanceof Error) {
+      throw new Error(`${e.message} ${hint}`, { cause: e });
+    }
+    throw e;
+  }
+  clearPairedLtcAccount(accountIndex);
+  for (const entry of derived.entries) {
+    setPairedLtcAddress({
+      address: entry.address,
+      publicKey: entry.publicKey,
+      path: entry.path,
+      appVersion: entry.appVersion,
+      addressType: entry.addressType,
+      accountIndex: entry.accountIndex,
+      chain: entry.chain,
+      addressIndex: entry.addressIndex,
+      txCount: entry.txCount,
+    });
+  }
+  const used = derived.entries.filter((e) => e.txCount > 0).length;
+  return {
+    accountIndex,
+    gapLimit,
+    appVersion: derived.appVersion,
+    addresses: derived.entries.map((e) => ({
+      addressType: e.addressType,
+      address: e.address,
+      path: e.path,
+      chain: e.chain,
+      addressIndex: e.addressIndex,
+      txCount: e.txCount,
+    })),
+    summary: {
+      totalDerived: derived.entries.length,
+      used,
+      unused: derived.entries.length - used,
+    },
+    instructions:
+      "Litecoin account paired with BIP44 gap-limit scanning. Both the receive " +
+      "(/0/i) and change (/1/i) chains were walked across all four address types " +
+      "until " +
+      gapLimit +
+      " consecutive empty addresses were observed. Use `get_ltc_balance` against " +
+      "any cached address. Re-run `pair_ledger_ltc` to refresh; previously-cached " +
+      "entries for this accountIndex are dropped before the new scan persists.",
+  };
+}
+
+export async function getLitecoinBalance(args: GetLitecoinBalanceArgs) {
+  const { getLitecoinBalance: reader } = await import(
+    "../litecoin/balances.js"
+  );
+  return reader(args.address);
+}
+
+export async function prepareLitecoinNativeSend(
+  args: PrepareLitecoinNativeSendArgs,
+) {
+  const { buildLitecoinNativeSend } = await import("../litecoin/actions.js");
+  return buildLitecoinNativeSend({
+    wallet: args.wallet,
+    to: args.to,
+    amount: args.amount,
+    ...(args.feeRateSatPerVb !== undefined
+      ? { feeRateSatPerVb: args.feeRateSatPerVb }
+      : {}),
+    ...(args.rbf !== undefined ? { rbf: args.rbf } : {}),
+    ...(args.allowHighFee !== undefined ? { allowHighFee: args.allowHighFee } : {}),
+  });
+}
+
+export async function signLtcMessage(args: SignLtcMessageArgs) {
+  const { signLitecoinMessage } = await import("../litecoin/actions.js");
+  return signLitecoinMessage({ wallet: args.wallet, message: args.message });
+}
+
 export async function getMarginfiPositions(args: GetMarginfiPositionsArgs) {
   const { getMarginfiPositions: reader } = await import(
     "../positions/marginfi.js"
@@ -1548,6 +1689,36 @@ async function sendBitcoinTransaction(args: SendTransactionArgs): Promise<{
   // policy as the Solana / TRON branches.
   retireBitcoinHandle(args.handle);
   return { txHash: txid, chain: "bitcoin" };
+}
+
+/**
+ * Send a Litecoin tx — mirror of `sendBitcoinTransaction`. Same Ledger
+ * BTC-app SDK with `currency:"litecoin"`, same PSBT + finalize +
+ * broadcast flow.
+ */
+async function sendLitecoinTransaction(args: SendTransactionArgs): Promise<{
+  txHash: string;
+  chain: "litecoin";
+}> {
+  const tx = consumeLitecoinHandle(args.handle);
+  const paired = getPairedLtcByAddress(tx.from);
+  if (!paired) {
+    throw new Error(
+      `Litecoin source ${tx.from} is no longer in the pairing cache. Re-pair via ` +
+        `\`pair_ledger_ltc\` and re-run prepare_litecoin_native_send for a fresh handle.`,
+    );
+  }
+  const { rawTxHex } = await signLtcPsbtOnLedger({
+    psbtBase64: tx.psbtBase64,
+    expectedFrom: tx.from,
+    path: paired.path,
+    accountPath: tx.accountPath,
+    addressFormat: tx.addressFormat,
+  });
+  const { getLitecoinIndexer } = await import("../litecoin/indexer.js");
+  const txid = await getLitecoinIndexer().broadcastTx(rawTxHex);
+  retireLitecoinHandle(args.handle);
+  return { txHash: txid, chain: "litecoin" };
 }
 
 /** Attach eth_call simulation result, gas estimate, and USD cost. */
@@ -2133,7 +2304,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
  */
 export async function sendTransaction(args: SendTransactionArgs): Promise<{
   txHash: `0x${string}` | string;
-  chain: SupportedChain | "tron" | "solana" | "bitcoin";
+  chain: SupportedChain | "tron" | "solana" | "bitcoin" | "litecoin";
   nextHandle?: string;
   /**
    * EIP-1559 pre-sign RLP hash the user already matched on-device during
@@ -2171,6 +2342,9 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
   }
   if (hasBitcoinHandle(args.handle)) {
     return sendBitcoinTransaction(args);
+  }
+  if (hasLitecoinHandle(args.handle)) {
+    return sendLitecoinTransaction(args);
   }
   const stashed = getPinnedGas(args.handle);
   if (!stashed) {

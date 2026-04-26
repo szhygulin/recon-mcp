@@ -686,6 +686,29 @@ export interface BitcoinPortfolioSlice {
   walletBalancesUsd: number;
 }
 
+/**
+ * Litecoin slice of a portfolio summary. Mirror of `BitcoinPortfolioSlice`.
+ * Same UTXO model, same balance projection, different symbol/HRP.
+ */
+export interface LitecoinPortfolioSlice {
+  addresses: string[];
+  balances: Array<{
+    address: string;
+    addressType: "p2pkh" | "p2sh" | "p2wpkh" | "p2wsh" | "p2tr";
+    confirmedSats: string;
+    mempoolSats: string;
+    totalSats: string;
+    confirmedLtc: string;
+    totalLtc: string;
+    symbol: "LTC";
+    decimals: 8;
+    txCount: number;
+    valueUsd?: number;
+    priceMissing?: boolean;
+  }>;
+  walletBalancesUsd: number;
+}
+
 /** Per-wallet slice of a multi-wallet portfolio, or a stand-alone single-wallet summary. */
 export interface PortfolioSummary {
   wallet: `0x${string}`;
@@ -735,6 +758,12 @@ export interface PortfolioSummary {
    * one BTC address. Folded into `totalUsd`.
    */
   bitcoinUsd?: number;
+  /**
+   * Litecoin totals (sum across every address passed via `litecoinAddress` /
+   * `litecoinAddresses`). Present only when the caller supplied at least
+   * one LTC address. Folded into `totalUsd`.
+   */
+  litecoinUsd?: number;
   breakdown: {
     native: TokenAmount[];
     erc20: TokenAmount[];
@@ -747,6 +776,8 @@ export interface PortfolioSummary {
     solana?: SolanaPortfolioSlice;
     /** Bitcoin slice — absent when no BTC address(es) were queried. */
     bitcoin?: BitcoinPortfolioSlice;
+    /** Litecoin slice — absent when no LTC address(es) were queried. */
+    litecoin?: LitecoinPortfolioSlice;
   };
   coverage: PortfolioCoverage;
 }
@@ -782,6 +813,8 @@ export interface MultiWalletPortfolioSummary {
     solana?: SolanaPortfolioSlice[];
     /** Multi-address Bitcoin slice; aggregates every requested btc address. */
     bitcoin?: BitcoinPortfolioSlice;
+    /** Multi-address Litecoin slice; aggregates every requested ltc address. */
+    litecoin?: LitecoinPortfolioSlice;
   };
   /** Sum of all TRON wallet balances (TRX + TRC-20) across the queried addresses. */
   tronUsd?: number;
@@ -795,6 +828,8 @@ export interface MultiWalletPortfolioSummary {
   solanaStakingUsd?: number;
   /** Sum of BTC × USD-price across queried Bitcoin addresses. */
   bitcoinUsd?: number;
+  /** Sum of LTC × USD-price across queried Litecoin addresses. */
+  litecoinUsd?: number;
   coverage: PortfolioCoverage;
 }
 
@@ -1218,6 +1253,42 @@ export interface UnsignedBitcoinTx {
   fingerprint?: `0x${string}`;
 }
 
+/**
+ * Unsigned Litecoin transaction. Mirror of `UnsignedBitcoinTx` —
+ * same PSBT-v0 shape, same Ledger app interface (currency:"litecoin"
+ * on the SDK side selects Litecoin-specific encoding). Symbol fields
+ * use LTC, but the on-wire bytes (PSBT, raw tx hex) use the same
+ * format as BTC.
+ */
+export interface UnsignedLitecoinTx {
+  chain: "litecoin";
+  action: "native_send";
+  from: string;
+  psbtBase64: string;
+  accountPath: string;
+  addressFormat: "legacy" | "p2sh" | "bech32" | "bech32m";
+  description: string;
+  decoded: {
+    functionName: string;
+    args: Record<string, string>;
+    outputs: Array<{
+      address: string;
+      amountSats: string;
+      amountLtc: string;
+      isChange: boolean;
+      changePath?: string;
+    }>;
+    feeSats: string;
+    feeLtc: string;
+    feeRateSatPerVb: number;
+    rbfEligible: boolean;
+  };
+  vsize: number;
+  /** Opaque handle — see ltc-tx-store.ts. */
+  handle?: string;
+  fingerprint?: `0x${string}`;
+}
+
 /** TRON pairing entry — same shape, different BIP-44 layout (`44'/195'/<n>'/0/0`). */
 export interface PairedTronEntry {
   address: string;
@@ -1275,6 +1346,32 @@ export interface PairedBitcoinEntry {
   txCount?: number;
 }
 
+/**
+ * Litecoin pairing entry. Mirror of `PairedBitcoinEntry`. The 4
+ * standard mainnet address types map to Litecoin's L/M/ltc1q/ltc1p
+ * forms instead of BTC's 1/3/bc1q/bc1p.
+ */
+export interface PairedLitecoinEntry {
+  address: string;
+  publicKey: string;
+  path: string;
+  appVersion: string;
+  /**
+   * Discriminator for the four standard mainnet address shapes:
+   *   - "legacy"      → BIP-44 P2PKH (`L...`)
+   *   - "p2sh-segwit" → BIP-49 P2SH-wrapped segwit (`M...`)
+   *   - "segwit"      → BIP-84 native segwit P2WPKH (`ltc1q...`)
+   *   - "taproot"     → BIP-86 P2TR (`ltc1p...`) — derives correctly,
+   *     but Litecoin Core has not activated Taproot on mainnet, so
+   *     `ltc1p…` outputs are not yet spendable.
+   */
+  addressType: "legacy" | "p2sh-segwit" | "segwit" | "taproot";
+  accountIndex: number | null;
+  chain?: 0 | 1 | null;
+  addressIndex?: number | null;
+  txCount?: number;
+}
+
 export interface UserConfig {
   rpc: {
     provider: RpcProvider;
@@ -1309,6 +1406,13 @@ export interface UserConfig {
    * over this field.
    */
   bitcoinIndexerUrl?: string;
+  /**
+   * Litecoin indexer base URL (Esplora-compatible REST API). Defaults
+   * to litecoinspace.org's free public API; override here when running
+   * against a self-hosted Esplora / Electrs instance. Env var
+   * `LITECOIN_INDEXER_URL` takes priority over this field.
+   */
+  litecoinIndexerUrl?: string;
   walletConnect?: {
     projectId?: string;
     /** Topic of the active WC session (so we can resume after restart). */
@@ -1332,5 +1436,10 @@ export interface UserConfig {
      * write-through-to-disk semantics as the Solana / TRON slices.
      */
     bitcoin?: PairedBitcoinEntry[];
+    /**
+     * Litecoin pairings — same shape as the Bitcoin slice, BIP-44
+     * coin_type 2 instead of 0.
+     */
+    litecoin?: PairedLitecoinEntry[];
   };
 }

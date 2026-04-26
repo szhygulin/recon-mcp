@@ -7,6 +7,7 @@ import {
 import { getPairedTronAddresses } from "./tron-usb-signer.js";
 import { getPairedSolanaAddresses } from "./solana-usb-signer.js";
 import { getPairedBtcAddresses } from "./btc-usb-signer.js";
+import { getPairedLtcAddresses } from "./ltc-usb-signer.js";
 import type { SupportedChain } from "../types/index.js";
 
 export interface SessionAccount {
@@ -129,6 +130,20 @@ export interface SessionStatus {
     /** BIP-32 address index. Null for non-standard paths. */
     addressIndex?: number | null;
     /** Tx count from the indexer at last pair_ledger_btc scan. Snapshot only. */
+    txCount?: number;
+  }>;
+  /**
+   * Paired Litecoin addresses, mirror of `bitcoin` above. Same USB-HID
+   * pairing flow, same shape, BIP-44 coin_type 2.
+   */
+  litecoin?: Array<{
+    address: string;
+    path: string;
+    appVersion: string;
+    addressType: "legacy" | "p2sh-segwit" | "segwit" | "taproot";
+    accountIndex: number | null;
+    chain?: 0 | 1 | null;
+    addressIndex?: number | null;
     txCount?: number;
   }>;
 }
@@ -265,6 +280,22 @@ export async function getSessionStatus(): Promise<SessionStatus> {
           })),
         }
       : {};
+  const ltcPaired = getPairedLtcAddresses();
+  const ltcSection =
+    ltcPaired.length > 0
+      ? {
+          litecoin: ltcPaired.map((e) => ({
+            address: e.address,
+            path: e.path,
+            appVersion: e.appVersion,
+            addressType: e.addressType,
+            accountIndex: e.accountIndex,
+            ...(e.chain !== undefined ? { chain: e.chain } : {}),
+            ...(e.addressIndex !== undefined ? { addressIndex: e.addressIndex } : {}),
+            ...(e.txCount !== undefined ? { txCount: e.txCount } : {}),
+          })),
+        }
+      : {};
   if (!session)
     return {
       paired: false,
@@ -275,6 +306,7 @@ export async function getSessionStatus(): Promise<SessionStatus> {
       ...tronSection,
       ...solanaSection,
       ...btcSection,
+      ...ltcSection,
     };
   const accountDetails = await getConnectedAccountsDetailed();
   const accounts = accountDetails.map((a) => a.address);
@@ -305,5 +337,6 @@ export async function getSessionStatus(): Promise<SessionStatus> {
     ...tronSection,
     ...solanaSection,
     ...btcSection,
+    ...ltcSection,
   };
 }
