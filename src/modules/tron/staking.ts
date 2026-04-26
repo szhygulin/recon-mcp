@@ -9,6 +9,7 @@ import type {
   TronFrozenEntry,
   TronPendingUnfreeze,
   TronStakingSlice,
+  TronVoteAllocation,
 } from "../../types/index.js";
 
 /**
@@ -36,6 +37,12 @@ interface TrongridV1Account {
     type?: "BANDWIDTH" | "ENERGY";
     unfreeze_expire_time?: number;
   }>;
+  /**
+   * Wallet's current vote allocation per SR. Empty/absent when no votes
+   * are cast. Same shape `witnesses.ts` consumes — kept narrow here.
+   * Issue #271.
+   */
+  votes?: Array<{ vote_address?: string; vote_count?: number }>;
 }
 
 interface TrongridV1AccountResponse {
@@ -183,6 +190,20 @@ export async function getTronStaking(address: string): Promise<TronStakingSlice>
     });
   }
 
+  // Per-SR vote breakdown — issue #271. The `/v1/accounts/<addr>` payload
+  // already in flight above carries `votes[]`; we just stop discarding it.
+  // Filter out non-base58 addresses (defensive — if a proxy misbehaves and
+  // returns hex-form addresses, surface an empty list rather than emit
+  // identifiers that can't round-trip into `prepare_tron_vote`). Mirror of
+  // the same defensive filter in `list_tron_witnesses`.
+  const votes: TronVoteAllocation[] = [];
+  for (const v of acc?.votes ?? []) {
+    if (!v.vote_address || !isTronAddress(v.vote_address)) continue;
+    const count = v.vote_count ?? 0;
+    if (count <= 0) continue;
+    votes.push({ address: v.vote_address, count });
+  }
+
   const pendingUnfreezes: TronPendingUnfreeze[] = [];
   for (const entry of acc?.unfrozenV2 ?? []) {
     const amount = BigInt(entry.unfreeze_amount ?? 0);
@@ -237,6 +258,7 @@ export async function getTronStaking(address: string): Promise<TronStakingSlice>
     frozen,
     pendingUnfreezes,
     ...(resources ? { resources } : {}),
+    votes,
     totalStakedTrx,
     totalStakedUsd,
   };

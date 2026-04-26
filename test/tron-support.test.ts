@@ -511,6 +511,117 @@ describe("getTronStaking (network stubbed)", () => {
     });
   });
 
+  // Issue #271 — `votes[]` per-SR breakdown stops being discarded.
+  it("returns empty votes[] when the wallet has no votes cast (default fixture)", async () => {
+    const s = await getTronStaking(addr);
+    expect(s.votes).toEqual([]);
+  });
+
+  it("returns per-SR vote allocation when account.votes is populated (issue #271)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.startsWith("https://api.trongrid.io/v1/accounts/")) {
+          return new Response(
+            JSON.stringify({
+              data: [
+                {
+                  frozenV2: [{ amount: 100_000_000, type: "BANDWIDTH" }],
+                  votes: [
+                    { vote_address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", vote_count: 80 },
+                    { vote_address: "TPoaKtYTEPMj4LxWE3J5q3NdZVcX6HYUay", vote_count: 20 },
+                  ],
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        if (url === "https://api.trongrid.io/wallet/getReward") {
+          return new Response(JSON.stringify({ reward: 0 }), { status: 200 });
+        }
+        if (url === "https://api.trongrid.io/wallet/getaccountresource") {
+          return new Response(JSON.stringify({}), { status: 200 });
+        }
+        return new Response(JSON.stringify({ coins: {} }), { status: 200 });
+      }),
+    );
+    const s = await getTronStaking(addr);
+    expect(s.votes).toEqual([
+      { address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", count: 80 },
+      { address: "TPoaKtYTEPMj4LxWE3J5q3NdZVcX6HYUay", count: 20 },
+    ]);
+  });
+
+  it("filters out votes with zero/negative count (defensive — TronGrid sometimes ships them on un-pruned accounts)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.startsWith("https://api.trongrid.io/v1/accounts/")) {
+          return new Response(
+            JSON.stringify({
+              data: [
+                {
+                  votes: [
+                    { vote_address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", vote_count: 100 },
+                    { vote_address: "TPoaKtYTEPMj4LxWE3J5q3NdZVcX6HYUay", vote_count: 0 },
+                  ],
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        if (url === "https://api.trongrid.io/wallet/getReward") {
+          return new Response(JSON.stringify({ reward: 0 }), { status: 200 });
+        }
+        if (url === "https://api.trongrid.io/wallet/getaccountresource") {
+          return new Response(JSON.stringify({}), { status: 200 });
+        }
+        return new Response(JSON.stringify({ coins: {} }), { status: 200 });
+      }),
+    );
+    const s = await getTronStaking(addr);
+    expect(s.votes).toEqual([
+      { address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", count: 100 },
+    ]);
+  });
+
+  it("filters out votes whose vote_address fails isTronAddress (defensive — proxies that ignore visible=true return hex)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.startsWith("https://api.trongrid.io/v1/accounts/")) {
+          return new Response(
+            JSON.stringify({
+              data: [
+                {
+                  votes: [
+                    { vote_address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", vote_count: 50 },
+                    // hex-form (proxy returned 41-prefixed instead of T-prefixed) → drop
+                    { vote_address: "419b39d1ee70ed8d34dee0b6a4ed64c7e21d0e9aef", vote_count: 30 },
+                  ],
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        if (url === "https://api.trongrid.io/wallet/getReward") {
+          return new Response(JSON.stringify({ reward: 0 }), { status: 200 });
+        }
+        if (url === "https://api.trongrid.io/wallet/getaccountresource") {
+          return new Response(JSON.stringify({}), { status: 200 });
+        }
+        return new Response(JSON.stringify({ coins: {} }), { status: 200 });
+      }),
+    );
+    const s = await getTronStaking(addr);
+    expect(s.votes).toEqual([
+      { address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", count: 50 },
+    ]);
+  });
+
   it("clamps availableUnits to zero when TronGrid reports used > limit (over-spent window)", async () => {
     vi.stubGlobal(
       "fetch",

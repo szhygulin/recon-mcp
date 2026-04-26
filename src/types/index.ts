@@ -584,6 +584,22 @@ export interface TronStakingSlice {
    * staking slice still returns.
    */
   resources?: TronAccountResources;
+  /**
+   * Per-SR vote allocation — same shape `list_tron_witnesses(address)`
+   * exposes via its `userVotes` field. Surfaced here too (issue #271) so
+   * an agent answering "consolidate my votes onto the SR I'm already
+   * voting for" or "rebalance freshly-unlocked TRON Power onto the same
+   * SRs" doesn't have to chain `list_tron_witnesses` after
+   * `get_tron_staking` (or, worse, fall back to bash + curl against
+   * TronGrid). Empty array when the wallet has no votes cast.
+   *
+   * Each entry's `address` is the base58 SR address; `count` is integer
+   * votes (1 vote = 1 frozen TRX of TRON Power). `prepare_tron_vote`
+   * REPLACES the entire vote allocation, so callers wanting to
+   * consolidate / rebalance must include every existing entry plus
+   * adjustments — this field gives them the exact baseline to mutate.
+   */
+  votes: TronVoteAllocation[];
   /** Frozen + pending-unfreeze + claimable, in TRX (formatted). */
   totalStakedTrx: string;
   /** USD value of everything above at current TRX price. */
