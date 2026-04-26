@@ -899,6 +899,13 @@ export interface UnsignedTronTx {
   decoded: {
     functionName: string;
     args: Record<string, string>;
+    /**
+     * ABI-encoded parameter payload (no `0x`, no selector) for TRC-20 calls.
+     * Set by the trc20_send / trc20_approve builders so the verification
+     * layer can compose the full calldata (`0x<selector><parameterHex>`)
+     * without re-deriving it from the human-readable args.
+     */
+    parameterHex?: string;
   };
   /**
    * Fee limit in SUN, present on contract calls (TRC-20 transfers require it;
@@ -1143,6 +1150,16 @@ export interface TxVerification {
   humanDecode: HumanDecode;
   /** Canonical comparison string `<chainId>:<to>:<value>:<data>` — exactly the four fields fed into the fingerprint. */
   comparisonString: string;
+  /**
+   * TRC-20 calldata bytes (`0x` + 4-byte selector + ABI-encoded params) for
+   * `trc20_send` / `trc20_approve` actions. Surfaced so the agent can
+   * (a) decode the recipient slot itself and cross-check it against the
+   * typed base58 address (mirror of EVM CHECK 1), and (b) splice into a
+   * swiss-knife.xyz decoder URL the user can open in the browser. Absent
+   * for native TRX sends, freeze/unfreeze, votes, and other non-ABI
+   * actions — those have no calldata to decode.
+   */
+  tronCalldataHex?: `0x${string}`;
 }
 
 /** Unsigned transaction, ready to be sent to Ledger Live for signing. */

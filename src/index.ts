@@ -345,6 +345,7 @@ import {
   renderSolanaPrepareAgentTaskBlock,
   renderSolanaPrepareSummaryBlock,
   renderSolanaVerificationBlock,
+  renderTronAgentTaskBlock,
   renderTronVerificationBlock,
   renderVerificationBlock,
   shouldRenderVerificationBlock,
@@ -571,7 +572,9 @@ export async function collectVerificationBlocks(
   }
   if (!verification) return blocks;
   if (chain === "tron" && typeof r.rawDataHex === "string") {
-    blocks.push(renderTronVerificationBlock(result as UnsignedTronTx & { verification: TxVerification }));
+    const tronTx = result as UnsignedTronTx & { verification: TxVerification };
+    blocks.push(renderTronVerificationBlock(tronTx));
+    blocks.push(renderTronAgentTaskBlock(tronTx));
     return blocks;
   }
   if (chain === "solana" && typeof r.messageBase64 === "string") {

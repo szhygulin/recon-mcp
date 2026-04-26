@@ -192,7 +192,12 @@ export function buildVerification(tx: UnsignedTx): TxVerification {
 export function buildTronVerification(tx: UnsignedTronTx): TxVerification {
   const payloadHash = tronPayloadFingerprint(tx.rawDataHex);
   const payloadHashShort = payloadHash.slice(2, 10);
-  return {
+  // For TRC-20 calls the prepare builder records the ABI-encoded parameter
+  // hex; we prepend the 4-byte selector to recover the full calldata bytes.
+  // The agent decodes this locally to cross-check the recipient slot against
+  // the typed base58 address — mirror of EVM CHECK 1.
+  const tronCalldataHex = tronCalldataHexFromDecoded(tx);
+  const out: TxVerification = {
     payloadHash,
     payloadHashShort,
     humanDecode: decodeTronCall(tx),
@@ -208,6 +213,22 @@ export function buildTronVerification(tx: UnsignedTronTx): TxVerification {
       `network's interpretation. The payload hash below is over the exact rawDataHex ` +
       `that will be signed on the Ledger.`,
   };
+  if (tronCalldataHex) out.tronCalldataHex = tronCalldataHex;
+  return out;
+}
+
+const TRC20_SELECTORS: Record<string, string> = {
+  "transfer(address,uint256)": "a9059cbb",
+  "approve(address,uint256)": "095ea7b3",
+};
+
+function tronCalldataHexFromDecoded(tx: UnsignedTronTx): `0x${string}` | undefined {
+  if (tx.action !== "trc20_send" && tx.action !== "trc20_approve") return undefined;
+  const param = tx.decoded.parameterHex;
+  if (!param) return undefined;
+  const selector = TRC20_SELECTORS[tx.decoded.functionName];
+  if (!selector) return undefined;
+  return `0x${selector}${param}` as `0x${string}`;
 }
 
 /**
