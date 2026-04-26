@@ -30,6 +30,7 @@ import {
   KNOWN_PYTH_FEEDS,
   KNOWN_SOLANA_INCIDENTS,
 } from "./solana-known.js";
+import { getSolanaIncidentFeed } from "./solana-feed.js";
 
 export interface SolanaChainIncidentStatus {
   protocol: "solana";
@@ -534,11 +535,28 @@ export async function getSolanaProgramLayerSignals(
     },
   });
 
-  // known_exploit — vendored static incident list. Always-available; never
-  // silently green (lists every probed program even when clean, so an agent
-  // can answer "is there ANYTHING reported on Marinade?" with one call).
+  // known_exploit — vendored static incident list, optionally augmented at
+  // runtime via SOLANA_INCIDENT_FEED_URL (issue #242 hybrid mode). Always
+  // available; never silently green — feed reachability failures degrade
+  // to vendored-only and surface `feedAvailable: false` in detail so the
+  // agent can explain "we couldn't reach the runtime feed but here's what
+  // the vendored baseline says."
   const programIdsScanned = new Set(scannedPrograms.map((p) => p.programId));
-  const matchedExploits = KNOWN_SOLANA_INCIDENTS.filter((inc) =>
+  const feedResult = await getSolanaIncidentFeed();
+  // Dedupe by (programId, incidentDate) — feed entries can mirror vendored
+  // ones, especially when the feed is curated from the same upstream
+  // sources. Vendored takes precedence on collision (we ship them; they're
+  // reviewed in PRs); feed entries fill in coverage we don't have.
+  const seenKeys = new Set<string>();
+  const combinedIncidents = [...KNOWN_SOLANA_INCIDENTS, ...feedResult.records].filter(
+    (inc) => {
+      const key = `${inc.programId}@${inc.incidentDate}`;
+      if (seenKeys.has(key)) return false;
+      seenKeys.add(key);
+      return true;
+    },
+  );
+  const matchedExploits = combinedIncidents.filter((inc) =>
     programIdsScanned.has(inc.programId),
   );
   const activeExploits = matchedExploits.filter(
@@ -554,8 +572,13 @@ export async function getSolanaProgramLayerSignals(
         (inc) => inc.status === "resolved",
       ),
       vendoredFeedSize: KNOWN_SOLANA_INCIDENTS.length,
-      note:
-        "static vendored exploit list (src/data/solana-incidents.json); runtime feed augmentation deferred to v2 (SOLANA_INCIDENT_FEED_URL hybrid mode).",
+      runtimeFeedSize: feedResult.records.length,
+      feedAvailable: feedResult.feedAvailable,
+      ...(feedResult.feedUrl ? { feedUrl: feedResult.feedUrl } : {}),
+      ...(feedResult.feedReason ? { feedReason: feedResult.feedReason } : {}),
+      ...(feedResult.feedFetchedAt
+        ? { feedFetchedAt: new Date(feedResult.feedFetchedAt).toISOString() }
+        : {}),
     },
   });
 

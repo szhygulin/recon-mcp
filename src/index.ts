@@ -1346,7 +1346,7 @@ async function main() {
     "get_protocol_risk_score",
     {
       description:
-        "Return a 0-100 risk score for a DeFi protocol, combining TVL size, 30-day TVL trend, contract age, audit count (DefiLlama), and Immunefi bug-bounty status. Higher = safer.",
+        "Return a 0-100 risk score for a DeFi protocol, combining TVL size, 30-day TVL trend, contract age, audit count (DefiLlama), and Immunefi bug-bounty status. Higher = safer. The `protocol` argument is the DefiLlama slug — works for any chain DefiLlama covers, not just EVM (Solana: `marinade-finance`, `jito`, `kamino`, `marginfi`, `drift`; Tron: `justlend`, `sun-io`; EVM: `aave-v3`, `uniswap-v3`, etc.). Issue #243.",
       inputSchema: getProtocolRiskScoreInput.shape,
     },
     handler((a) => getProtocolRiskScoreHandler(a))
