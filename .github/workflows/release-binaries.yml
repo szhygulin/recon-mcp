@@ -151,3 +151,50 @@ jobs:
             release/${{ matrix.server_asset }}
             release/${{ matrix.setup_asset }}
           fail_on_unmatched_files: true
+
+  # OS-agnostic install scripts — uploaded once per release, not per
+  # matrix leg. Hosted at the well-known path
+  # `https://github.com/<repo>/releases/latest/download/install.sh`
+  # (and `.ps1`) so an LLM-coding agent can run a single command:
+  #
+  #   curl -fsSL .../install.sh | bash
+  #   iwr .../install.ps1 -UseBasicParsing | iex
+  #
+  # The scripts download the OS+arch-specific server/setup binaries
+  # from the same release tag, place them in ~/.local/bin (or
+  # %LOCALAPPDATA%\Programs\vaultpilot-mcp), and run the wizard in
+  # --non-interactive --json mode. See scripts/install.sh for details.
+  #
+  # Runs on ubuntu-latest because the scripts are plain text — no
+  # cross-OS build needed. Independent of the `build` job (no `needs:`)
+  # so a binary-build failure on one OS doesn't suppress the install-
+  # script upload; the script is useful even with partial-platform
+  # binary coverage (it'll just 404 on the missing target's binary,
+  # which is the user's signal that build is in flight).
+  upload-install-scripts:
+    name: Upload install scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Upload to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            scripts/install.sh
+            scripts/install.ps1
+          fail_on_unmatched_files: true
+
+      - name: Upload to existing release (manual dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            scripts/install.sh
+            scripts/install.ps1
+          fail_on_unmatched_files: true
