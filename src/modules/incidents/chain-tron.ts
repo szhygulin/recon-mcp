@@ -1,28 +1,35 @@
 /**
  * Tron base-layer chain-health signals for `get_market_incident_status`.
  * Issue #238 v1 + small-wins follow-up (sr_rotation_anomaly,
- * tronGrid_divergence).
+ * tronGrid_divergence) + #249/#250 v2 (usdt_blacklist_event,
+ * network_resource_exhaustion).
  *
  * Signals:
- *   - block_progression     (tip ageSeconds > 9 → production stalled)
- *   - missed_blocks_rate    (last ~1h: > 10% missed → SR liveness degraded)
- *   - sr_concentration      (Nakamoto on SR vote-weight ≤ 6 → BFT halt risk)
- *   - sr_rotation_anomaly   (≥ 3 unknown producers in last 30 blocks →
- *                            non-active-SR producing, or encoding mismatch
- *                            we surface honestly via available:false)
- *   - tronGrid_divergence   (block-height gap > 5 vs an optional second
- *                            TronGrid-compatible endpoint set via
- *                            TRON_RPC_URL_SECONDARY; mirror of the Solana
- *                            rpc_divergence pattern)
- *
- * Tracked separately as v2 follow-ups (out of this PR's scope):
- *   - usdt_blacklist_event           — issue #249
- *   - network_resource_exhaustion    — issue #250
+ *   - block_progression           (tip ageSeconds > 9 → production stalled)
+ *   - missed_blocks_rate          (last ~1h: > 10% missed → SR liveness degraded)
+ *   - sr_concentration            (Nakamoto on SR vote-weight ≤ 6 → BFT halt risk)
+ *   - sr_rotation_anomaly         (≥ 3 unknown producers in last 30 blocks →
+ *                                  non-active-SR producing, or encoding mismatch
+ *                                  we surface honestly via available:false)
+ *   - tronGrid_divergence         (block-height gap > 5 vs an optional second
+ *                                  TronGrid-compatible endpoint set via
+ *                                  TRON_RPC_URL_SECONDARY; mirror of the Solana
+ *                                  rpc_divergence pattern)
+ *   - usdt_blacklist_event        (issue #249 — user counterparties on USDT-TRC20
+ *                                  blacklist; requires `wallet` arg)
+ *   - network_resource_exhaustion (issue #250 — chain-wide energy / bandwidth
+ *                                  unit price > 2× P90 baseline; persistent
+ *                                  ring buffer of /wallet/getaccountresource
+ *                                  totals)
  */
 import { TRONGRID_BASE_URL } from "../../config/tron.js";
 import { resolveTronApiKey, readUserConfig } from "../../config/user-config.js";
 import { fetchWithTimeout } from "../../data/http.js";
 import { listTronWitnesses } from "../tron/witnesses.js";
+import { isTronAddress } from "../../config/tron.js";
+import { checkUsdtBlacklist } from "../tron/usdt-blacklist.js";
+import { evaluateResourceExhaustion } from "../tron/resource-baseline.js";
+import { fetchTronHistory } from "../history/tron.js";
 
 /** Tron target block time: 3 seconds. */
 const TRON_BLOCK_TARGET_SECONDS = 3;
@@ -122,7 +129,15 @@ async function trongridPostUrl<T>(
   return (await res.json()) as T;
 }
 
-export async function getTronChainHealthSignals(): Promise<TronChainIncidentStatus> {
+/**
+ * `wallet` (optional, TRON base58) — when supplied, the
+ * `usdt_blacklist_event` signal scopes its scan to recent counterparties
+ * from the user's TRON tx history. Without it, that signal returns
+ * `available: false` (the others run unaffected).
+ */
+export async function getTronChainHealthSignals(
+  wallet?: string,
+): Promise<TronChainIncidentStatus> {
   const apiKey = resolveTronApiKey(readUserConfig());
 
   // Fetch tip via getNowBlock; fail-fast if unreachable.
@@ -396,6 +411,55 @@ export async function getTronChainHealthSignals(): Promise<TronChainIncidentStat
     }
   }
 
+  // network_resource_exhaustion — issue #250. Persistent ring buffer of
+  // chain-wide TotalEnergy*/TotalNet* counters; flag current sample
+  // > 2× P90 of recent window. Always available (chain-wide, no per-
+  // user scope) but emits available:false when the buffer is too small
+  // for a meaningful percentile or when the snapshot fetch fails.
+  try {
+    const exhaustion = await evaluateResourceExhaustion();
+    if (exhaustion.available) {
+      signals.push({
+        name: "network_resource_exhaustion",
+        available: true,
+        flagged: exhaustion.flagged,
+        detail: {
+          windowSize: exhaustion.detail.windowSize,
+          thresholdMultiple: exhaustion.detail.thresholdMultiple,
+          energy: exhaustion.detail.energy,
+          bandwidth: exhaustion.detail.bandwidth,
+          // Surface the raw sample so the agent can show the user
+          // exact numbers if asked. Drop the timestamp; not actionable.
+          sample: {
+            totalEnergyLimit: exhaustion.detail.sample.totalEnergyLimit,
+            totalEnergyWeight: exhaustion.detail.sample.totalEnergyWeight,
+            totalNetLimit: exhaustion.detail.sample.totalNetLimit,
+            totalNetWeight: exhaustion.detail.sample.totalNetWeight,
+          },
+        },
+      });
+    } else {
+      signals.push({
+        name: "network_resource_exhaustion",
+        available: false,
+        reason: exhaustion.reason,
+      });
+    }
+  } catch (err) {
+    signals.push({
+      name: "network_resource_exhaustion",
+      available: false,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // usdt_blacklist_event — issue #249. Pulls last N counterparties from
+  // the user's TRON tx history; probes USDT-TRC20.isBlackListed for
+  // each; flags any hit. Without `wallet`, returns available:false —
+  // the signal is fundamentally per-user (a blacklist event the user
+  // never interacted with isn't actionable for them).
+  await pushUsdtBlacklistSignal(signals, wallet);
+
   return {
     protocol: "tron",
     chain: "tron",
@@ -405,4 +469,147 @@ export async function getTronChainHealthSignals(): Promise<TronChainIncidentStat
     incident: signals.some((s) => s.available === true && s.flagged),
     signals,
   };
+}
+
+/**
+ * Counterparty-window for the blacklist scan. The last N entries from
+ * `get_transaction_history` give us the addresses the user has touched
+ * recently. 50 covers ~a week of typical activity and bounds the
+ * triggerconstantcontract fan-out (each call is ~5k energy + 1 RPC
+ * roundtrip; 50 calls = ~250k energy budget on the dry-run path).
+ */
+const BLACKLIST_COUNTERPARTY_WINDOW = 50;
+
+/**
+ * Compute and push the usdt_blacklist_event signal. Extracted to keep
+ * the main function readable — same shape (mutates `signals` in place,
+ * never throws) as the other signal blocks above.
+ */
+async function pushUsdtBlacklistSignal(
+  signals: TronSignal[],
+  wallet: string | undefined,
+): Promise<void> {
+  if (!wallet) {
+    signals.push({
+      name: "usdt_blacklist_event",
+      available: false,
+      reason:
+        "wallet arg required — this signal scopes the blacklist scan to YOUR " +
+        "recent TRC-20 counterparties. Pass `wallet: <T...>` (your TRON address) " +
+        "to enable.",
+    });
+    return;
+  }
+  if (!isTronAddress(wallet)) {
+    signals.push({
+      name: "usdt_blacklist_event",
+      available: false,
+      reason: `wallet "${wallet}" is not a valid TRON mainnet address (expected base58, 34 chars, prefix T).`,
+    });
+    return;
+  }
+  let history;
+  try {
+    history = await fetchTronHistory({
+      wallet,
+      includeExternal: true,
+      includeTokenTransfers: true,
+    });
+  } catch (err) {
+    signals.push({
+      name: "usdt_blacklist_event",
+      available: false,
+      reason: `failed to fetch tx history: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    return;
+  }
+
+  // Walk recent history in time order; collect unique counterparties
+  // with direction tags. We probe the union of `external` (TRX-native
+  // sends) and `tokenTransfers` (TRC-20 transfers including USDT
+  // itself). The blacklist is for USDT specifically, but a blacklisted
+  // EVM-style address also wouldn't be safe to send TRX to (Tether
+  // can blacklist any address regardless of whether it currently holds
+  // USDT — and the wallet flag persists across receipts).
+  type Direction = "outgoing" | "incoming";
+  const counterparties = new Map<string, Direction[]>();
+  interface Edge {
+    from: string;
+    to: string;
+    timestamp: number;
+  }
+  const edges: Edge[] = [];
+  for (const e of history.external) {
+    edges.push({ from: e.from, to: e.to, timestamp: e.timestamp });
+  }
+  for (const e of history.tokenTransfers) {
+    edges.push({ from: e.from, to: e.to, timestamp: e.timestamp });
+  }
+  edges.sort((a, b) => b.timestamp - a.timestamp);
+  const window = edges.slice(0, BLACKLIST_COUNTERPARTY_WINDOW);
+  for (const edge of window) {
+    const fromHex: string = edge.from;
+    const toHex: string = edge.to;
+    const isFromUs: boolean = fromHex === wallet;
+    const isToUs: boolean = toHex === wallet;
+    const counterparty: string | null = isFromUs
+      ? toHex
+      : isToUs
+      ? fromHex
+      : null;
+    if (counterparty === null || counterparty === wallet) continue;
+    if (!isTronAddress(counterparty)) continue;
+    const direction: Direction = isFromUs ? "outgoing" : "incoming";
+    const existing = counterparties.get(counterparty);
+    if (existing) {
+      if (!existing.includes(direction)) existing.push(direction);
+    } else {
+      counterparties.set(counterparty, [direction]);
+    }
+  }
+
+  if (counterparties.size === 0) {
+    signals.push({
+      name: "usdt_blacklist_event",
+      available: true,
+      flagged: false,
+      detail: {
+        scannedCounterparties: 0,
+        windowSize: BLACKLIST_COUNTERPARTY_WINDOW,
+        note: "no TRON counterparties in recent history",
+      },
+    });
+    return;
+  }
+
+  let probeResults;
+  try {
+    probeResults = await checkUsdtBlacklist([...counterparties.keys()]);
+  } catch (err) {
+    signals.push({
+      name: "usdt_blacklist_event",
+      available: false,
+      reason: `USDT.isBlackListed probe failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    return;
+  }
+
+  const hits = probeResults
+    .filter((r) => r.blacklisted)
+    .map((r) => ({
+      address: r.address,
+      directions: counterparties.get(r.address) ?? [],
+    }));
+
+  signals.push({
+    name: "usdt_blacklist_event",
+    available: true,
+    flagged: hits.length > 0,
+    detail: {
+      scannedCounterparties: counterparties.size,
+      windowSize: BLACKLIST_COUNTERPARTY_WINDOW,
+      contractAddress: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      hits,
+    },
+  });
 }

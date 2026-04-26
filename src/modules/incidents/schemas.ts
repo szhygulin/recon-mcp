@@ -31,7 +31,7 @@ export const getMarketIncidentStatusInput = z.object({
       "solana-protocols",
     ])
     .describe(
-      "What to scan. EVM lending: compound-v3 flags per-Comet pause + utilization, aave-v3 flags per-reserve isPaused/isFrozen/!isActive + utilization. Base-layer chains: bitcoin/litecoin compute tip_staleness + hash_cliff + empty_block_streak + miner_concentration; solana computes slot_progression + skip_rate + validator_concentration + cluster_halt + epoch_progression + priority_fee_anomaly; tron computes block_progression + missed_blocks_rate + sr_concentration. solana-protocols scans for recent_program_upgrade + token_freeze_event + Pyth oracle_staleness against the user's exposure when `wallet` is supplied."
+      "What to scan. EVM lending: compound-v3 flags per-Comet pause + utilization, aave-v3 flags per-reserve isPaused/isFrozen/!isActive + utilization. Base-layer chains: bitcoin/litecoin compute tip_staleness + hash_cliff + empty_block_streak + miner_concentration; solana computes slot_progression + skip_rate + validator_concentration + cluster_halt + epoch_progression + priority_fee_anomaly; tron computes block_progression + missed_blocks_rate + sr_concentration + sr_rotation_anomaly + tronGrid_divergence + network_resource_exhaustion (and usdt_blacklist_event when `wallet` is supplied). solana-protocols scans for recent_program_upgrade + token_freeze_event + Pyth oracle_staleness against the user's exposure when `wallet` is supplied."
     ),
   chain: chainEnum
     .default("ethereum")
@@ -40,7 +40,7 @@ export const getMarketIncidentStatusInput = z.object({
     .string()
     .optional()
     .describe(
-      "Solana wallet (base58, 43-44 chars) — only used when protocol='solana-protocols'. When provided, scopes the scan to programs the user has exposure to via SPL token holdings; otherwise scans a default-known Solana protocol set. Ignored on other protocols."
+      "Wallet address — used by `solana-protocols` (SPL exposure scope) and `tron` (TRC-20 USDT counterparty blacklist scope, issue #249). Solana base58 (43-44 chars) for `solana-protocols`; TRON base58 (T-prefix, 34 chars) for `tron`. Ignored on other protocols."
     ),
 });
 

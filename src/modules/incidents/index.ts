@@ -117,7 +117,7 @@ export async function getMarketIncidentStatus(
     case "solana":
       return getSolanaChainHealthSignals();
     case "tron":
-      return getTronChainHealthSignals();
+      return getTronChainHealthSignals(args.wallet);
     case "solana-protocols":
       return getSolanaProgramLayerSignals(args.wallet);
     default: {
