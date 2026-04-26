@@ -2599,7 +2599,10 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
     maxPriorityFeePerGas: stashed.maxPriorityFeePerGas,
     gas: stashed.gas,
   };
-  const hash = await requestSendTransaction(tx, pinned);
+  // Issue #232: thread the pinned pre-sign hash so a WC timeout can
+  // run a late-broadcast probe (find a tx that mined after our 120s
+  // timer fired) instead of surfacing a false-alarm timeout.
+  const hash = await requestSendTransaction(tx, pinned, stashed.preSignHash);
   // Only retire the handle after successful submission. If requestSendTransaction
   // throws (device disconnect, user rejection, relay timeout), the handle stays
   // valid and the caller can retry until the 15-minute TTL expires. The pin

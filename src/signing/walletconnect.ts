@@ -3,6 +3,7 @@ import type { SessionTypes } from "@walletconnect/types";
 import { getSdkError } from "@walletconnect/utils";
 import { chmodSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import type { PublicClient } from "viem";
 import { CHAIN_IDS, CHAIN_ID_TO_NAME, type SupportedChain, type UnsignedTx } from "../types/index.js";
 import { EVM_ADDRESS } from "../shared/address-patterns.js";
 import {
@@ -11,6 +12,8 @@ import {
   resolveWalletConnectProjectId,
   getConfigDir,
 } from "../config/user-config.js";
+import { getClient } from "../data/rpc.js";
+import { eip1559PreSignHash } from "./verification.js";
 
 /**
  * Recursively tighten permissions on the WalletConnect storage tree so the
@@ -507,10 +510,202 @@ export function timeoutMessage(args: {
   );
 }
 
+/**
+ * Compose the message thrown when the WC timer fires AND the pending
+ * nonce on chain has advanced past the pinned nonce, but no tx in the
+ * recent block window matched our pre-sign hash. Issue #232. This is
+ * an "ambiguous" outcome: someone consumed the slot, but we can't
+ * confirm it was our broadcast.
+ *
+ * Exported for test-side inspection.
+ */
+export function consumedUnmatchedMessage(args: {
+  from: `0x${string}` | string;
+  pinnedNonce: number;
+  pendingNonce: number;
+  chainId: number | string;
+  probeWindowBlocks: number;
+}): string {
+  return (
+    `WalletConnect signing request timed out AND the on-chain pending nonce for \`${args.from}\` ` +
+    `has advanced past the pinned nonce (pending=${args.pendingNonce}, pinned=${args.pinnedNonce}) ` +
+    `on chain id \`${args.chainId}\` — the slot was consumed by SOMETHING, but the last ${args.probeWindowBlocks} blocks ` +
+    `do NOT contain a tx whose pre-sign hash matches what we pinned. ` +
+    `Possible causes: (a) our tx mined further back than the probe window, ` +
+    `(b) a different tx with the same nonce got there first (rare unless the user has another tool driving the same wallet), ` +
+    `(c) RBF/cancel from another tooling path replaced our tx. ` +
+    `DO NOT retry — the nonce is consumed and a retry would either fail with "nonce too low" or land a duplicate at a higher nonce. ` +
+    `Direct the user to a block explorer for txs from \`${args.from}\` around the recent window to identify what landed. Issue #232.`
+  );
+}
+
+/**
+ * Compose the message thrown when the WC timer fires but the late-
+ * broadcast probe confirmed the pending nonce is still equal to the
+ * pinned nonce — i.e. NOTHING broadcast. Issue #232. Strict improvement
+ * over the legacy generic timeout: the agent (and user) now know with
+ * certainty that retrying the same handle is safe.
+ *
+ * Exported for test-side inspection.
+ */
+export function noBroadcastConfirmedMessage(args: {
+  from: `0x${string}` | string;
+  pinnedNonce: number;
+  chainId: number | string;
+  timeoutSeconds: number;
+}): string {
+  return (
+    `WalletConnect signing request did not complete within ${args.timeoutSeconds}s — and an automatic ` +
+    `on-chain probe confirmed that the pending nonce for \`${args.from}\` on chain id \`${args.chainId}\` ` +
+    `is still \`${args.pinnedNonce}\` (pinned), so no late broadcast is in flight. ` +
+    `Safe to retry: call \`send_transaction\` on the SAME handle within its 15-min TTL. ` +
+    `The user is most likely still reviewing the tx on the Ledger device — closing the WalletConnect ` +
+    `subapp on Ledger Live and reopening it before the retry can help if the device prompt got stale. Issue #232.`
+  );
+}
+
+/**
+ * How many recent blocks the late-broadcast probe walks back through to
+ * find a tx matching the pinned (from, nonce). Bounded so a probe on a
+ * fast-block chain (Arbitrum, Optimism, Base) doesn't fan out to dozens
+ * of `eth_getBlockByNumber` calls. The 120s WC timeout fires after the
+ * tx (if broadcast) has had time to mine — for Ethereum (~12s blocks)
+ * 16 blocks is ~3 min of headroom; for L2s with sub-second blocks the
+ * window is shorter in wall time but still covers the typical late-
+ * broadcast tail. Beyond this we surface a "consumed but not located"
+ * error and let the agent fall back to the existing on-chain check.
+ */
+const LATE_BROADCAST_PROBE_BLOCKS = 16;
+
+/**
+ * Outcome of `probeForLateBroadcast`. Three branches:
+ *   - `matched` → found an on-chain tx whose pre-sign hash equals the
+ *     server's pinned hash; the WC timeout was a false alarm and we can
+ *     return the tx hash to the caller.
+ *   - `no_broadcast` → the pending nonce on chain is still ≤ the pinned
+ *     nonce; the tx never left Ledger Live's side. Safe to retry.
+ *   - `consumed_unmatched` → the pinned nonce was consumed but no tx in
+ *     the recent block window had a matching pre-sign hash. Could be a
+ *     different tx (RBF replacement, parallel tooling) using the same
+ *     slot, or our tx mined further back than the probe window. Don't
+ *     retry; surface the pending nonce so the agent can guide the user
+ *     to a block explorer.
+ */
+export type LateBroadcastProbeResult =
+  | { status: "matched"; txHash: `0x${string}` }
+  | { status: "no_broadcast"; pendingNonce: number }
+  | { status: "consumed_unmatched"; pendingNonce: number };
+
+/**
+ * After a WC `eth_sendTransaction` times out, find out whether the tx
+ * actually broadcast (Ledger Live finished signing + relayed
+ * asynchronously after our 120s timer fired) before throwing. Issue
+ * #232.
+ *
+ * Strategy:
+ *   1. Read the pending nonce on chain. If it equals the pinned nonce,
+ *      nothing happened — return `no_broadcast`.
+ *   2. Otherwise (pending > pinned), the slot was consumed. Walk the
+ *      most-recent `LATE_BROADCAST_PROBE_BLOCKS` blocks, pull every tx
+ *      with `from === pinnedFrom && nonce === pinnedNonce`, and
+ *      recompute its EIP-1559 pre-sign hash. If it equals
+ *      `expectedPreSignHash`, that IS our tx; return `matched`.
+ *   3. If walked the full window without a hash match, return
+ *      `consumed_unmatched`.
+ *
+ * Errors during the probe (RPC failure, viem decoding failure) bubble
+ * up to the caller, which falls back to the existing timeout error
+ * rather than blocking. This is read-only — no chain mutations.
+ */
+export async function probeForLateBroadcast(args: {
+  client: Pick<
+    PublicClient,
+    "getTransactionCount" | "getBlockNumber" | "getBlock"
+  >;
+  from: `0x${string}`;
+  pinnedNonce: number;
+  expectedPreSignHash: `0x${string}`;
+  chainId: number;
+  /** Override the default block window (for tests). */
+  blockWindow?: number;
+}): Promise<LateBroadcastProbeResult> {
+  const pendingNonce = await args.client.getTransactionCount({
+    address: args.from,
+    blockTag: "pending",
+  });
+  if (pendingNonce <= args.pinnedNonce) {
+    return { status: "no_broadcast", pendingNonce };
+  }
+  const head = await args.client.getBlockNumber();
+  const window = args.blockWindow ?? LATE_BROADCAST_PROBE_BLOCKS;
+  const fromLower = args.from.toLowerCase();
+  for (let n = 0; n < window; n++) {
+    if (head < BigInt(n)) break;
+    const blockNumber = head - BigInt(n);
+    let block;
+    try {
+      block = await args.client.getBlock({
+        blockNumber,
+        includeTransactions: true,
+      });
+    } catch {
+      continue;
+    }
+    for (const tx of block.transactions) {
+      // includeTransactions:true → full objects; the `string` branch is
+      // never taken at runtime but viem's union type forces a guard.
+      if (typeof tx === "string") continue;
+      if (!tx.from || tx.from.toLowerCase() !== fromLower) continue;
+      if (tx.nonce !== args.pinnedNonce) continue;
+      // Pre-sign hash recomputation requires EIP-1559 fields. The pin
+      // path always emits eip1559 txs; legacy/2930 wouldn't match by
+      // construction. viem types these as a discriminated union via
+      // `tx.type`.
+      if (tx.type !== "eip1559") continue;
+      if (
+        tx.maxFeePerGas === undefined ||
+        tx.maxFeePerGas === null ||
+        tx.maxPriorityFeePerGas === undefined ||
+        tx.maxPriorityFeePerGas === null ||
+        tx.to === null
+      ) {
+        continue;
+      }
+      let computed: `0x${string}`;
+      try {
+        computed = eip1559PreSignHash({
+          chainId: args.chainId,
+          nonce: tx.nonce,
+          maxFeePerGas: tx.maxFeePerGas,
+          maxPriorityFeePerGas: tx.maxPriorityFeePerGas,
+          gas: tx.gas,
+          to: tx.to as `0x${string}`,
+          value: tx.value,
+          data: tx.input,
+        });
+      } catch {
+        continue;
+      }
+      if (computed.toLowerCase() === args.expectedPreSignHash.toLowerCase()) {
+        return { status: "matched", txHash: tx.hash };
+      }
+    }
+  }
+  return { status: "consumed_unmatched", pendingNonce };
+}
+
 /** Send an `eth_sendTransaction` request. Ledger Live shows it, user signs on device, we get tx hash back. */
 export async function requestSendTransaction(
   tx: UnsignedTx,
   pinned?: PinnedGasFields,
+  /**
+   * EIP-1559 pre-sign hash the server pinned at preview time. When set,
+   * a WC timeout triggers a late-broadcast probe (issue #232): if the
+   * pinned tx mined while we were waiting, return its on-chain hash
+   * instead of throwing. Required to be present on the production send
+   * path; only test/legacy callers omit it.
+   */
+  expectedPreSignHash?: `0x${string}`,
 ): Promise<`0x${string}`> {
   const c = await getSignClient();
   if (!currentSession) {
@@ -603,10 +798,63 @@ export async function requestSendTransaction(
         );
       }, WC_SEND_REQUEST_TIMEOUT_MS),
     ),
-  ]).catch((e: unknown) => {
-    if (timedOut) throw e;
-    // Any other `c.request` rejection surfaces as-is.
-    throw e;
+  ]).catch(async (e: unknown) => {
+    if (!timedOut) {
+      // Any other `c.request` rejection surfaces as-is.
+      throw e;
+    }
+    // Issue #232: WC timeout doesn't necessarily mean nothing happened —
+    // Ledger Live can finish signing + broadcast asynchronously after
+    // our 120s timer aborts. Probe the chain before surfacing a scary
+    // error to the user. Only run when we have everything the probe
+    // needs (pinned nonce + expected pre-sign hash); otherwise fall
+    // through to the existing timeout error.
+    if (!pinned || !expectedPreSignHash) {
+      throw e;
+    }
+    let probe: LateBroadcastProbeResult;
+    try {
+      probe = await probeForLateBroadcast({
+        client: getClient(tx.chain),
+        from: from as `0x${string}`,
+        pinnedNonce: pinned.nonce,
+        expectedPreSignHash,
+        chainId,
+      });
+    } catch {
+      // Probe-internal failure (RPC down, decoder threw) → fall back
+      // to the existing timeout error. Better the conservative "DO NOT
+      // retry blindly" guidance than a silent partial result.
+      throw e;
+    }
+    if (probe.status === "matched") {
+      // The tx landed while we were waiting — return the on-chain
+      // hash and treat the timeout as a false alarm. The caller's
+      // happy-path post-broadcast block fires unchanged.
+      return probe.txHash;
+    }
+    if (probe.status === "consumed_unmatched") {
+      throw new WalletConnectRequestTimeoutError(
+        consumedUnmatchedMessage({
+          from,
+          pinnedNonce: pinned.nonce,
+          pendingNonce: probe.pendingNonce,
+          chainId,
+          probeWindowBlocks: LATE_BROADCAST_PROBE_BLOCKS,
+        }),
+      );
+    }
+    // probe.status === "no_broadcast" → safe to retry, surface the
+    // confirmed-no-broadcast variant so the agent doesn't fall back to
+    // the conservative original message.
+    throw new WalletConnectRequestTimeoutError(
+      noBroadcastConfirmedMessage({
+        from,
+        pinnedNonce: pinned.nonce,
+        chainId,
+        timeoutSeconds: WC_SEND_REQUEST_TIMEOUT_MS / 1000,
+      }),
+    );
   });
   return hash;
 }
