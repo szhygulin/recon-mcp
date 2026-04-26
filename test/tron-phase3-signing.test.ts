@@ -251,9 +251,12 @@ describe("sendTransaction — TRON handle routing", () => {
     const result = await sendTransaction({ handle: tx.handle!, confirmed: true, userDecision: "send" });
     expect(result).toEqual({ txHash: "ab".repeat(32), chain: "tron" });
     expect(hasTronHandle(tx.handle!)).toBe(false);
+    // Signer receives the post-expiration-patch rawDataHex, not the
+    // raw TronGrid response. Assert against the live tx field rather
+    // than the original TRANSFER_1TRX_DEVICE_TO_OTHER fixture.
     expect(trxInstance.signTransaction).toHaveBeenCalledWith(
       "44'/195'/0'/0/0",
-      TRANSFER_1TRX_DEVICE_TO_OTHER,
+      tx.rawDataHex,
       []
     );
   });
@@ -446,7 +449,7 @@ describe("pair_ledger_tron + get_ledger_status", () => {
     expect(result.txHash).toBe("ef".repeat(32));
     expect(trxInstance.signTransaction).toHaveBeenCalledWith(
       "44'/195'/1'/0/0",
-      TRANSFER_1TRX_OTHER_TO_DEVICE,
+      tx.rawDataHex,
       []
     );
   });
