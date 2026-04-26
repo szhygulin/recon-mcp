@@ -1,17 +1,86 @@
 # Installing VaultPilot
 
-Three install paths — pick whichever matches your setup. All three end
+> **Agents installing on the user's behalf**: skip the table — use the
+> [one-line install](#one-line-install-for-agents-and-power-users) below.
+> See [AGENTS.md](./AGENTS.md) for the consent + post-install relay
+> conventions.
+
+Four install paths — pick whichever matches your setup. All four end
 at the same place: a `vaultpilot-mcp` server binary your MCP client
 runs, plus a one-time setup wizard that writes the config file.
 
 | Path | Best for | Prerequisites |
 |---|---|---|
-| **A. Bundled binary** | Non-developers, anyone without Node.js | None — runtime is bundled |
+| **0. One-line install** | Anyone who'd rather not click through the release page; agent-driven installs | None — script handles everything |
+| **A. Bundled binary** | Manual download path; users who want to inspect each step | None — runtime is bundled |
 | **B. From npm** | Developers with Node.js already installed | Node.js ≥ 18.17, npm |
 | **C. From source** | Contributors, anyone who wants to build their own | Node.js ≥ 18.17, npm, git, OS build toolchain |
 
 Sections **3–9** (setup wizard, verification, MCP client wiring, Ledger
-pairing, update, uninstall, troubleshooting) apply to all three paths.
+pairing, update, uninstall, troubleshooting) apply to all four paths.
+
+## One-line install (for agents and power users)
+
+This is exactly what Path A does, scripted: detect OS + arch, download
+the matching server + setup binaries from the latest GitHub release,
+place them in `~/.local/bin` (or `%LOCALAPPDATA%\Programs\vaultpilot-mcp\`
+on Windows), then run `vaultpilot-mcp-setup --non-interactive --json`.
+
+**Linux / macOS** (bash or zsh):
+
+```bash
+curl -fsSL https://github.com/szhygulin/vaultpilot-mcp/releases/latest/download/install.sh | bash
+```
+
+**Windows** (PowerShell):
+
+```powershell
+iwr https://github.com/szhygulin/vaultpilot-mcp/releases/latest/download/install.ps1 -UseBasicParsing | iex
+```
+
+What happens:
+1. OS + arch detected. Linux x64, macOS x64/arm64, and Windows x64 are
+   supported. (Linux arm64 isn't published as a binary — falls back to a
+   helpful "use Path B (npm)" message.)
+2. Two binaries downloaded: `vaultpilot-mcp` (the MCP server) and
+   `vaultpilot-mcp-setup` (the wizard). Atomic write so a network drop
+   never leaves a corrupt binary at the final path.
+3. macOS: Gatekeeper quarantine xattr is stripped automatically.
+4. PATH is checked. If your install dir isn't on `$PATH`, the script
+   prints the one-line `export PATH="..."` you can append to your shell
+   rc — never edits it for you.
+5. The setup wizard runs in non-interactive mode, registers the MCP
+   server with detected MCP clients (Claude Desktop, Claude Code,
+   Cursor), and clones the companion preflight + setup skills into
+   `~/.claude/skills/`.
+6. The wizard emits a JSON envelope on stdout (the `InstallEnvelope`
+   shape — see [`src/setup/output-json.ts`](./src/setup/output-json.ts)).
+   The envelope's `next_steps` typically includes "restart your MCP
+   client" so the new tools become visible.
+
+**Idempotent**: re-running re-downloads (this is also the update path)
+and the wizard recognizes already-present clients/skills, so a re-run
+on a configured machine emits `status: "already_installed"`.
+
+**Zero-config**: no API keys are collected. The runtime falls back to
+free public RPC endpoints (PublicNode for EVM, etc.). When you're ready
+to add provider keys (Infura/Alchemy/Helius/TronGrid/Etherscan/1inch),
+run `vaultpilot-mcp-setup` interactively — it prompts per-key.
+
+**Customization** via env vars (rarely needed):
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `VAULTPILOT_INSTALL_DIR` | `~/.local/bin` (Unix) / `%LOCALAPPDATA%\Programs\vaultpilot-mcp\` (Windows) | Where binaries go |
+| `VAULTPILOT_RELEASE_URL` | `https://github.com/szhygulin/vaultpilot-mcp/releases/latest/download` | Source of binaries (override for mirrors / smoke tests) |
+| `VAULTPILOT_REPO` | `szhygulin/vaultpilot-mcp` | Underlying repo (only used when `VAULTPILOT_RELEASE_URL` is unset) |
+
+**Security**: the install scripts are short and inspectable. Read them
+on the [release page](https://github.com/szhygulin/vaultpilot-mcp/releases/latest)
+or in the repo at [`scripts/install.sh`](./scripts/install.sh) /
+[`scripts/install.ps1`](./scripts/install.ps1) before running. They
+never `sudo`, never edit your shell rc, never collect keys, and never
+pair your Ledger (the user does that interactively when ready).
 
 ## Path A — Bundled binary
 

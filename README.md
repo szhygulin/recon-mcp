@@ -9,6 +9,14 @@
 
 ![VaultPilot MCP demo](./demo.gif)
 
+> **VaultPilot is a self-custodial cryptocurrency MCP server for AI coding agents. Manage portfolios and DeFi positions on Ethereum, Arbitrum, Polygon, Base, Optimism, TRON, Solana, Bitcoin, and Litecoin. Every transaction signs on your Ledger hardware wallet — the AI proposes, you approve. Works with Claude Desktop, Claude Code, Cursor, and any MCP-compatible client.**
+>
+> Agents: read **[AGENTS.md](./AGENTS.md)** for the agent-targeted install + usage guide. One-line install:
+> ```
+> curl -fsSL https://github.com/szhygulin/vaultpilot-mcp/releases/latest/download/install.sh | bash
+> ```
+> (Windows PowerShell: `iwr https://github.com/szhygulin/vaultpilot-mcp/releases/latest/download/install.ps1 -UseBasicParsing | iex`)
+
 VaultPilot MCP is a Model Context Protocol server that lets AI agents — Claude Code, Claude Desktop, Cursor, and any MCP-compatible client — read your on-chain positions across **Ethereum, Arbitrum, Polygon, Base, TRON, and Solana** and prepare transactions you sign on your **Ledger device**. EVM flows go through Ledger Live over WalletConnect; TRON and Solana go through a directly-connected Ledger over USB HID (Ledger Live's WalletConnect bridge does not support either namespace today). Private keys never leave the hardware wallet; every transaction is previewed in human-readable form before you approve it on the device.
 
 Supported protocols: **Aave V3, Compound V3, Morpho Blue, Uniswap V3 LP, Lido, EigenLayer** on EVM, **MarginFi** lending on Solana, plus **LiFi** (EVM swap/bridge) and **Jupiter v6** (Solana swap) aggregation, with **1inch** as an optional EVM quote cross-check.
