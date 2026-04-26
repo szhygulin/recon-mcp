@@ -98,11 +98,19 @@ import {
   getBitcoinBalances,
   getBitcoinFeeEstimates,
   getBitcoinBlockTip,
+  getLitecoinBlockTip,
+  getBitcoinBlocksRecent,
+  getLitecoinBlocksRecent,
   getBitcoinAccountBalance,
   rescanBitcoinAccount,
   getBitcoinTxHistory,
   prepareBitcoinNativeSend,
   signBtcMessage,
+  pairLedgerLitecoin,
+  getLitecoinBalance,
+  prepareLitecoinNativeSend,
+  signLtcMessage,
+  rescanLitecoinAccount,
   getMarginfiPositions,
   getSolanaStakingPositions,
   getMarginfiDiagnostics,
@@ -159,11 +167,19 @@ import {
   getBitcoinBalancesInput,
   getBitcoinFeeEstimatesInput,
   getBitcoinBlockTipInput,
+  getLitecoinBlockTipInput,
+  getBitcoinBlocksRecentInput,
+  getLitecoinBlocksRecentInput,
   getBitcoinAccountBalanceInput,
   rescanBitcoinAccountInput,
   getBitcoinTxHistoryInput,
   prepareBitcoinNativeSendInput,
   signBtcMessageInput,
+  pairLedgerLitecoinInput,
+  getLitecoinBalanceInput,
+  prepareLitecoinNativeSendInput,
+  signLtcMessageInput,
+  rescanLitecoinAccountInput,
   getMarginfiPositionsInput,
   getSolanaStakingPositionsInput,
   getMarginfiDiagnosticsInput,
@@ -281,6 +297,7 @@ import {
   renderPostBroadcastBlock,
   renderPostSendPollBlock,
   renderBitcoinVerificationBlock,
+  renderLitecoinVerificationBlock,
   renderPrepareReceiptBlock,
   renderPreviewVerifyAgentTaskBlock,
   renderSolanaAgentTaskBlock,
@@ -297,6 +314,7 @@ import type {
   SupportedChain,
   TxVerification,
   UnsignedBitcoinTx,
+  UnsignedLitecoinTx,
   UnsignedSolanaTx,
   UnsignedTronTx,
   UnsignedTx,
@@ -504,6 +522,10 @@ export async function collectVerificationBlocks(
   // early-return that the EVM branch relies on.
   if (chain === "bitcoin" && typeof r.psbtBase64 === "string") {
     blocks.push(renderBitcoinVerificationBlock(result as UnsignedBitcoinTx));
+    return blocks;
+  }
+  if (chain === "litecoin" && typeof r.psbtBase64 === "string") {
+    blocks.push(renderLitecoinVerificationBlock(result as UnsignedLitecoinTx));
     return blocks;
   }
   if (!verification) return blocks;
@@ -838,7 +860,7 @@ function previewSolanaSendHandler(
 function sendTransactionHandler(
   fn: (args: SendTransactionArgs) => Promise<{
     txHash: `0x${string}` | string;
-    chain: SupportedChain | "tron" | "solana" | "bitcoin";
+    chain: SupportedChain | "tron" | "solana" | "bitcoin" | "litecoin";
     nextHandle?: string;
     preSignHash?: `0x${string}`;
     to?: `0x${string}`;
@@ -1204,13 +1226,13 @@ async function main() {
         "",
         "PIN DATA:",
         "  Expected SHA-256 of SKILL.md:",
-        "    10db66ad5fcfa250b4a5a753fd745eac4dc358b41ccfc1a1258f67040b7eddea",
+        "    fc4a40469e11156e7cccdc1539b93e430b60a49bf75d01b41de112d8c301f1a8",
         "  Expected in-file sentinel — NOTE: assembled from fragments below so the",
         "  full literal does not appear in these instructions (if it did, searching",
         "  context for it would always succeed and defeat the check). Concatenate:",
         "    fragment A: `VAULTPILOT_PREFLIGHT_INTEGRITY`",
-        "    fragment B: `_v1_`",
-        "    fragment C: `7780bfeee9a49f01` (16 hex chars)",
+        "    fragment B: `_v2_`",
+        "    fragment C: `43b1d2403a0c2a94` (16 hex chars)",
         "  Search target for step (4) below is the full string A+B+C.",
         "",
         "PROTOCOL — on each vaultpilot-mcp flow that touches signing",
@@ -1386,7 +1408,7 @@ async function main() {
     "get_transaction_history",
     {
       description:
-        "Fetch a wallet's recent on-chain transaction history on a single chain, merged across external (user-initiated) txs, ERC-20/TRC-20 token transfers, and internal (contract-initiated) txs. Results are sorted newest-first, capped at `limit` (default 25, max 50), and annotated with decoded method names (via 4byte.directory) and historical USD values at the time of each tx (via DefiLlama). Supports Ethereum/Arbitrum/Polygon/Base/Optimism via Etherscan, TRON via TronGrid, and Solana via the configured Solana RPC. On Solana, results include a fourth item type `program_interaction` for DeFi calls (Jupiter swaps, Marinade/Jito liquid staking, Raydium/Orca swaps, native validator staking, or any unknown program) with balance-delta summaries showing net SOL + SPL changes for the wallet across the tx — more useful than raw instruction data for 'what happened to my wallet?'. `includeInternal` has no meaning for TRON (silently ignored) or Solana (doesn't have an 'internal' concept — CPI effects are captured inside program_interaction deltas). Use this to answer 'what did I do last week?', 'show me my recent swaps', or 'did I already approve X?' without the user pasting tx hashes. Read-only — no signing, no broadcast.",
+        "Fetch a wallet's recent on-chain transaction history on a single chain, merged across external (user-initiated) txs, ERC-20/TRC-20 token transfers, and internal (contract-initiated) txs. Results are sorted newest-first, capped at `limit` (default 25, max 50), and annotated with decoded method names (via 4byte.directory) and historical USD values at the time of each tx (via DefiLlama). Supports Ethereum/Arbitrum/Polygon/Base/Optimism via Etherscan, TRON via TronGrid, and Solana via the configured Solana RPC. On Solana, results include a fourth item type `program_interaction` for DeFi calls (Jupiter swaps, Marinade/Jito liquid staking, Raydium/Orca swaps, native validator staking, or any unknown program) with balance-delta summaries showing net SOL + SPL changes for the wallet across the tx — more useful than raw instruction data for 'what happened to my wallet?'. `includeInternal` has no meaning for TRON (silently ignored) or Solana (doesn't have an 'internal' concept — CPI effects are captured inside program_interaction deltas). Use this to answer 'what did I do last week?', 'show me my recent swaps', or 'did I already approve X?' without the user pasting tx hashes. Read-only — no signing, no broadcast. Items may carry an optional `suspectedPoisoning` field flagging address-poisoning heuristics: `zero_amount_transfer` (USDC `transferFrom` 0-amount exploit, chain-agnostic), `vanity_suffix_lookalike` (dust tx whose counterparty mimics another counterparty's first-4 + last-4 hex chars; `mimics` field names the matched address), and `self_suffix_lookalike` (counterparty mimics the wallet itself). EVM-only for the suffix rules. AGENT BEHAVIOR: this field is for you, NOT for the user. Do NOT include flagged entries in the user-facing summary — they're noise that crowds out real activity (a single poisoned wallet can have dozens of dust-lookalike entries pinned at the top by recency). Filter them out silently; if the user asks 'is that everything?' or you want to be transparent about the filter, mention briefly like 'hid N suspected-poisoning entries (use the raw response if you want to inspect them)'. Surface a flagged entry only when the user explicitly asks about a specific tx hash that happens to match, or about address-poisoning attempts on this wallet. The point of the flag is to keep poisoning data accessible to your reasoning (e.g. when validating a future `prepare_*` recipient against the wallet's history) WITHOUT polluting chat with scam noise.",
       inputSchema: getTransactionHistoryInput.shape,
     },
     handler(getTransactionHistory)
@@ -1412,6 +1434,7 @@ async function main() {
         "Prepare an unsigned swap or bridge transaction via LiFi aggregator. Same-chain swaps use the best DEX route; cross-chain swaps use a bridge + DEX combo. Default is exact-in (`amount` = fromToken); set `amountSide: \"to\"` for exact-out (`amount` = target toToken output, e.g. \"I want 100 USDC out\"). " +
         "Source chain is always EVM. Destination can be any EVM chain, Solana, or TRON. For non-EVM destinations pass `toChain: \"solana\"` / `\"tron\"` + an explicit `toAddress` in the destination chain's format; the user signs an EVM tx and the bridge protocol delivers tokens to the destination after confirmation. The destination-side decimals cross-check is dropped for non-EVM destinations (we can't read SPL/TRC-20 via EVM RPC); LiFi's reported decimals are the source of truth there. Exact-out is not supported for cross-chain-to-non-EVM. For Solana-source swaps and bridges use `prepare_solana_lifi_swap`. TRON-source LiFi is not yet wired. " +
         "DECODING DEFENSE: every cross-chain bridge calldata is parsed into its `BridgeData` tuple and the encoded `destinationChainId` + `receiver` are cross-checked against what the user requested — refuses on mismatch. Catches a compromised MCP that returns calldata routing to a different chain or recipient than the prepare receipt advertises. " +
+        "INTERMEDIATE-CHAIN BRIDGES: NEAR Intents (notably for ETH→TRON USDT routes) settles on NEAR and releases on the final chain via an off-chain relayer, so its on-chain `destinationChainId` is NEAR's pseudo-id (1885080386571452) rather than the user's requested chain. The defense allows this ONLY for an explicit hardcoded (bridge name, intermediate chain ID) pair held as a source-code constant — not loaded from env / config / LiFi response — so a compromised aggregator can't claim arbitrary chains as 'intermediate'. Receiver-side checks (non-EVM sentinel, etc.) still apply unchanged. " +
         "The returned tx can be sent via `send_transaction`.",
       inputSchema: prepareSwapInput.shape,
     },
@@ -1988,7 +2011,56 @@ async function main() {
     handler(getBitcoinBlockTip)
   );
 
-  registerTool(server, 
+  registerTool(server,
+    "get_btc_blocks_recent",
+    {
+      description:
+        "READ-ONLY — recent Bitcoin block headers, newest-first (default 144 ≈ one " +
+        "day; capped at 200). Each entry: height, 64-hex hash, header timestamp, " +
+        "tx count, size, weight (when exposed), and — on indexers that surface it " +
+        "(mempool.space) — the mining pool name. Backbone for chain-health " +
+        "questions: 'is the chain producing blocks at the expected rate?', 'any " +
+        "empty blocks recently?', 'who's mining most of the recent window?'. " +
+        "Used internally by `get_market_incident_status({ protocol: 'bitcoin' })` " +
+        "to compute hash_cliff, empty_block_streak, and miner_concentration. " +
+        "Issue #233 v1.",
+      inputSchema: getBitcoinBlocksRecentInput.shape,
+    },
+    handler(getBitcoinBlocksRecent)
+  );
+
+  registerTool(server,
+    "get_ltc_block_tip",
+    {
+      description:
+        "READ-ONLY — current Litecoin mainnet chain tip. Mirror of `get_btc_block_tip` " +
+        "for Litecoin: height, 64-hex hash, timestamp, ageSeconds, optional MTP + " +
+        "difficulty. Backed by the configured indexer (litecoinspace.org default; " +
+        "`LITECOIN_INDEXER_URL` env var or `litecoinIndexerUrl` user-config override " +
+        "for self-hosted Esplora). LTC blocks target 2.5 minutes — a 10-min gap is " +
+        "well within Poisson normal but worth surfacing. Issue #233 v1 (this tool " +
+        "was missing from the MCP surface despite the underlying indexer method " +
+        "existing in code).",
+      inputSchema: getLitecoinBlockTipInput.shape,
+    },
+    handler(getLitecoinBlockTip)
+  );
+
+  registerTool(server,
+    "get_ltc_blocks_recent",
+    {
+      description:
+        "READ-ONLY — recent Litecoin block headers, newest-first (default 144 ≈ 6h " +
+        "at 2.5-min blocks; capped at 200). Mirror of `get_btc_blocks_recent` for " +
+        "LTC. Used internally by `get_market_incident_status({ protocol: 'litecoin' })` " +
+        "to compute hash_cliff, empty_block_streak, and miner_concentration. " +
+        "Issue #233 v1.",
+      inputSchema: getLitecoinBlocksRecentInput.shape,
+    },
+    handler(getLitecoinBlocksRecent)
+  );
+
+  registerTool(server,
     "get_btc_tx_history",
     {
       description:
@@ -2039,7 +2111,104 @@ async function main() {
     handler(signBtcMessage, { toolName: "sign_message_btc" })
   );
 
-  registerTool(server, 
+  registerTool(server,
+    "pair_ledger_ltc",
+    {
+      description:
+        "Pair the host's directly-connected Ledger device for Litecoin signing. " +
+        "REQUIREMENTS: Ledger plugged in over USB, device unlocked, the 'Litecoin' " +
+        "app open on-screen. Ledger Live's WalletConnect relay does not expose " +
+        "Litecoin accounts to dApps, so signing goes over USB HID via " +
+        "`@ledgerhq/hw-app-btc` (the same SDK as Bitcoin, with `currency:'litecoin'` " +
+        "selecting Litecoin-specific encoding). One call enumerates the four " +
+        "BIP-44 address types (legacy `L…`, p2sh-segwit `M…`, native segwit " +
+        "`ltc1q…`, taproot `ltc1p…`) for the given account index. BIP-44 coin_type 2. " +
+        "Per-type fault-tolerant: each address-type walk runs independently, so " +
+        "one type's failure (e.g. the Ledger Litecoin app currently rejects " +
+        "`bech32m`/taproot with 'Unsupported address format bech32m') does NOT " +
+        "abort the others — the failed type is recorded under `skipped[]` in " +
+        "the response and the remaining three are paired and persisted. " +
+        "Note: Litecoin Core has not activated Taproot on mainnet, so `ltc1p…` " +
+        "outputs would not be spendable anyway — taproot pairing is effectively " +
+        "forward-compat only. All paired entries surface under the `litecoin: " +
+        "[...]` section of `get_ledger_status`.",
+      inputSchema: pairLedgerLitecoinInput.shape,
+    },
+    handler(pairLedgerLitecoin, { toolName: "pair_ledger_ltc" })
+  );
+
+  registerTool(server,
+    "get_ltc_balance",
+    {
+      description:
+        "Return the on-chain balance for one Litecoin mainnet address via the " +
+        "Esplora indexer (litecoinspace.org by default; override via " +
+        "`LITECOIN_INDEXER_URL` env var or `userConfig.litecoinIndexerUrl`). " +
+        "Returns confirmed + mempool litoshis and an LTC-decimal projection. " +
+        "Accepts L/M/3/ltc1q/ltc1p — the read path validates format only.",
+      inputSchema: getLitecoinBalanceInput.shape,
+    },
+    handler(getLitecoinBalance, { toolName: "get_ltc_balance" })
+  );
+
+  registerTool(server,
+    "prepare_litecoin_native_send",
+    {
+      description:
+        "Build an unsigned Litecoin native-send PSBT. Same pipeline as " +
+        "`prepare_btc_send`: fetch UTXOs + fee rate, run coin-selection, build a " +
+        "PSBT v0 with `nonWitnessUtxo` populated on every input (Ledger app 2.x " +
+        "requirement). Initial release: source addresses must be native segwit " +
+        "(`ltc1q…`) or taproot (`ltc1p…`); recipients can be L/M/ltc1q/ltc1p " +
+        "(legacy 3-prefix P2SH refused on send because bitcoinjs-lib ties the " +
+        "`scriptHash` byte to a single network object). Returns a handle " +
+        "consumed by `send_transaction`, which signs over USB HID with the " +
+        "Litecoin app and broadcasts via the indexer.",
+      inputSchema: prepareLitecoinNativeSendInput.shape,
+    },
+    handler(prepareLitecoinNativeSend, { toolName: "prepare_litecoin_native_send" })
+  );
+
+  registerTool(server,
+    "sign_message_ltc",
+    {
+      description:
+        "Sign a UTF-8 message with a paired Litecoin address using the BIP-137 " +
+        "compact-signature scheme (with Litecoin's `\\x19Litecoin Signed Message:\\n` " +
+        "prefix). Same on-device clear-sign UX as `sign_message_btc`. Taproot " +
+        "(`ltc1p…`) is refused — BIP-322 isn't exposed by the Ledger Litecoin app.",
+      inputSchema: signLtcMessageInput.shape,
+    },
+    handler(signLtcMessage, { toolName: "sign_message_ltc" })
+  );
+
+  registerTool(server,
+    "rescan_ltc_account",
+    {
+      description:
+        "READ-ONLY — refresh the cached on-chain `txCount` for every paired " +
+        "Litecoin address under one Ledger account by re-querying the indexer. " +
+        "Pure indexer-side: NO Ledger / USB interaction. Use this after the " +
+        "user has received funds (so a previously-empty cached address now " +
+        "has history) or when the indexer was stale at the original " +
+        "`pair_ledger_ltc` scan time. Updates the persisted cache, so " +
+        "subsequent `get_ltc_balance` reflects the refresh without another " +
+        "rescan. Three-state extend signal: `needsExtend: true` (trailing " +
+        "buffer address on any cached chain has on-chain history — re-run " +
+        "`pair_ledger_ltc` to extend the walked window); `unverifiedChains: " +
+        "[...]` (tail probe REJECTED for that chain — indeterminate, usually " +
+        "a transient indexer hiccup, re-run `rescan_ltc_account` rather than " +
+        "re-pairing); neither field present → all walked chains confirmed " +
+        "healthy. Indexer fan-out is bounded to `LITECOIN_INDEXER_PARALLELISM` " +
+        "concurrent requests (default 8) to stay under litecoinspace.org's " +
+        "free-tier rate limits; transient 429s and network errors are retried " +
+        "once internally.",
+      inputSchema: rescanLitecoinAccountInput.shape,
+    },
+    handler(rescanLitecoinAccount, { toolName: "rescan_ltc_account" })
+  );
+
+  registerTool(server,
     "prepare_tron_lifi_swap",
     {
       description:
@@ -2052,7 +2221,10 @@ async function main() {
         "(TU3ymitEKCWQFtASkEeHaPb8NfZcJtCHLt) and the owner_address is the user's wallet, " +
         "(3) decodes the inner ABI calldata's BridgeData tuple and cross-checks " +
         "destinationChainId + receiver against the user's request — refuses on any " +
-        "mismatch. TRC-20 source flows REQUIRE a prior approve to the LiFi Diamond — call " +
+        "mismatch. NEAR Intents routes (intermediate-chain settlement on NEAR's pseudo-chain " +
+        "1885080386571452) are allowlisted via a hardcoded source-code constant so a hostile " +
+        "aggregator cannot fabricate 'intermediate-chain' encodings; receiver-side checks still " +
+        "apply unchanged. TRC-20 source flows REQUIRE a prior approve to the LiFi Diamond — call " +
         "`prepare_tron_trc20_approve` first with `spender: \"TU3ymitEKCWQFtASkEeHaPb8NfZcJtCHLt\"` " +
         "and the amount you intend to swap; insufficient allowance reverts the swap on-chain. " +
         "BLIND-SIGN on Ledger (LiFi Diamond not in TRON app's clear-sign allowlist) — " +

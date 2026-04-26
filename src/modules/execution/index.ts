@@ -27,9 +27,18 @@ import {
   hasBitcoinHandle,
 } from "../../signing/btc-tx-store.js";
 import {
+  consumeLitecoinHandle,
+  retireLitecoinHandle,
+  hasLitecoinHandle,
+} from "../../signing/ltc-tx-store.js";
+import {
   signBtcPsbtOnLedger,
   getPairedBtcByAddress,
 } from "../../signing/btc-usb-signer.js";
+import {
+  signLtcPsbtOnLedger,
+  getPairedLtcByAddress,
+} from "../../signing/ltc-usb-signer.js";
 import {
   getTronLedgerAddress,
   signTronTxOnLedger,
@@ -126,11 +135,19 @@ import type {
   GetBitcoinBalancesArgs,
   GetBitcoinFeeEstimatesArgs,
   GetBitcoinBlockTipArgs,
+  GetLitecoinBlockTipArgs,
+  GetBitcoinBlocksRecentArgs,
+  GetLitecoinBlocksRecentArgs,
   GetBitcoinAccountBalanceArgs,
   RescanBitcoinAccountArgs,
   GetBitcoinTxHistoryArgs,
   PrepareBitcoinNativeSendArgs,
   SignBtcMessageArgs,
+  PairLedgerLitecoinArgs,
+  GetLitecoinBalanceArgs,
+  PrepareLitecoinNativeSendArgs,
+  SignLtcMessageArgs,
+  RescanLitecoinAccountArgs,
   GetMarginfiPositionsArgs,
   GetSolanaStakingPositionsArgs,
   PreviewSendArgs,
@@ -726,6 +743,24 @@ export async function getBitcoinBlockTip(_args: GetBitcoinBlockTipArgs) {
   return getBitcoinIndexer().getBlockTip();
 }
 
+export async function getLitecoinBlockTip(_args: GetLitecoinBlockTipArgs) {
+  void _args;
+  const { getLitecoinIndexer } = await import("../litecoin/indexer.js");
+  return getLitecoinIndexer().getBlockTip();
+}
+
+export async function getBitcoinBlocksRecent(args: GetBitcoinBlocksRecentArgs) {
+  const { getBitcoinIndexer } = await import("../btc/indexer.js");
+  const blocks = await getBitcoinIndexer().getRecentBlocks(args.limit);
+  return { chain: "bitcoin" as const, count: blocks.length, blocks };
+}
+
+export async function getLitecoinBlocksRecent(args: GetLitecoinBlocksRecentArgs) {
+  const { getLitecoinIndexer } = await import("../litecoin/indexer.js");
+  const blocks = await getLitecoinIndexer().getRecentBlocks(args.limit);
+  return { chain: "litecoin" as const, count: blocks.length, blocks };
+}
+
 /**
  * Refresh the indexer-side `txCount` for every cached BTC address
  * under one Ledger account, without touching the device. Distinct from
@@ -1058,6 +1093,311 @@ export async function prepareBitcoinNativeSend(
 export async function signBtcMessage(args: SignBtcMessageArgs) {
   const { signBitcoinMessage } = await import("../btc/actions.js");
   return signBitcoinMessage({ wallet: args.wallet, message: args.message });
+}
+
+/**
+ * Pair the Ledger device for Litecoin signing. Mirror of
+ * `pairLedgerBitcoin`. The Ledger Litecoin app shares its host-side
+ * SDK (`@ledgerhq/hw-app-btc`) with the Bitcoin app, parametrized by
+ * `currency: "litecoin"` in our `ltc-usb-loader.ts`.
+ *
+ * One call enumerates all four address types for the given account
+ * index. BIP-44 coin_type 2 (`<purpose>'/2'/<account>'/...`) instead
+ * of 0.
+ */
+export async function pairLedgerLitecoin(
+  args: PairLedgerLitecoinArgs = {},
+): Promise<{
+  accountIndex: number;
+  gapLimit: number;
+  appVersion: string;
+  addresses: Array<{
+    addressType: "legacy" | "p2sh-segwit" | "segwit" | "taproot";
+    address: string;
+    path: string;
+    chain: 0 | 1;
+    addressIndex: number;
+    txCount: number;
+  }>;
+  skipped: Array<{
+    addressType: "legacy" | "p2sh-segwit" | "segwit" | "taproot";
+    reason: string;
+  }>;
+  summary: { totalDerived: number; used: number; unused: number };
+  instructions: string;
+}> {
+  const accountIndex = args.accountIndex ?? 0;
+  const {
+    scanLtcAccount,
+    setPairedLtcAddress,
+    clearPairedLtcAccount,
+    DEFAULT_LTC_GAP_LIMIT,
+  } = await import("../../signing/ltc-usb-signer.js");
+  const gapLimit = args.gapLimit ?? DEFAULT_LTC_GAP_LIMIT;
+
+  const { getLitecoinIndexer } = await import("../litecoin/indexer.js");
+  const indexer = getLitecoinIndexer();
+  const fetchTxCount = async (addr: string): Promise<number> => {
+    const bal = await indexer.getBalance(addr);
+    return bal.txCount;
+  };
+
+  let derived;
+  try {
+    derived = await scanLtcAccount({
+      accountIndex,
+      gapLimit,
+      fetchTxCount,
+    });
+  } catch (e) {
+    const hint = await getDeviceStateHint("Litecoin");
+    if (hint && e instanceof Error) {
+      throw new Error(`${e.message} ${hint}`, { cause: e });
+    }
+    throw e;
+  }
+  // Issue #231: scanLtcAccount is per-type fault-tolerant — a single
+  // type's failure (e.g. taproot's bech32m on the current Ledger LTC
+  // app) records into `skipped` rather than aborting. If EVERY type
+  // failed, treat that as a real pairing failure: don't drop the
+  // existing cache and don't claim success.
+  if (derived.entries.length === 0) {
+    const reasons = derived.skipped
+      .map((s) => `${s.addressType}: ${s.reason}`)
+      .join("; ");
+    throw new Error(
+      `pair_ledger_ltc: every address-type walk failed. ${reasons || "no per-type errors recorded"}`,
+    );
+  }
+  clearPairedLtcAccount(accountIndex);
+  for (const entry of derived.entries) {
+    setPairedLtcAddress({
+      address: entry.address,
+      publicKey: entry.publicKey,
+      path: entry.path,
+      appVersion: entry.appVersion,
+      addressType: entry.addressType,
+      accountIndex: entry.accountIndex,
+      chain: entry.chain,
+      addressIndex: entry.addressIndex,
+      txCount: entry.txCount,
+    });
+  }
+  const used = derived.entries.filter((e) => e.txCount > 0).length;
+  const succeededTypes = new Set(derived.entries.map((e) => e.addressType)).size;
+  const totalTypes = succeededTypes + derived.skipped.length;
+  const skippedNote = derived.skipped.length
+    ? ` Skipped ${derived.skipped.length}/${totalTypes} address types (${derived.skipped.map((s) => s.addressType).join(", ")}) — see \`skipped[]\` for per-type reasons. Common case: the Ledger Litecoin app does not support bech32m, so taproot (\`ltc1p…\`) derivation throws "Unsupported address format bech32m". Litecoin Core has not activated Taproot on mainnet anyway, so taproot pairing is effectively forward-compat only.`
+    : "";
+  return {
+    accountIndex,
+    gapLimit,
+    appVersion: derived.appVersion,
+    addresses: derived.entries.map((e) => ({
+      addressType: e.addressType,
+      address: e.address,
+      path: e.path,
+      chain: e.chain,
+      addressIndex: e.addressIndex,
+      txCount: e.txCount,
+    })),
+    skipped: derived.skipped,
+    summary: {
+      totalDerived: derived.entries.length,
+      used,
+      unused: derived.entries.length - used,
+    },
+    instructions:
+      "Litecoin account paired with BIP44 gap-limit scanning. Both the receive " +
+      "(/0/i) and change (/1/i) chains were walked across all four address types " +
+      "until " +
+      gapLimit +
+      " consecutive empty addresses were observed. Use `get_ltc_balance` against " +
+      "any cached address. Re-run `pair_ledger_ltc` to refresh; previously-cached " +
+      "entries for this accountIndex are dropped before the new scan persists." +
+      skippedNote,
+  };
+}
+
+export async function getLitecoinBalance(args: GetLitecoinBalanceArgs) {
+  const { getLitecoinBalance: reader } = await import(
+    "../litecoin/balances.js"
+  );
+  return reader(args.address);
+}
+
+export async function prepareLitecoinNativeSend(
+  args: PrepareLitecoinNativeSendArgs,
+) {
+  const { buildLitecoinNativeSend } = await import("../litecoin/actions.js");
+  return buildLitecoinNativeSend({
+    wallet: args.wallet,
+    to: args.to,
+    amount: args.amount,
+    ...(args.feeRateSatPerVb !== undefined
+      ? { feeRateSatPerVb: args.feeRateSatPerVb }
+      : {}),
+    ...(args.rbf !== undefined ? { rbf: args.rbf } : {}),
+    ...(args.allowHighFee !== undefined ? { allowHighFee: args.allowHighFee } : {}),
+  });
+}
+
+export async function signLtcMessage(args: SignLtcMessageArgs) {
+  const { signLitecoinMessage } = await import("../litecoin/actions.js");
+  return signLitecoinMessage({ wallet: args.wallet, message: args.message });
+}
+
+/**
+ * Refresh the cached `txCount` for every paired Litecoin address under
+ * one Ledger account by re-querying the indexer. Pure indexer fan-out:
+ * no Ledger / USB interaction. Mirror of `rescanBitcoinAccount` for
+ * Litecoin — same three-state extend signal, same persistence side
+ * effects, same parallelism cap (`LITECOIN_INDEXER_PARALLELISM`).
+ *
+ * Issue #229.
+ */
+export async function rescanLitecoinAccount(args: RescanLitecoinAccountArgs) {
+  const { getPairedLtcAddresses, setPairedLtcAddress } = await import(
+    "../../signing/ltc-usb-signer.js"
+  );
+  const all = getPairedLtcAddresses();
+  const forAccount = all.filter(
+    (e) => e.accountIndex === args.accountIndex,
+  );
+  if (forAccount.length === 0) {
+    throw new Error(
+      `No paired Litecoin entries cached for accountIndex=${args.accountIndex}. ` +
+        `Run \`pair_ledger_ltc({ accountIndex: ${args.accountIndex} })\` first ` +
+        `to populate the cache. \`rescan_ltc_account\` only refreshes existing ` +
+        `entries — it cannot derive new addresses (that needs the Ledger device).`,
+    );
+  }
+  const { getLitecoinIndexer } = await import("../litecoin/indexer.js");
+  const indexer = getLitecoinIndexer();
+  const { pLimitMap } = await import("../../data/http.js");
+  const { resolveLitecoinIndexerParallelism } = await import(
+    "../../config/litecoin.js"
+  );
+  // Same rationale as the BTC twin: cap fan-out under litecoinspace.org's
+  // free-tier rate limit. Self-hosted Esplora users with no rate concerns
+  // can override via `LITECOIN_INDEXER_PARALLELISM`.
+  const parallelism = resolveLitecoinIndexerParallelism();
+  const probes = await pLimitMap(forAccount, parallelism, (e) =>
+    indexer.getBalance(e.address),
+  );
+
+  type LTCEntry = (typeof forAccount)[number];
+  type ChainKey = `${LTCEntry["addressType"]}:${0 | 1}`;
+  const chainBuckets = new Map<ChainKey, LTCEntry[]>();
+  const refreshed: Array<{
+    address: string;
+    addressType: LTCEntry["addressType"];
+    chain: 0 | 1 | null;
+    addressIndex: number | null;
+    path: string;
+    previousTxCount: number;
+    txCount: number;
+    delta: number;
+    fetchOk: boolean;
+  }> = [];
+  for (let i = 0; i < forAccount.length; i++) {
+    const entry = forAccount[i];
+    const probe = probes[i];
+    const previousTxCount = entry.txCount ?? 0;
+    let liveTxCount = previousTxCount;
+    let fetchOk = false;
+    if (probe.status === "fulfilled") {
+      liveTxCount = probe.value.txCount;
+      fetchOk = true;
+      if (liveTxCount !== previousTxCount) {
+        setPairedLtcAddress({ ...entry, txCount: liveTxCount });
+      }
+    }
+    refreshed.push({
+      address: entry.address,
+      addressType: entry.addressType,
+      chain: entry.chain ?? null,
+      addressIndex: entry.addressIndex ?? null,
+      path: entry.path,
+      previousTxCount,
+      txCount: liveTxCount,
+      delta: liveTxCount - previousTxCount,
+      fetchOk,
+    });
+    if (entry.chain === 0 || entry.chain === 1) {
+      const key: ChainKey = `${entry.addressType}:${entry.chain}`;
+      const bucket = chainBuckets.get(key);
+      if (bucket) bucket.push(entry);
+      else chainBuckets.set(key, [entry]);
+    }
+  }
+
+  let needsExtend = false;
+  const extendChains: Array<{
+    addressType: LTCEntry["addressType"];
+    chain: 0 | 1;
+    lastAddressIndex: number;
+  }> = [];
+  const unverifiedChains: Array<{
+    addressType: LTCEntry["addressType"];
+    chain: 0 | 1;
+    lastAddressIndex: number;
+  }> = [];
+  for (const [key, bucket] of chainBuckets) {
+    const tail = bucket.reduce((max, e) =>
+      (e.addressIndex ?? -1) > (max.addressIndex ?? -1) ? e : max,
+    );
+    const i = forAccount.indexOf(tail);
+    const probe = probes[i];
+    const [addressTypeStr, chainStr] = key.split(":");
+    const chainEntry = {
+      addressType: addressTypeStr as LTCEntry["addressType"],
+      chain: Number(chainStr) as 0 | 1,
+      lastAddressIndex: tail.addressIndex ?? -1,
+    };
+    if (probe.status === "rejected") {
+      unverifiedChains.push(chainEntry);
+      continue;
+    }
+    if (probe.value.txCount > 0) {
+      needsExtend = true;
+      extendChains.push(chainEntry);
+    }
+  }
+
+  const fetchFailures = refreshed.filter((r) => !r.fetchOk).length;
+  const txCountChanges = refreshed.filter((r) => r.delta !== 0).length;
+  let note: string | undefined;
+  if (needsExtend) {
+    note =
+      "The trailing empty address on at least one cached chain now has " +
+      "on-chain history. The original gap-limit window may miss funds " +
+      "past it. Run `pair_ledger_ltc({ accountIndex: " +
+      args.accountIndex +
+      " })` to extend the scan with fresh on-device derivations." +
+      (unverifiedChains.length > 0
+        ? " (Some other chains' tail probes failed and are reported as " +
+          "`unverifiedChains` — those are independent of the extend signal.)"
+        : "");
+  } else if (unverifiedChains.length > 0) {
+    note =
+      "Some chains' tail probes failed this run, so we can't confirm the " +
+      "gap window is still healthy for them — see `unverifiedChains`. " +
+      "This is usually a transient indexer hiccup (rate limit / 5xx); " +
+      "re-run `rescan_ltc_account` after a moment. Don't re-pair on this " +
+      "alone — `needsExtend: true` is the signal for that.";
+  }
+  return {
+    accountIndex: args.accountIndex,
+    addressesScanned: refreshed.length,
+    txCountChanges,
+    fetchFailures,
+    needsExtend,
+    ...(needsExtend ? { extendChains } : {}),
+    ...(unverifiedChains.length > 0 ? { unverifiedChains } : {}),
+    refreshed,
+    ...(note ? { note } : {}),
+  };
 }
 
 export async function getMarginfiPositions(args: GetMarginfiPositionsArgs) {
@@ -1548,6 +1888,36 @@ async function sendBitcoinTransaction(args: SendTransactionArgs): Promise<{
   // policy as the Solana / TRON branches.
   retireBitcoinHandle(args.handle);
   return { txHash: txid, chain: "bitcoin" };
+}
+
+/**
+ * Send a Litecoin tx — mirror of `sendBitcoinTransaction`. Same Ledger
+ * BTC-app SDK with `currency:"litecoin"`, same PSBT + finalize +
+ * broadcast flow.
+ */
+async function sendLitecoinTransaction(args: SendTransactionArgs): Promise<{
+  txHash: string;
+  chain: "litecoin";
+}> {
+  const tx = consumeLitecoinHandle(args.handle);
+  const paired = getPairedLtcByAddress(tx.from);
+  if (!paired) {
+    throw new Error(
+      `Litecoin source ${tx.from} is no longer in the pairing cache. Re-pair via ` +
+        `\`pair_ledger_ltc\` and re-run prepare_litecoin_native_send for a fresh handle.`,
+    );
+  }
+  const { rawTxHex } = await signLtcPsbtOnLedger({
+    psbtBase64: tx.psbtBase64,
+    expectedFrom: tx.from,
+    path: paired.path,
+    accountPath: tx.accountPath,
+    addressFormat: tx.addressFormat,
+  });
+  const { getLitecoinIndexer } = await import("../litecoin/indexer.js");
+  const txid = await getLitecoinIndexer().broadcastTx(rawTxHex);
+  retireLitecoinHandle(args.handle);
+  return { txHash: txid, chain: "litecoin" };
 }
 
 /** Attach eth_call simulation result, gas estimate, and USD cost. */
@@ -2133,7 +2503,7 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
  */
 export async function sendTransaction(args: SendTransactionArgs): Promise<{
   txHash: `0x${string}` | string;
-  chain: SupportedChain | "tron" | "solana" | "bitcoin";
+  chain: SupportedChain | "tron" | "solana" | "bitcoin" | "litecoin";
   nextHandle?: string;
   /**
    * EIP-1559 pre-sign RLP hash the user already matched on-device during
@@ -2171,6 +2541,9 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
   }
   if (hasBitcoinHandle(args.handle)) {
     return sendBitcoinTransaction(args);
+  }
+  if (hasLitecoinHandle(args.handle)) {
+    return sendLitecoinTransaction(args);
   }
   const stashed = getPinnedGas(args.handle);
   if (!stashed) {

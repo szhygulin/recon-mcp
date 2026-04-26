@@ -12,6 +12,7 @@ import {
   type DecodedLifiBridgeData,
 } from "../../signing/decode-calldata.js";
 import { NON_EVM_RECEIVER_SENTINEL } from "../../abis/lifi-diamond.js";
+import { matchIntermediateChainBridge } from "../swap/intermediate-chain-bridges.js";
 import { SOLANA_ADDRESS } from "../../shared/address-patterns.js";
 import { getAddress } from "viem";
 import type { SupportedChain, UnsignedTronTx } from "../../types/index.js";
@@ -204,11 +205,22 @@ function verifyTronLifiBridgeIntent(
 
   const expectedChainId = BigInt(LIFI_CHAIN_ID[p.toChain]);
   if (decoded.destinationChainId !== expectedChainId) {
-    throw new Error(
-      `LiFi bridge calldata destinationChainId mismatch: encoded ` +
-        `${decoded.destinationChainId.toString()} but user requested toChain="${p.toChain}" ` +
-        `(= ${expectedChainId.toString()}). Refusing to sign.`,
-    );
+    // Intermediate-chain bridges (NEAR Intents) legitimately encode a
+    // settlement-chain ID instead of the user's final destination.
+    // Source-code-constant allowlist — see
+    // `src/modules/swap/intermediate-chain-bridges.ts`. Issue #237.
+    if (!matchIntermediateChainBridge(decoded)) {
+      throw new Error(
+        `LiFi bridge calldata destinationChainId mismatch: encoded ` +
+          `${decoded.destinationChainId.toString()} but user requested toChain="${p.toChain}" ` +
+          `(= ${expectedChainId.toString()}). Refusing to sign.`,
+      );
+    }
+    // TRON-source same-chain (tron → tron) is excluded by the type
+    // system: `PrepareTronLifiSwapParams.toChain` is `SupportedChain |
+    // "solana"`. So the cross-chain invariant the EVM-source path
+    // re-asserts is enforced upstream here. Fall through to
+    // receiver-side checks below.
   }
 
   if (p.toChain === "solana") {

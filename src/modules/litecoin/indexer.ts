@@ -1,22 +1,21 @@
 import { fetchWithTimeout } from "../../data/http.js";
-import { BITCOIN_DEFAULT_INDEXER_URL } from "../../config/btc.js";
+import { LITECOIN_DEFAULT_INDEXER_URL } from "../../config/litecoin.js";
 import { readUserConfig } from "../../config/user-config.js";
 
 /**
- * Bitcoin indexer abstraction. Single interface, mempool.space (default)
- * + any Esplora-compatible endpoint as the impl. Self-hosted Esplora /
- * Electrs all expose the same REST surface — mempool.space's API is a
- * fork of Blockstream Esplora's, with a few additions (fee
- * recommendations, mempool stats) that we use.
+ * Litecoin indexer abstraction. Single interface, litecoinspace.org
+ * (default) + any Esplora-compatible endpoint as the impl. Self-hosted
+ * Esplora / Electrs all expose the same REST surface; litecoinspace.org
+ * is mempool.space's Litecoin sister deployment, exposing the same API.
  *
  * URL resolution priority (highest first):
- *   1. `BITCOIN_INDEXER_URL` env var
- *   2. `userConfig.bitcoinIndexerUrl`
- *   3. `BITCOIN_DEFAULT_INDEXER_URL` (mempool.space)
+ *   1. `LITECOIN_INDEXER_URL` env var
+ *   2. `userConfig.litecoinIndexerUrl`
+ *   3. `LITECOIN_DEFAULT_INDEXER_URL` (litecoinspace.org)
  *
- * Phase 1 scope: read-only. PR3 adds `getUtxos` + `getRawTx` for
- * coin-selection and PSBT input population, plus `broadcastTx` for the
- * send path.
+ * Mirror of `src/modules/btc/indexer.ts` — same Esplora API surface,
+ * same retry policy, same field shapes; only the default URL and
+ * user-config field name differ.
  */
 
 /**
@@ -47,11 +46,11 @@ interface EsploraAddressStats {
 }
 
 /**
- * Bitcoin balance for a single address. Confirmed + unconfirmed reported
+ * Litecoin balance for a single address. Confirmed + unconfirmed reported
  * separately so the caller can decide UX (typically: show confirmed as
  * the headline, surface unconfirmed only when non-zero).
  */
-export interface BitcoinAddressBalance {
+export interface LitecoinAddressBalance {
   address: string;
   /** Confirmed funded - confirmed spent, in sats. Always ≥ 0. */
   confirmedSats: bigint;
@@ -69,7 +68,7 @@ export interface BitcoinAddressBalance {
  * UI shows ("High Priority" / "Medium Priority" / etc.) so users see
  * familiar terminology.
  */
-export interface BitcoinFeeEstimates {
+export interface LitecoinFeeEstimates {
   /** ~next-block target. */
   fastestFee: number;
   /** ~3 blocks (~30 min). */
@@ -87,7 +86,7 @@ export interface BitcoinFeeEstimates {
  * we surface — enough for portfolio history rendering without forcing
  * callers to learn the full SAT/RBF/witness shape.
  */
-export interface BitcoinTxHistoryEntry {
+export interface LitecoinTxHistoryEntry {
   txid: string;
   /** Sum of vouts that pay this address (the funding side). Sats. */
   receivedSats: bigint;
@@ -132,7 +131,7 @@ interface EsploraTx {
  * from the address at PSBT-build time (cheaper than a per-UTXO lookup
  * since all UTXOs for one address share the same scriptPubKey).
  */
-export interface BitcoinUtxo {
+export interface LitecoinUtxo {
   txid: string;
   vout: number;
   /** UTXO value in sats. */
@@ -143,9 +142,9 @@ export interface BitcoinUtxo {
   unconfirmed: boolean;
 }
 
-export interface BitcoinIndexer {
-  getBalance(address: string): Promise<BitcoinAddressBalance>;
-  getFeeEstimates(): Promise<BitcoinFeeEstimates>;
+export interface LitecoinIndexer {
+  getBalance(address: string): Promise<LitecoinAddressBalance>;
+  getFeeEstimates(): Promise<LitecoinFeeEstimates>;
   /**
    * Fetch the tx history for an address. `limit` clamps how many entries
    * to walk (we paginate via the Esplora `/txs/chain/<last_seen>` cursor
@@ -155,13 +154,13 @@ export interface BitcoinIndexer {
   getAddressTxs(
     address: string,
     opts?: { limit?: number },
-  ): Promise<BitcoinTxHistoryEntry[]>;
+  ): Promise<LitecoinTxHistoryEntry[]>;
   /**
    * Fetch the UTXO set for an address. Returned newest-first (block
    * height descending). Used as the input set for coin-selection on
    * `prepare_btc_send`.
    */
-  getUtxos(address: string): Promise<BitcoinUtxo[]>;
+  getUtxos(address: string): Promise<LitecoinUtxo[]>;
   /**
    * Broadcast a fully-signed tx hex via the indexer's `/tx` endpoint.
    * Returns the on-chain txid on success. Throws with the indexer's
@@ -183,22 +182,13 @@ export interface BitcoinIndexer {
     confirmations?: number;
   } | null>;
   /**
-   * Fetch the current Bitcoin chain tip — height, block hash, header
+   * Fetch the current Litecoin chain tip — height, block hash, header
    * timestamp, etc. Two HTTP calls under the hood: `/blocks/tip/hash`
    * for the latest hash, then `/block/<hash>` for the full header
    * details. Both endpoints are aggressively cached at the indexer
    * (mempool.space + standard Esplora share the same shape).
    */
-  getBlockTip(): Promise<BitcoinBlockTip>;
-  /**
-   * Fetch the most recent N block headers, newest-first. Backbone for
-   * chain-health signals (hash_cliff, empty_block_streak, miner_concentration).
-   * Esplora's `/blocks` endpoint returns 10 blocks per call from the tip;
-   * this helper paginates via `/blocks/<startHeight>` to assemble up to
-   * `n` blocks (capped at 200 to bound HTTP load on free-tier indexers).
-   * Issue #233 v1.
-   */
-  getRecentBlocks(n: number): Promise<BitcoinBlockSummary[]>;
+  getBlockTip(): Promise<LitecoinBlockTip>;
   /**
    * Fetch the raw hex of a previous transaction by txid. Required for
    * `nonWitnessUtxo` population on PSBT inputs — Ledger BTC app 2.x
@@ -210,6 +200,30 @@ export interface BitcoinIndexer {
    * sign cleanly. Issue #213.
    */
   getTxHex(txid: string): Promise<string>;
+  /**
+   * Fetch the most recent N block headers, newest-first. Mirrors
+   * `BitcoinIndexer.getRecentBlocks` — same Esplora pagination pattern,
+   * same 200-block cap. Backbone for chain-health signals
+   * (hash_cliff, empty_block_streak, miner_concentration). Issue #233 v1.
+   */
+  getRecentBlocks(n: number): Promise<LitecoinBlockSummary[]>;
+}
+
+/**
+ * Subset of Esplora's per-block JSON we surface for chain-health
+ * signals. Mirrors `BitcoinBlockSummary` shape exactly. `poolName` is
+ * indexer-specific (mempool.space-style `extras.pool.name`); plain
+ * Esplora deployments leave it undefined and `miner_concentration`
+ * degrades to `available: false`.
+ */
+export interface LitecoinBlockSummary {
+  height: number;
+  hash: string;
+  timestamp: number;
+  txCount: number;
+  size: number;
+  weight?: number;
+  poolName?: string;
 }
 
 /**
@@ -221,28 +235,7 @@ export interface BitcoinIndexer {
  * standard Esplora fields but we tolerate their absence for self-
  * hosted forks that strip them.
  */
-/**
- * Subset of Esplora's per-block JSON we surface for chain-health
- * signals. Standard fields available on every Esplora-compatible
- * indexer (mempool.space, Blockstream, self-hosted Esplora).
- *
- * `pool` is mempool.space-specific (`/v1/blocks/<height>` returns it
- * but standard `/blocks/<startHeight>` does not). Surfaced as optional
- * so the `miner_concentration` signal can degrade gracefully when the
- * indexer doesn't expose pool tags.
- */
-export interface BitcoinBlockSummary {
-  height: number;
-  hash: string;
-  timestamp: number;
-  txCount: number;
-  size: number;
-  weight?: number;
-  /** Mempool.space `extras.pool.name` (or similar) when the indexer surfaces it. Undefined on plain Esplora. */
-  poolName?: string;
-}
-
-export interface BitcoinBlockTip {
+export interface LitecoinBlockTip {
   /** Block height — e.g. 946598. */
   height: number;
   /** 64-hex block hash. */
@@ -261,13 +254,13 @@ export interface BitcoinBlockTip {
  * Resolve the indexer base URL via env > config > default.
  */
 function resolveIndexerUrl(): string {
-  const fromEnv = process.env.BITCOIN_INDEXER_URL;
+  const fromEnv = process.env.LITECOIN_INDEXER_URL;
   if (fromEnv && fromEnv.trim().length > 0) return fromEnv.trim();
   const cfg = readUserConfig();
-  if (cfg && cfg.bitcoinIndexerUrl && cfg.bitcoinIndexerUrl.trim().length > 0) {
-    return cfg.bitcoinIndexerUrl.trim();
+  if (cfg && cfg.litecoinIndexerUrl && cfg.litecoinIndexerUrl.trim().length > 0) {
+    return cfg.litecoinIndexerUrl.trim();
   }
-  return BITCOIN_DEFAULT_INDEXER_URL;
+  return LITECOIN_DEFAULT_INDEXER_URL;
 }
 
 /**
@@ -275,7 +268,7 @@ function resolveIndexerUrl(): string {
  * history shape. The fee comes from the API directly; received/sent are
  * derived by walking vin/vout for entries that match the address.
  */
-function summarizeTx(tx: EsploraTx, address: string): BitcoinTxHistoryEntry {
+function summarizeTx(tx: EsploraTx, address: string): LitecoinTxHistoryEntry {
   let receivedSats = 0n;
   let sentSats = 0n;
   let rbfEligible = false;
@@ -339,7 +332,7 @@ function jitteredBackoffMs(): number {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-class EsploraIndexer implements BitcoinIndexer {
+class EsploraIndexer implements LitecoinIndexer {
   constructor(private readonly baseUrl: string) {}
 
   private async getJson<T>(path: string): Promise<T> {
@@ -373,7 +366,7 @@ class EsploraIndexer implements BitcoinIndexer {
       }
       if (!res.ok) {
         throw new Error(
-          `Bitcoin indexer ${path} returned ${res.status} ${res.statusText}`,
+          `Litecoin indexer ${path} returned ${res.status} ${res.statusText}`,
         );
       }
       return (await res.json()) as T;
@@ -381,10 +374,10 @@ class EsploraIndexer implements BitcoinIndexer {
     // Both attempts failed with network errors.
     throw lastNetworkError instanceof Error
       ? lastNetworkError
-      : new Error(`Bitcoin indexer ${path} failed after retry`);
+      : new Error(`Litecoin indexer ${path} failed after retry`);
   }
 
-  async getBalance(address: string): Promise<BitcoinAddressBalance> {
+  async getBalance(address: string): Promise<LitecoinAddressBalance> {
     const stats = await this.getJson<EsploraAddressStats>(`/address/${address}`);
     const confirmedSats =
       BigInt(stats.chain_stats.funded_txo_sum) -
@@ -401,14 +394,14 @@ class EsploraIndexer implements BitcoinIndexer {
     };
   }
 
-  async getFeeEstimates(): Promise<BitcoinFeeEstimates> {
+  async getFeeEstimates(): Promise<LitecoinFeeEstimates> {
     // mempool.space's recommended-fees endpoint lives under `/v1/`. Self-
     // hosted Esplora-only deployments may not have it; for those, the
     // per-block-target endpoint at `/fee-estimates` is the fallback. We
     // try the recommended-fees endpoint first (rich labels) and fall
     // back to deriving the four labels from the per-target map.
     try {
-      const r = await this.getJson<BitcoinFeeEstimates>("/v1/fees/recommended");
+      const r = await this.getJson<LitecoinFeeEstimates>("/v1/fees/recommended");
       // Defensive: ensure the fields are numbers (some Esplora forks may
       // return strings or omit fields; clamp to the floor in that case).
       const num = (n: unknown) => (typeof n === "number" && Number.isFinite(n) ? n : 1);
@@ -437,7 +430,7 @@ class EsploraIndexer implements BitcoinIndexer {
   async getAddressTxs(
     address: string,
     opts: { limit?: number } = {},
-  ): Promise<BitcoinTxHistoryEntry[]> {
+  ): Promise<LitecoinTxHistoryEntry[]> {
     const limit = opts.limit ?? 25;
     // Esplora returns 50 confirmed txs per page (newest-first) +
     // mempool txs at the start. For a single page that's enough for
@@ -447,7 +440,7 @@ class EsploraIndexer implements BitcoinIndexer {
     return txs.slice(0, limit).map((tx) => summarizeTx(tx, address));
   }
 
-  async getUtxos(address: string): Promise<BitcoinUtxo[]> {
+  async getUtxos(address: string): Promise<LitecoinUtxo[]> {
     interface EsploraUtxo {
       txid: string;
       vout: number;
@@ -475,14 +468,14 @@ class EsploraIndexer implements BitcoinIndexer {
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new Error(
-        `Bitcoin indexer /tx broadcast returned ${res.status} ${res.statusText}: ${body.slice(0, 200)}`,
+        `Litecoin indexer /tx broadcast returned ${res.status} ${res.statusText}: ${body.slice(0, 200)}`,
       );
     }
     // Esplora returns the txid as plain text.
     const txid = (await res.text()).trim();
     if (!/^[0-9a-fA-F]{64}$/.test(txid)) {
       throw new Error(
-        `Bitcoin indexer /tx returned an unexpected response (not a 64-hex-char txid): "${txid.slice(0, 80)}"`,
+        `Litecoin indexer /tx returned an unexpected response (not a 64-hex-char txid): "${txid.slice(0, 80)}"`,
       );
     }
     return txid;
@@ -549,7 +542,7 @@ class EsploraIndexer implements BitcoinIndexer {
   async getTxHex(txid: string): Promise<string> {
     if (!/^[0-9a-fA-F]{64}$/.test(txid)) {
       throw new Error(
-        `Bitcoin indexer getTxHex called with non-64-hex txid "${txid.slice(0, 80)}".`,
+        `Litecoin indexer getTxHex called with non-64-hex txid "${txid.slice(0, 80)}".`,
       );
     }
     const res = await fetchWithTimeout(`${this.baseUrl}/tx/${txid}/hex`, {
@@ -558,24 +551,25 @@ class EsploraIndexer implements BitcoinIndexer {
     });
     if (!res.ok) {
       throw new Error(
-        `Bitcoin indexer /tx/${txid}/hex returned ${res.status} ${res.statusText}`,
+        `Litecoin indexer /tx/${txid}/hex returned ${res.status} ${res.statusText}`,
       );
     }
     const hex = (await res.text()).trim();
     if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length % 2 !== 0) {
       throw new Error(
-        `Bitcoin indexer /tx/${txid}/hex returned non-hex body (length ${hex.length}, ` +
+        `Litecoin indexer /tx/${txid}/hex returned non-hex body (length ${hex.length}, ` +
           `head "${hex.slice(0, 32)}").`,
       );
     }
     return hex;
   }
 
-  async getRecentBlocks(n: number): Promise<BitcoinBlockSummary[]> {
-    // Cap at 200 to bound the worst-case HTTP fan-out on free-tier
-    // indexers (mempool.space limits unauthenticated requests to ~75
-    // /quote-equivalents per 2h; 200 blocks @ 10/call = 20 calls per
-    // invocation, well under the budget).
+  async getRecentBlocks(n: number): Promise<LitecoinBlockSummary[]> {
+    // Mirrors `BitcoinIndexer.getRecentBlocks` — same Esplora pagination,
+    // same 200-block cap. LTC's litecoinspace.org tier is tighter than
+    // mempool.space's so the cap matters more here; the existing
+    // LITECOIN_INDEXER_PARALLELISM=8 guardrail is unrelated (this method
+    // is sequential by page, not parallel).
     const want = Math.min(Math.max(1, Math.floor(n)), 200);
     interface EsploraBlockListEntry {
       id?: string;
@@ -584,13 +578,10 @@ class EsploraIndexer implements BitcoinIndexer {
       tx_count?: number;
       size?: number;
       weight?: number;
-      // mempool.space-only — `extras` is on `/v1/blocks/<height>` but
-      // some endpoints fold it into `/blocks/<startHeight>` too. Best-
-      // effort field; absent on plain Esplora.
       extras?: { pool?: { name?: string } };
     }
-    const out: BitcoinBlockSummary[] = [];
-    let cursor: string | undefined; // undefined → request newest 10
+    const out: LitecoinBlockSummary[] = [];
+    let cursor: string | undefined;
     while (out.length < want) {
       const path = cursor === undefined ? "/blocks" : `/blocks/${cursor}`;
       const page = await this.getJson<EsploraBlockListEntry[]>(path);
@@ -601,7 +592,6 @@ class EsploraIndexer implements BitcoinIndexer {
           typeof b.timestamp !== "number" ||
           typeof b.id !== "string"
         ) {
-          // Malformed entry; skip rather than fail the whole walk.
           continue;
         }
         out.push({
@@ -615,9 +605,6 @@ class EsploraIndexer implements BitcoinIndexer {
         });
         if (out.length >= want) break;
       }
-      // Esplora's `/blocks/<startHeight>` returns blocks in
-      // descending order starting AT `startHeight`. To get the next
-      // page we ask for one below the lowest height we just saw.
       const lowest = page.reduce<number | null>((min, b) => {
         if (typeof b.height !== "number") return min;
         return min === null || b.height < min ? b.height : min;
@@ -628,7 +615,7 @@ class EsploraIndexer implements BitcoinIndexer {
     return out;
   }
 
-  async getBlockTip(): Promise<BitcoinBlockTip> {
+  async getBlockTip(): Promise<LitecoinBlockTip> {
     // Esplora exposes the chain tip via two endpoints:
     //   GET /blocks/tip/hash  → plain-text 64-hex hash
     //   GET /block/<hash>     → JSON with height, timestamp, mediantime, difficulty
@@ -642,13 +629,13 @@ class EsploraIndexer implements BitcoinIndexer {
     });
     if (!hashRes.ok) {
       throw new Error(
-        `Bitcoin indexer /blocks/tip/hash returned ${hashRes.status} ${hashRes.statusText}`,
+        `Litecoin indexer /blocks/tip/hash returned ${hashRes.status} ${hashRes.statusText}`,
       );
     }
     const hash = (await hashRes.text()).trim();
     if (!/^[0-9a-fA-F]{64}$/.test(hash)) {
       throw new Error(
-        `Bitcoin indexer /blocks/tip/hash returned an unexpected response (not a 64-hex block hash): "${hash.slice(0, 80)}"`,
+        `Litecoin indexer /blocks/tip/hash returned an unexpected response (not a 64-hex block hash): "${hash.slice(0, 80)}"`,
       );
     }
     interface EsploraBlock {
@@ -662,7 +649,7 @@ class EsploraIndexer implements BitcoinIndexer {
     const block = await this.getJson<EsploraBlock>(`/block/${hash}`);
     if (typeof block.height !== "number" || typeof block.timestamp !== "number") {
       throw new Error(
-        `Bitcoin indexer /block/${hash} response missing required fields ` +
+        `Litecoin indexer /block/${hash} response missing required fields ` +
           `(height: ${block.height}, timestamp: ${block.timestamp}). The indexer ` +
           `may not be Esplora-compatible — check the URL.`,
       );
@@ -679,13 +666,13 @@ class EsploraIndexer implements BitcoinIndexer {
   }
 }
 
-let cached: { url: string; impl: BitcoinIndexer } | undefined;
+let cached: { url: string; impl: LitecoinIndexer } | undefined;
 
 /**
  * Get the singleton indexer. Re-resolved if the URL has changed (env or
  * config swap). Lazy — env vars / config files are read on first call.
  */
-export function getBitcoinIndexer(): BitcoinIndexer {
+export function getLitecoinIndexer(): LitecoinIndexer {
   const url = resolveIndexerUrl();
   if (!cached || cached.url !== url) {
     cached = { url, impl: new EsploraIndexer(url) };
@@ -694,6 +681,6 @@ export function getBitcoinIndexer(): BitcoinIndexer {
 }
 
 /** Test-only — drop the cached indexer so a fresh URL resolution runs. */
-export function resetBitcoinIndexer(): void {
+export function resetLitecoinIndexer(): void {
   cached = undefined;
 }

@@ -1075,6 +1075,32 @@ export const getBitcoinFeeEstimatesInput = z.object({});
 
 export const getBitcoinBlockTipInput = z.object({});
 
+export const getLitecoinBlockTipInput = z.object({});
+
+export const getBitcoinBlocksRecentInput = z.object({
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .default(144)
+    .describe(
+      "How many recent blocks to fetch, newest-first. Default 144 (~one day on BTC). Capped at 200 to bound HTTP fan-out on free-tier indexers."
+    ),
+});
+
+export const getLitecoinBlocksRecentInput = z.object({
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .default(144)
+    .describe(
+      "How many recent blocks to fetch, newest-first. Default 144 (~6h on LTC at 2.5-min blocks). Capped at 200 to bound HTTP fan-out on litecoinspace.org's tighter free tier."
+    ),
+});
+
 export const getBitcoinAccountBalanceInput = z.object({
   accountIndex: z
     .number()
@@ -1179,6 +1205,9 @@ export type GetBitcoinBalanceArgs = z.infer<typeof getBitcoinBalanceInput>;
 export type GetBitcoinBalancesArgs = z.infer<typeof getBitcoinBalancesInput>;
 export type GetBitcoinFeeEstimatesArgs = z.infer<typeof getBitcoinFeeEstimatesInput>;
 export type GetBitcoinBlockTipArgs = z.infer<typeof getBitcoinBlockTipInput>;
+export type GetLitecoinBlockTipArgs = z.infer<typeof getLitecoinBlockTipInput>;
+export type GetBitcoinBlocksRecentArgs = z.infer<typeof getBitcoinBlocksRecentInput>;
+export type GetLitecoinBlocksRecentArgs = z.infer<typeof getLitecoinBlocksRecentInput>;
 export type GetBitcoinAccountBalanceArgs = z.infer<
   typeof getBitcoinAccountBalanceInput
 >;
@@ -1210,3 +1239,123 @@ export type PrepareBitcoinNativeSendArgs = z.infer<typeof prepareBitcoinNativeSe
 export type SignBtcMessageArgs = z.infer<typeof signBtcMessageInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
 export type GetLedgerDeviceInfoArgs = z.infer<typeof getLedgerDeviceInfoInput>;
+
+/**
+ * Litecoin (initial release) — minimal core surface: pair, single-address
+ * balance, send, and message-sign. Multi-address read, fee estimates,
+ * block tip, account-level balance, rescan, tx-history, and portfolio
+ * integration are deferred to a follow-up PR.
+ */
+const litecoinAddressSchema = z
+  .string()
+  .min(26)
+  .max(64)
+  .describe(
+    "Litecoin mainnet address. Accepts legacy (L...), P2SH (M...), legacy " +
+      "P2SH (3...), native segwit (ltc1q...), or taproot (ltc1p...). Note " +
+      "that Litecoin Core has not activated Taproot on mainnet, so ltc1p... " +
+      "outputs derive but are not yet spendable. Testnet (tltc1...) and " +
+      "MWEB (ltcmweb1...) addresses are not supported."
+  );
+
+export const pairLedgerLitecoinInput = z.object({
+  accountIndex: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .optional()
+    .describe(
+      "Ledger Litecoin account slot. One call enumerates ALL FOUR address " +
+        "types (legacy at `44'/2'/<n>'/...`, p2sh-segwit at `49'/2'/<n>'/...`, " +
+        "native segwit at `84'/2'/<n>'/...`, taproot at `86'/2'/<n>'/...`) " +
+        "AND walks both receive (`/0/i`) and change (`/1/i`) chains using " +
+        "BIP44 gap-limit scanning. 0 = first Litecoin account, 1 = second, etc."
+    ),
+  gapLimit: z
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe(
+      "BIP44 gap limit — stop walking each (type, chain) after this many " +
+        "consecutive addresses with zero on-chain history. Default 20."
+    ),
+});
+
+export const getLitecoinBalanceInput = z.object({
+  address: litecoinAddressSchema,
+});
+
+export const prepareLitecoinNativeSendInput = z.object({
+  wallet: litecoinAddressSchema.describe(
+    "Paired Litecoin source address. Must already be in `pairings.litecoin` " +
+      "(call `pair_ledger_ltc` first). Initial release sends only support " +
+      "native segwit (`ltc1q...`) and taproot (`ltc1p...`) source addresses; " +
+      "legacy (`L...`) and P2SH-wrapped (`M.../3...`) sends are deferred."
+  ),
+  to: litecoinAddressSchema.describe(
+    "Litecoin recipient address. L/M/ltc1q/ltc1p accepted. Legacy 3-prefix " +
+      "P2SH is rejected on send (it's read-supported only) — ask the recipient " +
+      "for an M-prefix address."
+  ),
+  amount: z
+    .string()
+    .max(50)
+    .regex(/^(max|\d+(\.\d{1,8})?)$/)
+    .describe(
+      'Decimal LTC string (up to 8 fractional digits, e.g. "0.001") or "max" ' +
+        "to sweep the full balance minus fees."
+    ),
+  feeRateSatPerVb: z
+    .number()
+    .positive()
+    .max(10000)
+    .optional()
+    .describe(
+      "Fee rate in litoshi/vB. Optional — when omitted, uses the indexer's " +
+        "halfHourFee recommendation."
+    ),
+  rbf: z.boolean().optional().describe("BIP-125 RBF. Default true."),
+  allowHighFee: z.boolean().optional(),
+});
+
+export const signLtcMessageInput = z.object({
+  wallet: litecoinAddressSchema.describe(
+    "Paired Litecoin source address. Must already be in `pairings.litecoin`. " +
+      "Taproot (`ltc1p...`) is refused — BIP-322 is not yet exposed by the " +
+      "Ledger Litecoin app."
+  ),
+  message: z
+    .string()
+    .min(1)
+    .max(10_000)
+    .describe("UTF-8 message to sign."),
+});
+
+export const rescanLitecoinAccountInput = z.object({
+  accountIndex: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .describe(
+      "Ledger Litecoin account slot to rescan. Must already be paired (call " +
+        "`pair_ledger_ltc` first). Re-queries the indexer for the live " +
+        "`txCount` of every cached address under this account and updates " +
+        "the persisted cache — useful after the user has received funds or " +
+        "the indexer was stale at original scan time. Pure indexer-side: no " +
+        "Ledger / USB interaction. Returns: `needsExtend: true` when the " +
+        "trailing empty address on any cached chain now has history (re-pair " +
+        "to extend the walked window); `unverifiedChains: [...]` when the " +
+        "tail probe ITSELF rejected (transient indexer hiccup, status " +
+        "indeterminate — re-run `rescan_ltc_account` rather than re-pairing)."
+    ),
+});
+
+export type PairLedgerLitecoinArgs = z.infer<typeof pairLedgerLitecoinInput>;
+export type GetLitecoinBalanceArgs = z.infer<typeof getLitecoinBalanceInput>;
+export type PrepareLitecoinNativeSendArgs = z.infer<typeof prepareLitecoinNativeSendInput>;
+export type SignLtcMessageArgs = z.infer<typeof signLtcMessageInput>;
+export type RescanLitecoinAccountArgs = z.infer<typeof rescanLitecoinAccountInput>;

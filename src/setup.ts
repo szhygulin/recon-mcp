@@ -15,7 +15,9 @@
  */
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createPublicClient, http } from "viem";
 import { mainnet } from "viem/chains";
 import qrcodeTerminal from "qrcode-terminal";
@@ -36,7 +38,48 @@ import {
   registerVaultPilotWithClients,
   summarizePatchResults,
 } from "./setup/register-clients.js";
+import { buildInstallEnvelope } from "./setup/output-json.js";
 import type { RpcProvider, SupportedChain, UserConfig } from "./types/index.js";
+
+/**
+ * Parsed CLI flags — see plan
+ * `claude-work/HIGH-plan-agent-driven-install.md` for the rationale.
+ *
+ * - `--non-interactive` skips every prompt; we register clients and
+ *   install skills with zero-config defaults (PublicNode RPC, no API
+ *   keys, no Ledger pairing). This is the agent-driven install path.
+ * - `--json` switches stdout from prose to a single structured
+ *   `InstallEnvelope`. Implies `--non-interactive` (the prompt loop
+ *   would corrupt the JSON output).
+ * - `--idempotent` is the non-interactive default; surfaced as a flag
+ *   so a script can pass it explicitly. When set, a re-run that did
+ *   no new work exits with `status: "already_installed"` instead of
+ *   re-attempting work that's already done.
+ */
+export interface SetupFlags {
+  nonInteractive: boolean;
+  json: boolean;
+  idempotent: boolean;
+}
+
+export function parseSetupFlags(argv: readonly string[]): SetupFlags {
+  let nonInteractive = false;
+  let json = false;
+  let idempotent = false;
+  for (const a of argv) {
+    if (a === "--non-interactive") nonInteractive = true;
+    else if (a === "--json") json = true;
+    else if (a === "--idempotent") idempotent = true;
+  }
+  // --json without --non-interactive would block on `readline` and
+  // emit broken JSON; promote silently so the flag is forgiving.
+  if (json) nonInteractive = true;
+  // Non-interactive mode is implicitly idempotent (a script that
+  // re-runs the installer should be safe). Surface as a flag for
+  // callers that want to be explicit, but default it on.
+  if (nonInteractive) idempotent = true;
+  return { nonInteractive, json, idempotent };
+}
 
 /** Thin readline wrapper so each prompt is a single awaited call. */
 class Prompt {
@@ -673,6 +716,88 @@ async function offerSkillInstall(p: Prompt): Promise<void> {
   console.log(summarizeSkillInstalls(results));
 }
 
+/**
+ * Read the package version once at module load. Resolved relative to
+ * this file so it works for both global-install (`dist/setup.js` next
+ * to `package.json` in node_modules) and source runs (`dist/setup.js`
+ * with the source `package.json` two dirs up).
+ */
+function readPackageVersion(): string {
+  // The `package.json` always lives in the package root, which is the
+  // parent of `dist/`. From this module's URL we can resolve there
+  // without depending on the cwd. ESM lacks a built-in `require`, so
+  // we go through `createRequire` to pick the file up.
+  const here = fileURLToPath(import.meta.url);
+  const req = createRequire(here);
+  try {
+    const pkg = req("../package.json") as { version?: string };
+    return pkg.version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * Non-interactive install flow — the agent-driven path. Skips every
+ * prompt: no RPC provider configured (PublicNode falls in at runtime),
+ * no API keys collected, no Ledger pairing. We only do the two steps
+ * that don't need user input and aren't sensitive: register MCP
+ * clients and clone the companion skills.
+ *
+ * Both `registerVaultPilotWithClients` and `installAllSkills` are
+ * already idempotent — re-running them re-uses the existing entries
+ * — so we don't need a separate "is it installed" probe up front.
+ * The envelope's `status` derives from the per-step results.
+ */
+async function runNonInteractive(opts: {
+  json: boolean;
+}): Promise<void> {
+  const patches = registerVaultPilotWithClients();
+  const skills = installAllSkills();
+
+  const envelope = buildInstallEnvelope({
+    version: readPackageVersion(),
+    binaries: {
+      // process.argv[1] is the entry of the running process — the
+      // setup binary the user invoked. The server binary lives next
+      // to it after the release pipeline (e.g. `vaultpilot-mcp`).
+      // Best-effort: if we can resolve the registered server path
+      // from the patches, prefer it; else echo what we know.
+      setup: process.argv[1] ?? "",
+      server:
+        patches
+          .map((p) => p.detail)
+          .find((d) => typeof d === "string" && d.length > 0 && d.endsWith("index.js")) ?? "",
+    },
+    patches,
+    skills,
+  });
+
+  if (opts.json) {
+    // Emit ONLY the envelope on stdout — no other output. Anything
+    // else would corrupt the JSON for the script consuming it.
+    process.stdout.write(JSON.stringify(envelope, null, 2) + "\n");
+    return;
+  }
+
+  // Human-readable summary for direct CLI use of `--non-interactive`.
+  console.log("VaultPilot MCP — non-interactive install");
+  console.log(`Version: ${envelope.version}`);
+  console.log("");
+  console.log(summarizePatchResults(patches));
+  console.log("");
+  console.log(summarizeSkillInstalls(skills));
+  console.log("");
+  if (envelope.status === "already_installed") {
+    console.log("Status: already installed (no new work performed).");
+  } else {
+    console.log("Status: installed.");
+  }
+  console.log("");
+  console.log("Next steps:");
+  for (const s of envelope.next_steps) console.log(`  - ${s}`);
+}
+
 async function main() {
   // Demo mode is a try-before-install switch — the server runs against
   // fixture data and never touches a real Ledger or RPC. Running the
@@ -680,13 +805,42 @@ async function main() {
   // (Ledger pairing state, API keys, indexer URLs) to disk and silently
   // create a misleading mismatch between what the user sees in chat
   // (fixture data) and what's actually configured. Refuse with a clear
-  // message instead.
+  // message instead — runs BEFORE non-interactive flag handling so the
+  // demo guard short-circuits both interactive and `--non-interactive`
+  // entry points.
   const { assertNotDemoForSetup } = await import("./demo/index.js");
   try {
     assertNotDemoForSetup();
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
+  }
+
+  const flags = parseSetupFlags(process.argv.slice(2));
+
+  if (flags.nonInteractive) {
+    try {
+      await runNonInteractive({ json: flags.json });
+    } catch (err) {
+      const message = (err as Error).message ?? String(err);
+      if (flags.json) {
+        // Emit a structured error envelope so the script consuming
+        // stdout can still parse it. Distinct shape from the success
+        // envelope (no clients/skills arrays) so the parser can branch
+        // on the presence of `error`.
+        process.stdout.write(
+          JSON.stringify(
+            { status: "error", error: message, version: readPackageVersion() },
+            null,
+            2,
+          ) + "\n",
+        );
+      } else {
+        console.error(`Non-interactive install failed: ${message}`);
+      }
+      process.exitCode = 1;
+    }
+    return;
   }
 
   console.log("VaultPilot MCP — interactive setup\n");
@@ -736,9 +890,25 @@ async function main() {
   }
 }
 
-main().then(() => {
-  // WalletConnect's SignClient keeps websocket/relay handles open that prevent
-  // a natural event-loop exit. Force-exit so the CLI returns control to the
-  // shell; process.exitCode (set on error) is honored.
-  process.exit();
-});
+// Only invoke main() when this module is the entrypoint (i.e. the
+// user ran `vaultpilot-mcp-setup` or `node dist/setup.js`). Without
+// this guard, importing `parseSetupFlags` from a unit test also runs
+// the wizard, which then blocks on stdin and corrupts test output
+// (issue surfaced by the parser tests in #PR opening this).
+const invokedDirectly = (() => {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  // import.meta.url is a file:// URL; argv[1] is a filesystem path.
+  // Compare both as URLs to handle symlinks + extension differences.
+  const fileUrl = new URL(`file://${argv1}`).href;
+  return fileUrl === import.meta.url;
+})();
+
+if (invokedDirectly) {
+  main().then(() => {
+    // WalletConnect's SignClient keeps websocket/relay handles open that prevent
+    // a natural event-loop exit. Force-exit so the CLI returns control to the
+    // shell; process.exitCode (set on error) is honored.
+    process.exit();
+  });
+}

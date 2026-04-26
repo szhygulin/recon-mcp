@@ -389,6 +389,20 @@ relay timed out. Check your Ledger Live mobile app is open, has
 internet, and is on a recent build. Hit Ctrl-C and re-run setup with
 `--skip-pairing` (you can pair later via `pair_ledger_live`).
 
+**WalletConnect "peer not currently reachable" on `send_transaction`.**
+Closing the WalletConnect subapp inside Ledger Live — or putting the
+host machine to sleep — temporarily breaks reachability without ending
+the session. The MCP retains the persisted session across these
+transient drops, so the recovery is: open WalletConnect in Ledger Live
+again (Discover → WalletConnect, or Settings → Connected Apps →
+WalletConnect depending on Ledger Live version) and re-call
+`send_transaction` on the **same handle** within its 15-minute TTL —
+no re-pair needed. Only if reopening doesn't restore reachability after
+a few seconds is the session genuinely ended; in that case run
+`pair_ledger_live` for a fresh one. Mobile Ledger Live can drop the
+session faster than desktop because OS-level app suspension can
+outlast the relay's topic TTL.
+
 **MCP client doesn't see `vaultpilot-mcp`.** Most likely the
 auto-register didn't catch your client. Verify the JSON config exists
 at the path in section 5 and contains a `mcpServers.vaultpilot-mcp`

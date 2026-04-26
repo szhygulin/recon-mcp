@@ -465,3 +465,199 @@ describe("verifyLifiBridgeIntent — chain-id swap detection", () => {
     expect(tx.description).toContain("Bridge");
   });
 });
+
+/**
+ * Issue #237: NEAR Intents legitimately encodes its own pseudo-chain-id
+ * (1885080386571452) in BridgeData.destinationChainId because the route
+ * settles on NEAR and a relayer releases on the final chain off-chain.
+ * The chainId-mismatch defense must allow this — but ONLY for a
+ * hardcoded (bridge name, intermediate chain ID) pair that cannot be
+ * tampered with by a compromised MCP / hostile aggregator at runtime.
+ */
+describe("verifyLifiBridgeIntent — NEAR Intents intermediate-chain allowlist", () => {
+  const NEAR_INTERMEDIATE_CHAIN_ID = 1885080386571452n;
+
+  it("ALLOWS ETH→TRON USDT via NEAR Intents — bridge='near' + chainId=NEAR pseudo-id + receiver=non-EVM sentinel", async () => {
+    fetchQuoteMock.mockResolvedValue(
+      makeBridgeQuote({
+        bridgeData: {
+          transactionId: ("0x" + "77".repeat(32)) as `0x${string}`,
+          bridge: "near",
+          integrator: "vaultpilot-mcp",
+          referrer: "0x0000000000000000000000000000000000000000",
+          sendingAssetId: ETH_USDT.toLowerCase() as `0x${string}`,
+          receiver: NON_EVM_RECEIVER_SENTINEL as `0x${string}`,
+          minAmount: 9_900_000n,
+          destinationChainId: NEAR_INTERMEDIATE_CHAIN_ID,
+          hasSourceSwaps: false,
+          hasDestinationCall: false,
+        },
+      }),
+    );
+
+    const { prepareSwap } = await import("../src/modules/swap/index.js");
+    const tx = await prepareSwap({
+      wallet: EVM_WALLET,
+      fromChain: "ethereum",
+      toChain: "tron",
+      fromToken: ETH_USDT,
+      toToken: TRON_USDT,
+      toAddress: TRON_RECIPIENT,
+      amount: "10",
+    });
+    expect(tx.chain).toBe("ethereum");
+    expect(tx.to).toBe(LIFI_DIAMOND);
+    expect(tx.description).toContain("tron");
+  });
+
+  // Tamper-attempt 1: spoofed bridge name. An attacker-controlled
+  // aggregator could try labelling any bridge as "near" hoping the
+  // chainId-mismatch defense was relaxed by name alone. The (bridge,
+  // chainId) pair is the security boundary, so chainId NOT matching the
+  // hardcoded literal must still be rejected.
+  it("REJECTS bridge='near' with a non-NEAR chainId (chain-ID tamper attempt)", async () => {
+    fetchQuoteMock.mockResolvedValue(
+      makeBridgeQuote({
+        bridgeData: {
+          transactionId: ("0x" + "88".repeat(32)) as `0x${string}`,
+          bridge: "near",
+          integrator: "vaultpilot-mcp",
+          referrer: "0x0000000000000000000000000000000000000000",
+          sendingAssetId: ETH_USDT.toLowerCase() as `0x${string}`,
+          receiver: NON_EVM_RECEIVER_SENTINEL as `0x${string}`,
+          minAmount: 9_900_000n,
+          destinationChainId: 99999999n, // not NEAR's pseudo-id, not TRON
+          hasSourceSwaps: false,
+          hasDestinationCall: false,
+        },
+      }),
+    );
+
+    const { prepareSwap } = await import("../src/modules/swap/index.js");
+    await expect(
+      prepareSwap({
+        wallet: EVM_WALLET,
+        fromChain: "ethereum",
+        toChain: "tron",
+        fromToken: ETH_USDT,
+        toToken: TRON_USDT,
+        toAddress: TRON_RECIPIENT,
+        amount: "10",
+      }),
+    ).rejects.toThrow(/destinationChainId mismatch/);
+  });
+
+  // Tamper-attempt 2: spoofed bridge label on a NEAR chain ID. An
+  // attacker could try encoding NEAR's chain ID under a different bridge
+  // name (e.g. "across") to slip past a chainId-only allowlist. Both
+  // halves are required.
+  it("REJECTS NEAR chainId encoded under a non-'near' bridge name (bridge-name tamper attempt)", async () => {
+    fetchQuoteMock.mockResolvedValue(
+      makeBridgeQuote({
+        bridgeData: {
+          transactionId: ("0x" + "99".repeat(32)) as `0x${string}`,
+          bridge: "across",
+          integrator: "vaultpilot-mcp",
+          referrer: "0x0000000000000000000000000000000000000000",
+          sendingAssetId: ETH_USDT.toLowerCase() as `0x${string}`,
+          receiver: NON_EVM_RECEIVER_SENTINEL as `0x${string}`,
+          minAmount: 9_900_000n,
+          destinationChainId: NEAR_INTERMEDIATE_CHAIN_ID,
+          hasSourceSwaps: false,
+          hasDestinationCall: false,
+        },
+      }),
+    );
+
+    const { prepareSwap } = await import("../src/modules/swap/index.js");
+    await expect(
+      prepareSwap({
+        wallet: EVM_WALLET,
+        fromChain: "ethereum",
+        toChain: "tron",
+        fromToken: ETH_USDT,
+        toToken: TRON_USDT,
+        toAddress: TRON_RECIPIENT,
+        amount: "10",
+      }),
+    ).rejects.toThrow(/destinationChainId mismatch/);
+  });
+
+  // Even when bridge=near + chainId=NEAR match, the non-EVM destination
+  // case still requires the receiver to be the non-EVM sentinel. The
+  // intermediate-chain allowlist relaxes ONLY the chainId equality, not
+  // the receiver-side checks — so an attacker can't pair a legit-looking
+  // (bridge, chainId) with an EVM receiver to exfiltrate funds.
+  it("REJECTS NEAR-bridge route with a real EVM receiver (receiver-side check still applies)", async () => {
+    const attackerEvmReceiver = "0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead" as `0x${string}`;
+    fetchQuoteMock.mockResolvedValue(
+      makeBridgeQuote({
+        bridgeData: {
+          transactionId: ("0x" + "aa".repeat(32)) as `0x${string}`,
+          bridge: "near",
+          integrator: "vaultpilot-mcp",
+          referrer: "0x0000000000000000000000000000000000000000",
+          sendingAssetId: ETH_USDT.toLowerCase() as `0x${string}`,
+          receiver: attackerEvmReceiver,
+          minAmount: 9_900_000n,
+          destinationChainId: NEAR_INTERMEDIATE_CHAIN_ID,
+          hasSourceSwaps: false,
+          hasDestinationCall: false,
+        },
+      }),
+    );
+
+    const { prepareSwap } = await import("../src/modules/swap/index.js");
+    await expect(
+      prepareSwap({
+        wallet: EVM_WALLET,
+        fromChain: "ethereum",
+        toChain: "tron",
+        fromToken: ETH_USDT,
+        toToken: TRON_USDT,
+        toAddress: TRON_RECIPIENT,
+        amount: "10",
+      }),
+    ).rejects.toThrow(/receiver mismatch for non-EVM destination tron/);
+  });
+
+  // Same-chain requests should never produce intermediate-chain calldata.
+  // If LiFi (or a tampered MCP) hands us a NEAR-shaped bridge tx for a
+  // same-chain swap, refuse — the user wanted no bridging at all.
+  it("REJECTS NEAR-shaped calldata for a same-chain request (cross-chain-only invariant)", async () => {
+    fetchQuoteMock.mockResolvedValue(
+      makeBridgeQuote({
+        bridgeData: {
+          transactionId: ("0x" + "bb".repeat(32)) as `0x${string}`,
+          bridge: "near",
+          integrator: "vaultpilot-mcp",
+          referrer: "0x0000000000000000000000000000000000000000",
+          sendingAssetId: ETH_USDT.toLowerCase() as `0x${string}`,
+          receiver: NON_EVM_RECEIVER_SENTINEL as `0x${string}`,
+          minAmount: 9_900_000n,
+          destinationChainId: NEAR_INTERMEDIATE_CHAIN_ID,
+          hasSourceSwaps: false,
+          hasDestinationCall: false,
+        },
+        toAsset: {
+          address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+          symbol: "USDC",
+          decimals: 6,
+          priceUSD: "1",
+        },
+      }),
+    );
+
+    const { prepareSwap } = await import("../src/modules/swap/index.js");
+    await expect(
+      prepareSwap({
+        wallet: EVM_WALLET,
+        fromChain: "ethereum",
+        toChain: "ethereum",
+        fromToken: ETH_USDT,
+        toToken: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", // USDC
+        amount: "10",
+      }),
+    ).rejects.toThrow(/Intermediate-chain bridges are only valid for cross-chain/);
+  });
+});
