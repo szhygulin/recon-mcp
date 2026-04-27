@@ -31,6 +31,11 @@ import {
   CONTACT_ADDRESS_PATTERNS,
   type ContactChain,
 } from "./schemas.js";
+import {
+  findDemoContactByLabel,
+  findDemoContactByAddress,
+} from "./demo-store.js";
+import { isDemoMode } from "../demo/index.js";
 
 export type ResolutionSource =
   | "literal"
@@ -156,6 +161,48 @@ export async function resolveRecipient(
   // Chains the contacts module doesn't index (LTC) → literal-only.
   if (!cc) {
     return { address: input, source: "literal", warnings: [] };
+  }
+
+  // Demo mode: lookups go against the in-memory demo store. There's
+  // no signed blob so no tamper path — every match is a clean
+  // resolution (or a no-match → fall through to literal/ENS). The
+  // demo store covers all four chains (btc/evm/solana/tron) by
+  // design, vs. production v1's btc+evm-only resolver.
+  if (isDemoMode()) {
+    if (looksLikeLiteralAddress(input, cc)) {
+      const label = findDemoContactByAddress(cc, input);
+      return label
+        ? { address: input, source: "literal", label, warnings: [] }
+        : { address: input, source: "literal", warnings: [] };
+    }
+    const labelHit = findDemoContactByLabel(cc, input);
+    if (labelHit) {
+      return {
+        address: labelHit,
+        source: "contact",
+        label: input,
+        warnings: [],
+      };
+    }
+    // Fall through to ENS for EVM (.eth lookups still work in demo
+    // since they hit mainnet RPC, which is real-mode-equivalent).
+    if (cc === "evm" && input.includes(".") && /\.[a-z0-9]+$/.test(input)) {
+      try {
+        const ens = await resolveName({ name: input });
+        if (ens.address) {
+          const reverseLabel = findDemoContactByAddress("evm", ens.address);
+          return {
+            address: ens.address,
+            source: "ens",
+            ...(reverseLabel ? { label: reverseLabel } : {}),
+            warnings: [],
+          };
+        }
+      } catch {
+        // Fall through to "unknown".
+      }
+    }
+    return { address: input, source: "unknown", warnings: [] };
   }
 
   const warnings: string[] = [];

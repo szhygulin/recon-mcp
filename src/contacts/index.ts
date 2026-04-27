@@ -20,6 +20,12 @@ import {
   writeContactsFile,
 } from "./storage.js";
 import {
+  addDemoContact,
+  removeDemoContact,
+  listDemoContacts,
+} from "./demo-store.js";
+import { isDemoMode } from "../demo/index.js";
+import {
   type ContactsFile,
   type ChainBlob,
   type ListedContact,
@@ -190,6 +196,26 @@ export async function addContact(args: AddContactArgs): Promise<{
   version: number;
   anchorAddress: string;
 }> {
+  // Demo mode: route to the in-memory store, no Ledger interaction.
+  // `version` and `anchorAddress` are placeholders so the response shape
+  // matches the production tool — agents that branch on those fields
+  // see a sentinel ("DEMO_ANCHOR") rather than a missing key.
+  if (isDemoMode()) {
+    addDemoContact({
+      chain: args.chain,
+      label: args.label,
+      address: args.address,
+      ...(args.notes !== undefined ? { notes: args.notes } : {}),
+      ...(args.tags !== undefined ? { tags: args.tags } : {}),
+    });
+    return {
+      chain: args.chain,
+      label: args.label,
+      address: args.address,
+      version: 0,
+      anchorAddress: "DEMO_ANCHOR",
+    };
+  }
   rejectIfNotV1(args.chain);
   const chain = args.chain as "btc" | "evm";
   // Address format validation up front.
@@ -289,6 +315,19 @@ export async function addContact(args: AddContactArgs): Promise<{
 export async function removeContact(args: RemoveContactArgs): Promise<{
   removed: Array<{ chain: ContactChain; address: string; version: number }>;
 }> {
+  if (isDemoMode()) {
+    const removed = removeDemoContact({
+      label: args.label,
+      ...(args.chain !== undefined ? { chain: args.chain } : {}),
+    });
+    if (removed.length === 0) {
+      throw new Error(
+        `${ContactsError.LabelNotFound}: no contact with label "${args.label}" found ` +
+          `on ${args.chain ? `chain ${args.chain}` : "any chain"}.`,
+      );
+    }
+    return { removed: removed.map((r) => ({ ...r, version: 0 })) };
+  }
   const file = readContactsFile();
   const chains: Array<"btc" | "evm"> = args.chain
     ? (rejectIfNotV1(args.chain), [args.chain as "btc" | "evm"])
@@ -355,6 +394,38 @@ export async function removeContact(args: RemoveContactArgs): Promise<{
 export async function listContacts(
   args: ListContactsArgs,
 ): Promise<{ contacts: ListedContact[] }> {
+  if (isDemoMode()) {
+    const rows = listDemoContacts({
+      ...(args.chain !== undefined ? { chain: args.chain } : {}),
+      ...(args.label !== undefined ? { label: args.label } : {}),
+    });
+    // Join by label across chains — same shape as production.
+    const byLabel = new Map<string, ListedContact>();
+    for (const row of rows) {
+      const existing = byLabel.get(row.label);
+      const earlierAddedAt =
+        existing && existing.addedAt < row.addedAt ? existing.addedAt : row.addedAt;
+      byLabel.set(row.label, {
+        label: row.label,
+        addresses: { ...(existing?.addresses ?? {}), [row.chain]: row.address },
+        ...(row.notes !== undefined
+          ? { notes: row.notes }
+          : existing?.notes !== undefined
+            ? { notes: existing.notes }
+            : {}),
+        ...(row.tags !== undefined
+          ? { tags: row.tags }
+          : existing?.tags !== undefined
+            ? { tags: existing.tags }
+            : {}),
+        addedAt: earlierAddedAt,
+      });
+    }
+    const contacts = Array.from(byLabel.values()).sort((a, b) =>
+      a.label < b.label ? -1 : a.label > b.label ? 1 : 0,
+    );
+    return { contacts };
+  }
   const file = readContactsStrict();
   const targets: Array<"btc" | "evm"> = args.chain
     ? (rejectIfNotV1(args.chain), [args.chain as "btc" | "evm"])
@@ -404,6 +475,34 @@ export async function listContacts(
 export async function verifyContacts(
   args: VerifyContactsArgs,
 ): Promise<{ results: VerifyResult[] }> {
+  if (isDemoMode()) {
+    // Demo store is unsigned by design; "verification" reduces to a
+    // count of how many entries are present per requested chain. The
+    // `anchorAddress: "DEMO_ANCHOR"` sentinel tells callers the result
+    // is from the demo path so they don't conflate it with a signed
+    // verification.
+    const chains: ContactChain[] = args.chain
+      ? [args.chain]
+      : (["btc", "evm", "solana", "tron"] as ContactChain[]);
+    const rows = listDemoContacts();
+    const byChain = new Map<ContactChain, number>();
+    for (const r of rows) byChain.set(r.chain, (byChain.get(r.chain) ?? 0) + 1);
+    return {
+      results: chains.map((chain) => {
+        const count = byChain.get(chain) ?? 0;
+        if (count === 0) {
+          return { chain, ok: false, reason: "no entries on this chain" };
+        }
+        return {
+          chain,
+          ok: true,
+          anchorAddress: "DEMO_ANCHOR",
+          version: 0,
+          entryCount: count,
+        };
+      }),
+    };
+  }
   let file: ContactsFile;
   try {
     file = readContactsStrict();
