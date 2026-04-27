@@ -407,6 +407,8 @@ import {
 import { getCompoundMarketInfo } from "./modules/compound/market-info.js";
 import { getMarketIncidentStatus } from "./modules/incidents/index.js";
 import { getMarketIncidentStatusInput } from "./modules/incidents/schemas.js";
+import { buildIncidentReport } from "./modules/incident-report/index.js";
+import { buildIncidentReportInput } from "./modules/incident-report/schemas.js";
 import { startOraclePoller } from "./modules/incidents/oracle-poller.js";
 import {
   buildCompoundSupply,
@@ -526,56 +528,21 @@ const SKILL_REPO_URL = "https://github.com/szhygulin/vaultpilot-security-skill.g
 const SETUP_SKILL_REPO_URL =
   "https://github.com/szhygulin/vaultpilot-setup-skill.git";
 
-/**
- * Default filesystem marker for the installed skill. `existsSync` against
- * this path is the cheap "is the skill installed" check we run on every
- * prepare_ / preview_ response. Overridable via env var for tests.
- */
-const DEFAULT_SKILL_MARKER = join(
-  homedir(),
-  ".claude",
-  "skills",
-  "vaultpilot-preflight",
-  "SKILL.md",
-);
-
-const DEFAULT_SETUP_SKILL_MARKER = join(
-  homedir(),
-  ".claude",
-  "skills",
-  "vaultpilot-setup",
-  "SKILL.md",
-);
-
-function skillMarkerPath(): string {
-  return process.env.VAULTPILOT_SKILL_MARKER_PATH ?? DEFAULT_SKILL_MARKER;
-}
-
-function setupSkillMarkerPath(): string {
-  return (
-    process.env.VAULTPILOT_SETUP_SKILL_MARKER_PATH ?? DEFAULT_SETUP_SKILL_MARKER
-  );
-}
-
-/**
- * Returns `true` iff the `vaultpilot-preflight` skill appears installed in
- * the user's Claude Code skills directory. Checked per-call rather than at
- * startup so installing the skill mid-session takes effect without a
- * server restart.
- */
-export function isPreflightSkillInstalled(): boolean {
-  return existsSync(skillMarkerPath());
-}
-
-/**
- * Returns `true` iff the `vaultpilot-setup` skill appears installed.
- * Mirrors the per-call check pattern of `isPreflightSkillInstalled` so a
- * mid-session install (the user runs `git clone` after seeing the notice)
- * takes effect without a server restart.
- */
-export function isSetupSkillInstalled(): boolean {
-  return existsSync(setupSkillMarkerPath());
-}
+// Skill-presence helpers extracted to `src/skills/presence.ts` so
+// non-entry modules (incident-report, etc.) can read them without
+// importing the full MCP server graph. Re-exported here so external
+// callers / tests that imported them from "../src/index.js" keep
+// working unchanged.
+export {
+  isPreflightSkillInstalled,
+  isSetupSkillInstalled,
+} from "./skills/presence.js";
+import {
+  preflightSkillMarkerPath as skillMarkerPath,
+  setupSkillMarkerPath,
+  isPreflightSkillInstalled,
+  isSetupSkillInstalled,
+} from "./skills/presence.js";
 
 /**
  * Per-state dedup: the missing-skill notice is emitted at most once per
@@ -4056,7 +4023,7 @@ async function main() {
     handler(getCompoundMarketInfo)
   );
 
-  registerTool(server, 
+  registerTool(server,
     "get_market_incident_status",
     {
       description:
@@ -4064,6 +4031,40 @@ async function main() {
       inputSchema: getMarketIncidentStatusInput.shape,
     },
     handler(getMarketIncidentStatus)
+  );
+
+  // ---- Issue #425: incident reporting (v1, read-only) ----
+  registerTool(server,
+    "build_incident_report",
+    {
+      description:
+        "Build a forensic incident-report bundle for a security review or " +
+        "disclosure. Read-only — gathers evidence already available to the " +
+        "server (demo-mode state, paired Ledger summary, skill / pin-drift " +
+        "notice flags) and, if you supply `wallet` + `chain` with " +
+        "`scope: 'wallet'` or `'custom'`, the wallet's recent on-chain tx " +
+        "history (uses the same data path as `get_transaction_history`, so " +
+        "address-poisoning suffix-lookalike heuristics are surfaced). " +
+        "Returns BOTH a structured `envelope` (machine-readable) and a " +
+        "`narrative` markdown string the user can paste into a GitHub " +
+        "issue / email / disclosure verbatim. " +
+        "REDACTION (default `addresses`): every address-shaped field is " +
+        "fuzzed to first-4 / last-4 of meaningful chars so the bundle is " +
+        "safe to display before the user has decided where to forward it. " +
+        "Use `redact: 'all'` to additionally bucket USD amounts to coarse " +
+        "ranges (`$1k–10k` etc.). Use `redact: 'none'` only when the user " +
+        "is ready to share full hex with a trusted security contact. " +
+        "v1 SCOPE: this tool only BUILDS the bundle; it does not submit " +
+        "anywhere. The user copies the narrative and routes it manually. " +
+        "A `submit_incident_report` companion that posts via the " +
+        "`request_capability` proxy is on the v2 roadmap (see " +
+        "`claude-work/plan-incident-report-v2.md`). Also deferred from " +
+        "v2: prepared-tx ring-buffer evidence (\"last N prepared / " +
+        "broadcast txs\"), so v1's tx evidence comes from on-chain history " +
+        "only.",
+      inputSchema: buildIncidentReportInput.shape,
+    },
+    handler(buildIncidentReport)
   );
 
   registerTool(server, 
