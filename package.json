@@ -30,9 +30,9 @@
     ],
     "assets": [
       "node_modules/node-hid/build/Release/*.node",
-      "node_modules/usb/prebuilds/**/*.node",
-      "node_modules/bufferutil/prebuilds/**/*.node",
-      "node_modules/utf-8-validate/prebuilds/**/*.node"
+      "node_modules/usb/prebuilds/{darwin-x64+arm64,linux-x64,win32-x64}/*.node",
+      "node_modules/bufferutil/prebuilds/{darwin-arm64,darwin-x64,linux-x64,win32-x64}/*.node",
+      "node_modules/utf-8-validate/prebuilds/{darwin-arm64,darwin-x64,linux-x64,win32-x64}/*.node"
     ],
     "outputPath": "release"
   },
