@@ -82,7 +82,7 @@ describe("demo-mode onboarding notice", () => {
   it("returns null when a live demo wallet is already active (path already taken)", async () => {
     process.env[ENV_KEY] = "true";
     const { setLivePersona } = await import("../src/demo/index.js");
-    setLivePersona("defi-power-user");
+    setLivePersona("defi-degen");
     const { missingDemoWalletNotice } = await import("../src/index.js");
     expect(missingDemoWalletNotice()).toBeNull();
   });

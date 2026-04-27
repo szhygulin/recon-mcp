@@ -40,11 +40,21 @@ import {
   getLiveWallet,
   isLiveMode,
   setLivePersona,
+  setLiveCellAddress,
   setLiveCustomAddresses,
   clearLiveWallet,
   type LiveWalletState,
 } from "./live-mode.js";
-import { PERSONAS, type Persona } from "./personas.js";
+import {
+  PERSONAS,
+  DEMO_WALLETS,
+  DEMO_CHAINS,
+  DEMO_TYPES,
+  type Persona,
+  type DemoCell,
+  type DemoChain,
+  type DemoType,
+} from "./personas.js";
 import { detectAutoDemoMode } from "./auto-detect.js";
 
 /**
@@ -186,6 +196,27 @@ interface PersonaSummary {
  * message tells the user which mistake they made (env unset vs. set
  * to something other than the literal `"true"`).
  */
+/**
+ * Compact 2D matrix view surfaced in the response. Each chain row
+ * carries a per-type record where present cells expose the address +
+ * archetype + verifiedAt; null cells are explicitly null so the agent
+ * can see "no curated address for this combination" without guessing.
+ */
+export type DemoMatrixView = {
+  [C in DemoChain]: { [T in DemoType]: DemoCell | null };
+};
+
+function buildMatrixView(): DemoMatrixView {
+  const out = {} as DemoMatrixView;
+  for (const chain of DEMO_CHAINS) {
+    out[chain] = {} as Record<DemoType, DemoCell | null>;
+    for (const type of DEMO_TYPES) {
+      out[chain][type] = DEMO_WALLETS[chain][type] ?? null;
+    }
+  }
+  return out;
+}
+
 export type GetDemoWalletResponse =
   | {
       demoActive: true;
@@ -193,6 +224,7 @@ export type GetDemoWalletResponse =
       reason: "explicit-env" | "auto-fresh-install";
       envState: DemoModeEnvState;
       active: LiveWalletState | null;
+      matrix: DemoMatrixView;
       personas: PersonaSummary[];
     }
   | {
@@ -201,6 +233,7 @@ export type GetDemoWalletResponse =
       reason: "explicit-opt-out" | "invalid-env" | "off";
       envState: DemoModeEnvState;
       message: string;
+      matrix: DemoMatrixView;
       personas: PersonaSummary[];
     };
 
@@ -210,6 +243,7 @@ export function buildGetDemoWalletResponse(): GetDemoWalletResponse {
     description: p.description,
     addresses: p.addresses,
   }));
+  const matrix = buildMatrixView();
   const reason = getDemoModeReason();
   const envState = getDemoModeEnvState();
   if (reason === "explicit-env" || reason === "auto-fresh-install") {
@@ -220,6 +254,7 @@ export function buildGetDemoWalletResponse(): GetDemoWalletResponse {
       reason,
       envState,
       active: live,
+      matrix,
       personas,
     };
   }
@@ -261,6 +296,7 @@ export function buildGetDemoWalletResponse(): GetDemoWalletResponse {
     reason,
     envState,
     message,
+    matrix,
     personas,
   };
 }
@@ -359,7 +395,7 @@ export function defaultModeRefusalMessage(toolName: string): string {
   return (
     `[VAULTPILOT_DEMO] '${toolName}' requires an active demo wallet — call ` +
     `\`set_demo_wallet({ persona: "<id>" })\` first to enable the simulated transaction ` +
-    `flow. Available personas: defi-power-user, stable-saver, staking-maxi, whale. ` +
+    `flow. Available personas: defi-degen, stable-saver, staking-maxi, whale. ` +
     `In default demo mode (no live wallet), only read tools and \`set_demo_wallet\` work — ` +
     `signing-class tools refuse to avoid any chance of fake-signing or fake-broadcasting. ` +
     `If you'd rather leave demo entirely and use this tool against your real wallet, call ` +
@@ -447,13 +483,23 @@ export function assertNotDemoForSetup(): void {
   }
 }
 
-// Re-export live-mode primitives so consumers can `import { ... } from
-// "./demo/index.js"` for everything demo-related (one entry point).
+// Re-export live-mode + matrix primitives so consumers can
+// `import { ... } from "./demo/index.js"` for everything demo-related
+// (one entry point).
 export {
   getLiveWallet,
   isLiveMode,
   setLivePersona,
+  setLiveCellAddress,
   setLiveCustomAddresses,
   clearLiveWallet,
   type LiveWalletState,
+};
+export {
+  DEMO_WALLETS,
+  DEMO_CHAINS,
+  DEMO_TYPES,
+  type DemoCell,
+  type DemoChain,
+  type DemoType,
 };

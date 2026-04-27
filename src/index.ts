@@ -20,6 +20,7 @@ import {
   isLiveMode,
   getLiveWallet,
   setLivePersona,
+  setLiveCellAddress,
   setLiveCustomAddresses,
   clearLiveWallet,
 } from "./demo/index.js";
@@ -1421,7 +1422,7 @@ async function main() {
         "    is active. Reads still run real RPC; prepare_*, simulate_*, preview_*, verify_* run",
         "    real; ONLY `send_transaction` is intercepted with a structured simulation envelope",
         "    (`outcome: \"simulated\"`, `simulatedTxHash` prefixed `0xdemo`, no real broadcast).",
-        "    Personas: defi-power-user, stable-saver, staking-maxi, whale.",
+        "    Personas: defi-degen, stable-saver, staking-maxi, whale. (Per-cell loader: `set_demo_wallet({ chain, type })`.)",
         "  - ALWAYS-GATED tools (regardless of sub-mode): `pair_ledger_*`, `sign_message_*`,",
         "    `request_capability`. These write off-process state or need real hardware — no",
         "    on-chain simulation equivalent. They never work in demo, ever.",
@@ -4134,20 +4135,24 @@ async function main() {
     "set_demo_wallet",
     {
       description:
-        "DEMO MODE ONLY — switch the active demo wallet to a curated persona or a custom " +
-        "address bundle. Once a wallet is set, demo mode upgrades from default (signing-class " +
-        "tools refuse) to live mode (prepare_*, simulate_*, preview_send run REAL against the " +
-        "persona's on-chain state; send_transaction returns a simulation envelope instead of " +
-        "broadcasting). Personas: defi-power-user (active multi-protocol DeFi — Aave + " +
-        "Compound + Uniswap V3 LP + Lido), stable-saver (primarily stablecoin lending, no BTC), " +
-        "staking-maxi (Lido + EigenLayer + Solana validator stake, no BTC), whale (large " +
-        "multi-chain holdings, light DeFi). Each persona carries 1-3 EVM addresses, 1 each on " +
-        "Solana / TRON, and 0-1 on Bitcoin (null when the archetype doesn't fit BTC). Pass " +
-        "`{ persona: \"<id>\" }` to activate a persona, `{ custom: { evm: [...], solana: [...], " +
-        "tron: [...], bitcoin: [...] } }` for arbitrary addresses (read-only — pubkeys carry no " +
-        "security risk), or `{}` to clear and return to default demo mode. Calling outside demo " +
-        "mode (env unset) returns a no-op response — the tool stays available so an agent can " +
-        "always discover the surface, but it never affects real signing.",
+        "DEMO MODE ONLY — switch the active demo wallet via one of three input shapes. Once " +
+        "a wallet is set, demo mode upgrades from default (signing-class tools refuse) to " +
+        "live mode (prepare_*, simulate_*, preview_send run REAL against the wallet's on-chain " +
+        "state; send_transaction returns a simulation envelope instead of broadcasting). " +
+        "INPUT SHAPES: " +
+        "(1) `{ chain, type }` — per-cell loader. e.g. `{ chain: 'bitcoin', type: 'whale' }` " +
+        "loads ONE address into the BTC slot, leaving evm/solana/tron slots untouched. " +
+        "Multiple per-cell calls accumulate; same chain twice replaces. Chains: evm | solana | " +
+        "tron | bitcoin. Types: defi-degen | stable-saver | staking-maxi | whale. Some cells " +
+        "are intentionally null (BTC defi-degen, Solana staking-maxi, etc.) — call " +
+        "`get_demo_wallet` first to see the matrix. " +
+        "(2) `{ persona }` — batch loader. Same as four per-cell calls for one type at once. " +
+        "Convenience for 'load me a whole whale wallet across every chain that has one'. " +
+        "(3) `{ custom: { evm: [...], solana: [...], tron: [...], bitcoin: [...] } }` — " +
+        "arbitrary addresses (read-only, no security risk). " +
+        "Pass `{}` (no args) to clear and return to default demo mode. " +
+        "Calling outside demo mode (env unset) returns a no-op response — the tool stays " +
+        "available so an agent can always discover the surface, but never affects real signing.",
       inputSchema: setDemoWalletInput.shape,
     },
     handler((args: SetDemoWalletArgs) => {
@@ -4160,10 +4165,39 @@ async function main() {
           demoActive: false,
         };
       }
-      if (args.persona && args.custom) {
+      // Mutual exclusivity: at most one of (chain+type), persona, custom.
+      const hasCellArgs = args.chain !== undefined || args.type !== undefined;
+      const modes = [hasCellArgs, !!args.persona, !!args.custom].filter(Boolean).length;
+      if (modes > 1) {
         throw new Error(
-          "set_demo_wallet: pass either `persona` OR `custom`, not both. Use empty args ({}) to clear."
+          "set_demo_wallet: pass exactly one of `{ chain, type }`, `{ persona }`, or " +
+            "`{ custom }`. Use empty args ({}) to clear.",
         );
+      }
+      // Per-cell loader: both `chain` and `type` must be present.
+      if (hasCellArgs) {
+        if (!args.chain || !args.type) {
+          throw new Error(
+            "set_demo_wallet: per-cell loader requires BOTH `chain` and `type`. " +
+              "Either pass both, or use `persona` for batch loading.",
+          );
+        }
+        const { chain, type, cell } = setLiveCellAddress(args.chain, args.type);
+        const w = getLiveWallet()!;
+        return {
+          ok: true,
+          mode: "live",
+          chain,
+          type,
+          cell,
+          types: w.types,
+          addresses: w.addresses,
+          message:
+            `Live demo mode active. Loaded (chain='${chain}', type='${type}') = ${cell.address}. ` +
+            `Other chain slots unchanged. prepare_* / preview_* / verify_* run real against ` +
+            `the loaded slots. send_transaction returns a simulation envelope (no broadcast). ` +
+            `pair_ledger_*, sign_message_*, request_capability remain gated regardless of live state.`,
+        };
       }
       if (!args.persona && !args.custom) {
         clearLiveWallet();

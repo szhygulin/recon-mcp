@@ -142,7 +142,7 @@ describe("Refusal messages — stable prefix + actionable content", () => {
     expect(msg).toContain("set_demo_wallet");
     // Lists the four personas by ID so the agent can offer them to the user
     // without an extra get_demo_wallet call.
-    expect(msg).toContain("defi-power-user");
+    expect(msg).toContain("defi-degen");
     expect(msg).toContain("stable-saver");
     expect(msg).toContain("staking-maxi");
     expect(msg).toContain("whale");
@@ -221,16 +221,89 @@ describe("Live-mode state mgmt — persona / custom / clear", () => {
     const { setLivePersona, getLiveWallet, isLiveMode } = await import(
       "../src/demo/index.js"
     );
-    const persona = setLivePersona("defi-power-user");
-    expect(persona.id).toBe("defi-power-user");
+    const persona = setLivePersona("whale");
+    expect(persona.id).toBe("whale");
     expect(isLiveMode()).toBe(true);
     const w = getLiveWallet();
-    expect(w?.personaId).toBe("defi-power-user");
+    expect(w?.personaId).toBe("whale");
+    // Whale is the only persona with curated cells on every chain
+    // (the other types have nulls — defi-degen has no BTC, stable-
+    // saver has no TRON / BTC, staking-maxi only has EVM in the
+    // current matrix). See src/demo/personas.ts for the live shape.
     expect(w?.addresses.evm.length).toBeGreaterThan(0);
     expect(w?.addresses.solana.length).toBeGreaterThan(0);
     expect(w?.addresses.tron.length).toBeGreaterThan(0);
-    // defi-power-user has BTC; stable-saver / staking-maxi do not.
     expect(w?.addresses.bitcoin).not.toBeNull();
+  });
+
+  it("setLivePersona accepts the legacy `defi-power-user` alias and resolves to defi-degen", async () => {
+    const { setLivePersona, getLiveWallet } = await import("../src/demo/index.js");
+    const persona = setLivePersona("defi-power-user");
+    expect(persona.id).toBe("defi-degen");
+    expect(getLiveWallet()?.personaId).toBe("defi-degen");
+  });
+
+  it("setLiveCellAddress loads ONE chain slot, leaves others empty", async () => {
+    const { setLiveCellAddress, getLiveWallet, isLiveMode } = await import(
+      "../src/demo/index.js"
+    );
+    const r = setLiveCellAddress("bitcoin", "whale");
+    expect(r.chain).toBe("bitcoin");
+    expect(r.type).toBe("whale");
+    expect(r.cell.address).toMatch(/^bc1q/);
+    expect(isLiveMode()).toBe(true);
+    const w = getLiveWallet();
+    expect(w?.personaId).toBeNull();
+    expect(w?.addresses.bitcoin).not.toBeNull();
+    expect(w?.addresses.bitcoin?.length).toBe(1);
+    // Other chains stay empty.
+    expect(w?.addresses.evm).toEqual([]);
+    expect(w?.addresses.solana).toEqual([]);
+    expect(w?.addresses.tron).toEqual([]);
+    expect(w?.types.bitcoin).toBe("whale");
+    expect(w?.types.evm).toBeNull();
+  });
+
+  it("setLiveCellAddress accumulates across chains (btc whale + sol defi-degen)", async () => {
+    const { setLiveCellAddress, getLiveWallet } = await import(
+      "../src/demo/index.js"
+    );
+    setLiveCellAddress("bitcoin", "whale");
+    setLiveCellAddress("solana", "defi-degen");
+    const w = getLiveWallet()!;
+    expect(w.addresses.bitcoin?.length).toBe(1);
+    expect(w.addresses.solana.length).toBe(1);
+    expect(w.types.bitcoin).toBe("whale");
+    expect(w.types.solana).toBe("defi-degen");
+  });
+
+  it("setLiveCellAddress same chain twice replaces (not append)", async () => {
+    const { setLiveCellAddress, getLiveWallet } = await import(
+      "../src/demo/index.js"
+    );
+    setLiveCellAddress("evm", "whale");
+    const first = getLiveWallet()!.addresses.evm[0];
+    setLiveCellAddress("evm", "stable-saver");
+    const w = getLiveWallet()!;
+    expect(w.addresses.evm.length).toBe(1);
+    expect(w.addresses.evm[0]).not.toBe(first);
+    expect(w.types.evm).toBe("stable-saver");
+  });
+
+  it("setLiveCellAddress throws on a null cell (e.g. bitcoin defi-degen)", async () => {
+    const { setLiveCellAddress } = await import("../src/demo/index.js");
+    expect(() => setLiveCellAddress("bitcoin", "defi-degen")).toThrow(
+      /No curated cell/,
+    );
+  });
+
+  it("setLiveCellAddress accepts the legacy `defi-power-user` type alias", async () => {
+    const { setLiveCellAddress, getLiveWallet } = await import(
+      "../src/demo/index.js"
+    );
+    const r = setLiveCellAddress("evm", "defi-power-user");
+    expect(r.type).toBe("defi-degen");
+    expect(getLiveWallet()?.types.evm).toBe("defi-degen");
   });
 
   it("setLivePersona throws on unknown persona ID", async () => {
@@ -271,7 +344,7 @@ describe("Live-mode state mgmt — persona / custom / clear", () => {
 
   it("getLiveWallet returns a deep copy — mutations don't leak into state", async () => {
     const { setLivePersona, getLiveWallet } = await import("../src/demo/index.js");
-    setLivePersona("defi-power-user");
+    setLivePersona("defi-degen");
     const w1 = getLiveWallet()!;
     w1.addresses.evm.push("0xMUTATION");
     const w2 = getLiveWallet()!;
@@ -279,26 +352,52 @@ describe("Live-mode state mgmt — persona / custom / clear", () => {
   });
 });
 
-describe("Personas — every persona has at least one EVM/Solana/TRON; BTC nullable", () => {
-  it("each of the 4 personas has expected coverage", async () => {
-    const { PERSONAS } = await import("../src/demo/personas.js");
-    const ids = Object.keys(PERSONAS).sort();
-    expect(ids).toEqual(
-      ["defi-power-user", "stable-saver", "staking-maxi", "whale"].sort(),
+describe("DEMO_WALLETS matrix — coverage matches curation", () => {
+  it("exposes the 4 chain rows × 4 type columns; null cells are explicit", async () => {
+    const { DEMO_WALLETS, DEMO_CHAINS, DEMO_TYPES } = await import(
+      "../src/demo/personas.js"
     );
-    for (const id of ids) {
-      const p = PERSONAS[id as keyof typeof PERSONAS];
-      expect(p.addresses.evm.length, `${id} missing EVM`).toBeGreaterThan(0);
-      expect(p.addresses.solana.length, `${id} missing Solana`).toBeGreaterThan(0);
-      expect(p.addresses.tron.length, `${id} missing TRON`).toBeGreaterThan(0);
-      // BTC is nullable for stable-saver + staking-maxi (no native semantics).
-      if (p.addresses.bitcoin !== null) {
-        expect(p.addresses.bitcoin.length, `${id} BTC array empty`).toBeGreaterThan(0);
+    expect(DEMO_CHAINS).toEqual(["evm", "solana", "tron", "bitcoin"]);
+    expect(DEMO_TYPES.sort()).toEqual(
+      ["defi-degen", "stable-saver", "staking-maxi", "whale"].sort(),
+    );
+    // Every present cell carries address + archetype + verifiedAt.
+    for (const chain of DEMO_CHAINS) {
+      for (const type of DEMO_TYPES) {
+        const cell = DEMO_WALLETS[chain][type];
+        if (cell) {
+          expect(cell.address.length).toBeGreaterThan(20);
+          expect(cell.archetype.length).toBeGreaterThan(0);
+          expect(cell.verifiedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+        }
       }
     }
-    // Locked: stable-saver and staking-maxi explicitly omit BTC.
-    expect(PERSONAS["stable-saver"].addresses.bitcoin).toBeNull();
-    expect(PERSONAS["staking-maxi"].addresses.bitcoin).toBeNull();
+  });
+
+  it("whale row is fully populated (every chain has a whale cell)", async () => {
+    const { DEMO_WALLETS } = await import("../src/demo/personas.js");
+    expect(DEMO_WALLETS.evm.whale).not.toBeUndefined();
+    expect(DEMO_WALLETS.solana.whale).not.toBeUndefined();
+    expect(DEMO_WALLETS.tron.whale).not.toBeUndefined();
+    expect(DEMO_WALLETS.bitcoin.whale).not.toBeUndefined();
+  });
+
+  it("BTC row only has whale (other archetypes intentionally null on BTC)", async () => {
+    const { DEMO_WALLETS } = await import("../src/demo/personas.js");
+    expect(DEMO_WALLETS.bitcoin["defi-degen"]).toBeUndefined();
+    expect(DEMO_WALLETS.bitcoin["stable-saver"]).toBeUndefined();
+    expect(DEMO_WALLETS.bitcoin["staking-maxi"]).toBeUndefined();
+  });
+
+  it("PERSONAS shim derives consistent address bundles from the matrix", async () => {
+    const { PERSONAS, DEMO_WALLETS } = await import("../src/demo/personas.js");
+    expect(PERSONAS.whale.addresses.evm[0]).toBe(DEMO_WALLETS.evm.whale!.address);
+    expect(PERSONAS["defi-degen"].addresses.evm[0]).toBe(
+      DEMO_WALLETS.evm["defi-degen"]!.address,
+    );
+    // Null cells become empty arrays (or null bitcoin) in the persona view.
+    expect(PERSONAS["defi-degen"].addresses.bitcoin).toBeNull();
+    expect(PERSONAS["staking-maxi"].addresses.solana).toEqual([]);
   });
 });
 
@@ -430,7 +529,7 @@ describe("issue #392 — buildGetDemoWalletResponse always lists personas", () =
       const r = buildGetDemoWalletResponse();
       const ids = r.personas.map((p) => p.id).sort();
       expect(ids, `personas with VAULTPILOT_DEMO=${JSON.stringify(v)}`).toEqual(
-        ["defi-power-user", "stable-saver", "staking-maxi", "whale"].sort(),
+        ["defi-degen", "stable-saver", "staking-maxi", "whale"].sort(),
       );
     }
   });
@@ -495,12 +594,12 @@ describe("issue #392 — buildGetDemoWalletResponse always lists personas", () =
       "../src/demo/index.js"
     );
     process.env[ENV_KEY] = "true";
-    setLivePersona("defi-power-user");
+    setLivePersona("defi-degen");
     const r = buildGetDemoWalletResponse();
     expect(r.demoActive).toBe(true);
     if (r.demoActive) {
       expect(r.mode).toBe("live");
-      expect(r.active?.personaId).toBe("defi-power-user");
+      expect(r.active?.personaId).toBe("defi-degen");
     }
   });
 });

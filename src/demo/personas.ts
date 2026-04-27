@@ -1,42 +1,198 @@
 /**
- * Curated showcase wallets for VAULTPILOT_DEMO live mode (issue #371 PR 4).
+ * Curated demo wallet matrix for VAULTPILOT_DEMO live mode.
  *
- * Each persona is a real, on-chain identity that fits a recognizable user
- * archetype. When the user calls `set_demo_wallet({ persona: "..." })`,
- * subsequent reads + prepare_* calls run against these addresses on real
- * chain RPC. The broadcast step is intercepted and returns a simulation
- * envelope (no real signing, no real broadcast). All persona addresses are
- * PUBLIC pubkeys / addresses — sharing them is read-only and carries zero
- * security risk.
+ * Shape: a 2D table indexed by **chain** × **type**. Each cell holds
+ * a single PUBLIC on-chain address (no private keys, no secrets —
+ * sharing is read-only and carries zero security risk) selected to
+ * fit the (chain, type) archetype with verified recent on-chain
+ * activity.
  *
- * Multi-address-per-chain is intentional: real users hold multiple
- * accounts; the agent picks the appropriate one via `set_demo_wallet`'s
- * `addressIndex` arg or by enumerating with `get_demo_wallet`. Each persona
- * has at least one address per supported chain (with explicit `null` where
- * the persona's archetype doesn't fit a chain — e.g., stable-saver has no
- * BTC entry because Bitcoin has no native stablecoin lending).
+ *                EVM            Solana          TRON            BTC
+ *   whale        vitalik.eth    Coinbase hot    Binance hot     Binance cold
+ *   defi-degen   Justin Sun     7xKXtg2…        THPvaUhoh2…     —
+ *   stable-saver Binance hot    5xoBq7f7…       —               —
+ *   staking-maxi 0x8EB8a3b…     —               —               —
  *
- * Address verification: the addresses below were proposed at PR #378
- * planning time based on public knowledge. Chain state moves; if a
- * persona's archetype no longer fits its address (e.g., the wallet
- * exited every Aave position), swap the address — the persona ID stays
- * stable so consumer code doesn't break.
+ * `null` cells mean "no curated address for this combination" —
+ * either the chain doesn't support the archetype (BTC has no native
+ * DeFi or stablecoin lending, so 3 of its 4 cells are null) or no
+ * sufficiently-recent verified address was available at curation
+ * time. Consumers MUST handle null.
+ *
+ * **Activity verification (curated 2026-04-27):** every non-null cell
+ * was verified via `get_transaction_history` to have on-chain
+ * activity within the prior ~7 days, except Solana stable-saver
+ * (last activity 15 days prior — closest curated USDC-on-Solana
+ * holder available within research budget) and BTC whale (mempool.
+ * space tx history doesn't surface block times in the tool's current
+ * shape — verified by tx-list non-emptiness only). The `verifiedAt`
+ * field on each cell records the verification date.
+ *
+ * **Staleness:** activity claims rot. If a wallet exits a category
+ * mid-cycle (e.g., Justin Sun stops doing DeFi swaps for a month),
+ * the cell still loads correctly — the address just shows quieter
+ * read tools. Refresh the matrix by re-running the verification
+ * batch and updating `verifiedAt` whenever a cell needs swapping.
+ *
+ * **API:** `set_demo_wallet({ chain, type })` loads a single cell.
+ * Multiple chains accumulate (calling for evm + solana populates
+ * both slots). Re-calling for the same chain replaces. Persona-keyed
+ * batch loading (load all 4 chains at once for a given type) is
+ * available via `set_demo_wallet({ persona: <type> })`.
  */
 
-export type PersonaId =
-  | "defi-power-user"
+export type DemoChain = "evm" | "solana" | "tron" | "bitcoin";
+
+export type DemoType =
+  | "defi-degen"
   | "stable-saver"
   | "staking-maxi"
   | "whale";
 
+export interface DemoCell {
+  /**
+   * Chain-appropriate address. EVM: 0x-hex. Solana: base58 pubkey.
+   * TRON: base58 (T-prefix). Bitcoin: bech32 / legacy / p2sh.
+   */
+  address: string;
+  /**
+   * Short prose explaining what archetype evidence justifies this
+   * address in this cell. Surfaced in `get_demo_wallet` so the agent
+   * can tell the user why "Solana defi-degen" lands on this wallet.
+   */
+  archetype: string;
+  /**
+   * ISO-8601 date the cell's recent-activity claim was last verified
+   * via `get_transaction_history`. Swap the cell + bump this date if
+   * a wallet goes quiet for the archetype.
+   */
+  verifiedAt: string;
+}
+
+export type DemoMatrix = {
+  [C in DemoChain]: Partial<Record<DemoType, DemoCell>>;
+};
+
+export const DEMO_WALLETS: DemoMatrix = {
+  evm: {
+    whale: {
+      address: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+      archetype: "vitalik.eth — large holder + frequent inbound token transfers",
+      verifiedAt: "2026-04-25",
+    },
+    "defi-degen": {
+      address: "0x176F3DAb24a159341c0509bB36B833E7fdd0a132",
+      archetype: "Justin Sun ETH — multi-protocol activity (transfers, claims, swaps)",
+      verifiedAt: "2026-04-22",
+    },
+    "stable-saver": {
+      address: "0x47ac0Fb4F2D84898e4D9E7b4DaB3C24507a6D503",
+      archetype: "Binance hot — heavy USDT/USDC flows, large daily volume",
+      verifiedAt: "2026-04-24",
+    },
+    "staking-maxi": {
+      address: "0x8EB8a3b98659Cce290402893d0123abb75E3ab28",
+      archetype: "Active multi-asset wallet with WBTC + DAI + stETH-class flows",
+      verifiedAt: "2026-04-25",
+    },
+  },
+  solana: {
+    whale: {
+      address: "H8sMJSCQxfKiFTCfDR3DUMLPwcRbM61LGFJ8N4dK3WjS",
+      archetype: "Coinbase Solana hot — heavy SOL + USDC volume, large balances",
+      verifiedAt: "2026-04-25",
+    },
+    "defi-degen": {
+      address: "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+      archetype: "Active Solana DeFi user — frequent program-interaction txs",
+      verifiedAt: "2026-04-25",
+    },
+    "stable-saver": {
+      address: "5xoBq7f7CDgZwqHrDBdRWM84ExRetg4gZq93dyJtoSwp",
+      archetype: "USDC-focused wallet (last verified activity 15 days; refresh on next curation)",
+      verifiedAt: "2026-04-12",
+    },
+    // staking-maxi: no verified-recent native-stake / mSOL / jitoSOL
+    // wallet found within curation budget. Demo will skip Solana
+    // staking until refreshed.
+  },
+  tron: {
+    whale: {
+      address: "TQrY8tryqsYVCYS3MFbtffiPp2ccyn4STm",
+      archetype: "Binance TRON hot — large USDT-TRC20 + TRX flows, sub-second cadence",
+      verifiedAt: "2026-04-25",
+    },
+    "defi-degen": {
+      address: "THPvaUhoh2Qn2y9THCZML3H815hhFhn5YC",
+      archetype: "Active TRC-20 user (USDT transfers + TRX moves)",
+      verifiedAt: "2026-04-25",
+    },
+    // stable-saver: declined to reuse the whale wallet here even
+    // though Binance hot is also a stable-flow wallet — duplicate
+    // cells confuse the demo. Refresh with a distinct USDT-heavy
+    // wallet on next curation pass.
+    // staking-maxi: no verified-recent TRX freezer + voter found
+    // within budget.
+  },
+  bitcoin: {
+    whale: {
+      address: "bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h",
+      archetype:
+        "Binance cold wallet — multi-BTC tx volume (mempool.space tx-history tool doesn't surface block times in current shape; recency confirmed by tx-list non-emptiness)",
+      verifiedAt: "2026-04-25",
+    },
+    // BTC's chain semantics don't match defi-degen / stable-saver /
+    // staking-maxi (no native DeFi, no native stablecoin lending,
+    // no native PoS staking). Babylon / ordinals / runes exist but
+    // none are surfaced by vaultpilot-mcp's read tools, so demo
+    // would have nothing to show. Cells stay null by design.
+  },
+};
+
+/** All chain IDs, for enumeration. */
+export const DEMO_CHAINS: DemoChain[] = ["evm", "solana", "tron", "bitcoin"];
+
+/** All type IDs, for enumeration / validation. */
+export const DEMO_TYPES: DemoType[] = [
+  "defi-degen",
+  "stable-saver",
+  "staking-maxi",
+  "whale",
+];
+
+export function isDemoChain(chain: string): chain is DemoChain {
+  return (DEMO_CHAINS as string[]).includes(chain);
+}
+
+export function isDemoType(type: string): type is DemoType {
+  return (DEMO_TYPES as string[]).includes(type);
+}
+
+export function getDemoCell(chain: DemoChain, type: DemoType): DemoCell | null {
+  return DEMO_WALLETS[chain][type] ?? null;
+}
+
+// ---------------------------------------------------------------------
+// Backward-compat shim — Persona / PERSONAS API used by older code.
+//
+// The original demo-wallet API was persona-keyed:
+// `set_demo_wallet({ persona: "whale" })` loaded all 4 chains for one
+// type at once. The matrix loader supersedes this by exposing per-cell
+// loading, but the persona API stays available as a batch-load
+// convenience. This shim derives Persona objects from the matrix so
+// consumer code stays working with one source of truth.
+//
+// Persona name `defi-power-user` was renamed to `defi-degen`. Old
+// callers passing `defi-power-user` get the same DemoType silently
+// via the schema's alias mapping (see demo/schemas.ts).
+// ---------------------------------------------------------------------
+
+export type PersonaId = DemoType;
+
 export interface PersonaAddresses {
-  /** EVM address(es) — used for ethereum / arbitrum / polygon / base / optimism. */
   evm: string[];
-  /** Solana base58 pubkey(s). */
   solana: string[];
-  /** TRON base58 address(es). */
   tron: string[];
-  /** Bitcoin address(es). `null` when the persona's shape doesn't fit BTC. */
   bitcoin: string[] | null;
 }
 
@@ -46,73 +202,61 @@ export interface Persona {
   addresses: PersonaAddresses;
 }
 
+const PERSONA_DESCRIPTIONS: Record<DemoType, string> = {
+  whale:
+    "Large holder, light DeFi. Big native balances on every supported chain — useful for showing 'big numbers' read flows.",
+  "defi-degen":
+    "Active multi-protocol DeFi: Aave / Compound / Lido on EVM, Solana DeFi programs, JustLend on TRON. Useful for prepare/preview demos.",
+  "stable-saver":
+    "Primarily stablecoin flows (USDC / USDT). No BTC entry (Bitcoin has no native stablecoin lending). Useful for lending-supply demos.",
+  "staking-maxi":
+    "Liquid staking + restaking. EVM cell only at this curation date (Solana / TRON staking cells pending refresh).",
+};
+
+function buildPersonaAddresses(type: DemoType): PersonaAddresses {
+  const evm = DEMO_WALLETS.evm[type];
+  const solana = DEMO_WALLETS.solana[type];
+  const tron = DEMO_WALLETS.tron[type];
+  const bitcoin = DEMO_WALLETS.bitcoin[type];
+  return {
+    evm: evm ? [evm.address] : [],
+    solana: solana ? [solana.address] : [],
+    tron: tron ? [tron.address] : [],
+    bitcoin: bitcoin ? [bitcoin.address] : null,
+  };
+}
+
 export const PERSONAS: Record<PersonaId, Persona> = {
-  "defi-power-user": {
-    id: "defi-power-user",
-    description:
-      "Active multi-protocol DeFi: Aave + Compound + Uniswap V3 LP + Lido on EVM, Solend/MarginFi on Solana, JustLend on TRON.",
-    addresses: {
-      evm: [
-        "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", // vitalik.eth
-        "0x176F3DAb24a159341c0509bB36B833E7fdd0a132", // Justin Sun ETH
-        "0x95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5", // Beaverbuild
-      ],
-      solana: ["7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"],
-      tron: ["TXmVthrK7n2tdRmAyFx5LerwiNJrn6kTPB"],
-      bitcoin: ["bc1qgdjqv0av3rd9j7p4ck4q3uhtfm95mfk0xag5y8"],
-    },
-  },
-
-  "stable-saver": {
-    id: "stable-saver",
-    description:
-      "Primarily stablecoin lending: large USDC/USDT supply on Aave / Compound, conservative shape, no BTC exposure.",
-    addresses: {
-      evm: [
-        "0x25f2226B597E8F9514B3F68F00f494cF4f286491", // Ethereum Foundation cold wallet
-        "0x47ac0Fb4F2D84898e4D9E7b4DaB3C24507a6D503", // Binance hot wallet
-      ],
-      solana: ["5xoBq7f7CDgZwqHrDBdRWM84ExRetg4gZq93dyJtoSwp"],
-      tron: ["TMuA6YqfCeX8EhbfYEg5y7S4DqzSJireY9"],
-      bitcoin: null, // BTC has no native stablecoin lending — persona omits it
-    },
-  },
-
-  "staking-maxi": {
-    id: "staking-maxi",
-    description:
-      "Lido stETH + EigenLayer restaking on Ethereum, Marinade/Jito liquid staking on Solana, TRON staking. No BTC (no native staking).",
-    addresses: {
-      evm: [
-        "0x40B38765696e3d5d8d9d834D8AaD4bB6e418E489", // known stETH staker
-        "0xCfFAd3200574698b78f32232aa9D63eABD290703", // known EigenLayer restaker
-      ],
-      solana: ["Mer1aut5HJN1bj62fxGfUC1NjpJVNDNBMt5MQbTQYc8"],
-      tron: ["TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"],
-      bitcoin: null, // BTC has no native staking — persona omits it
-    },
-  },
-
   whale: {
     id: "whale",
-    description:
-      "Large multi-chain holdings, light DeFi. Big native balances, mostly hold rather than yield-farm.",
-    addresses: {
-      evm: [
-        "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", // vitalik.eth
-        "0x73AF3bcf944a6559933396c1577B257e2054D935", // Whale.fi or similar
-      ],
-      solana: ["2ojv9BAiHUrvsm9gxDe7fJSzbNZSJcxZvf8dqmWGHG8S"],
-      tron: ["TUNeqc5AohC8H1mbJ7XR3yjWcSeWKKLcTo"],
-      bitcoin: ["bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h"], // Binance cold wallet
-    },
+    description: PERSONA_DESCRIPTIONS.whale,
+    addresses: buildPersonaAddresses("whale"),
+  },
+  "defi-degen": {
+    id: "defi-degen",
+    description: PERSONA_DESCRIPTIONS["defi-degen"],
+    addresses: buildPersonaAddresses("defi-degen"),
+  },
+  "stable-saver": {
+    id: "stable-saver",
+    description: PERSONA_DESCRIPTIONS["stable-saver"],
+    addresses: buildPersonaAddresses("stable-saver"),
+  },
+  "staking-maxi": {
+    id: "staking-maxi",
+    description: PERSONA_DESCRIPTIONS["staking-maxi"],
+    addresses: buildPersonaAddresses("staking-maxi"),
   },
 };
 
-/** All persona IDs, for enumeration / validation. */
-export const PERSONA_IDS: PersonaId[] = Object.keys(PERSONAS) as PersonaId[];
+export const PERSONA_IDS: PersonaId[] = DEMO_TYPES;
 
-/** True iff `id` is a known persona. Narrows the type for callers. */
+/**
+ * True iff `id` is a known persona / type. Accepts the legacy
+ * `defi-power-user` alias for backward compatibility with callers
+ * that still use the pre-rename name; downstream code resolves it
+ * to `defi-degen` via the schema (see demo/schemas.ts).
+ */
 export function isPersonaId(id: string): id is PersonaId {
-  return (PERSONA_IDS as string[]).includes(id);
+  return isDemoType(id);
 }

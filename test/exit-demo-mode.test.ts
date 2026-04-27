@@ -141,12 +141,12 @@ describe("exit_demo_mode — hasLedger=true → ready-to-exit", () => {
     process.env[ENV_KEY] = "true";
     const { buildExitDemoGuide } = await import("../src/demo/exit-flow.js");
     const { setLivePersona } = await import("../src/demo/live-mode.js");
-    setLivePersona("defi-power-user");
+    setLivePersona("defi-degen");
     const r = buildExitDemoGuide({ hasLedger: true });
     expect(r.currentState.subMode).toBe("live");
-    expect(r.currentState.activePersonaId).toBe("defi-power-user");
+    expect(r.currentState.activePersonaId).toBe("defi-degen");
     expect(r.message).toContain("LIVE");
-    expect(r.message).toContain("defi-power-user");
+    expect(r.message).toContain("defi-degen");
   });
 
   it("cautions cover real-money + Ledger-verification + non-custodial", async () => {

@@ -2539,7 +2539,7 @@ export function renderMissingDemoWalletWarning(opts: {
     "         try anything that needs an address, offer the demo path",
     "         BEFORE asking them to pair hardware. Tools:",
     "           - `set_demo_wallet({ persona: \"<id>\" })` — activate a",
-    "             curated persona (defi-power-user, stable-saver,",
+    "             curated persona (defi-degen, stable-saver,",
     "             staking-maxi, whale) or a custom address bundle.",
     "           - `get_demo_wallet()` — inspect the active selection.",
     "           - `exit_demo_mode()` — tailored real-setup guide.",

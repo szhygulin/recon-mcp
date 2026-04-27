@@ -4,6 +4,7 @@
  * `claude mcp add` config — it can only describe what to do. This module
  * builds a structured, decision-tree-shaped response the agent walks the
  * user through to leave demo mode and configure real signing.
+ * bump
  *
  * Surfaced via the `exit_demo_mode` tool. The agent's job is to ASK the
  * user the relevant questions first (do you have a Ledger? which chains?),
@@ -209,7 +210,7 @@ export function buildExitDemoGuide(args: ExitDemoArgs = {}): {
   ];
   const whatYoullLose = [
     "Simulated-broadcast safety net — typos and incorrect tx parameters now have real on-chain consequences.",
-    "The curated persona walkthrough (defi-power-user / stable-saver / staking-maxi / whale).",
+    "The curated persona walkthrough (defi-degen / stable-saver / staking-maxi / whale).",
     "Auto-retry on the Helius nudge — once you exit, you must have a Solana RPC key (env var, config, or `set_helius_api_key` re-set per session) for usable Solana reads.",
   ];
 

@@ -337,10 +337,10 @@ describe("get_vaultpilot_config_status — demo-mode discoverability (issue #371
     expect(status.demoMode.liveMode.addresses).toBeNull();
 
     // After set_demo_wallet({persona}), liveMode reflects it.
-    setLivePersona("defi-power-user");
+    setLivePersona("defi-degen");
     status = getVaultPilotConfigStatus();
     expect(status.demoMode.liveMode.active).toBe(true);
-    expect(status.demoMode.liveMode.personaId).toBe("defi-power-user");
+    expect(status.demoMode.liveMode.personaId).toBe("defi-degen");
     expect(status.demoMode.liveMode.addresses).not.toBeNull();
     expect(status.demoMode.liveMode.addresses!.evm.length).toBeGreaterThan(0);
     _resetLiveWalletForTests();
