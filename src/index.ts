@@ -179,6 +179,7 @@ import {
   prepareUniswapV3DecreaseLiquidity,
   prepareUniswapV3Collect,
   prepareUniswapV3Burn,
+  prepareUniswapV3Rebalance,
   prepareLidoStake,
   prepareLidoUnstake,
   prepareEigenLayerDeposit,
@@ -271,6 +272,7 @@ import {
   prepareUniswapV3DecreaseLiquidityInput,
   prepareUniswapV3CollectInput,
   prepareUniswapV3BurnInput,
+  prepareUniswapV3RebalanceInput,
   prepareLidoStakeInput,
   prepareLidoUnstakeInput,
   prepareEigenLayerDepositInput,
@@ -3004,6 +3006,22 @@ async function main() {
       inputSchema: prepareUniswapV3BurnInput.shape,
     },
     txHandler("prepare_uniswap_v3_burn", prepareUniswapV3Burn)
+  );
+
+  registerTool(server,
+    "prepare_uniswap_v3_rebalance",
+    {
+      description:
+        "Build an unsigned Uniswap V3 LP rebalance transaction — moves a position from its current tick range to a new one in a single multicall. " +
+        "Composes (in order): decreaseLiquidity(100%) + collect + (optional) burn + mint(new range). " +
+        "The position's (token0, token1, fee) carry over; only the tick range changes. " +
+        "**Slippage is independently applied to the close + re-deposit phases** — the effective tolerance against the spot price is roughly 2× the input bps. The description block calls this out explicitly. " +
+        "v1 amount-source: the new mint's amount0Desired/amount1Desired are estimated from the position's expected burn amounts at current price; on-chain the actual mint pulls bounded by what was actually collected, with surplus refunded to the wallet by the NPM. " +
+        "Up to two ERC-20 approvals are chained ahead of the multicall (the mint phase still needs them — collect routes the tokens back to the wallet, then mint pulls them again via transferFrom). " +
+        "Hard-refuses on owner mismatch, mis-aligned new ticks, identical new range, or zero-liquidity position.",
+      inputSchema: prepareUniswapV3RebalanceInput.shape,
+    },
+    txHandler("prepare_uniswap_v3_rebalance", prepareUniswapV3Rebalance)
   );
 
   registerTool(server,

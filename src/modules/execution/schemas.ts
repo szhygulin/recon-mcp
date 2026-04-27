@@ -600,6 +600,7 @@ export const getVaultPilotConfigStatusInput = z.object({});
  * (CLA=0xb0 INS=0x01), and returns the name/version of the currently-
  * open app. Read-only, one USB round-trip, closes the transport before
  * returning.
+ * bump
  */
 export const getLedgerDeviceInfoInput = z.object({});
 
@@ -1907,3 +1908,56 @@ export type PrepareUniswapV3CollectArgs = z.infer<
   typeof prepareUniswapV3CollectInput
 >;
 export type PrepareUniswapV3BurnArgs = z.infer<typeof prepareUniswapV3BurnInput>;
+
+// M1d — rebalance composes decrease + collect + burn + mint into one
+// multicall(bytes[]) against the NPM. Slippage is independently applied
+// to the close and re-deposit phases, so the effective tolerance is
+// roughly 2× input bps; the tool description surfaces this.
+export const prepareUniswapV3RebalanceInput = z.object({
+  wallet: walletSchema,
+  chain: chainEnum.default("ethereum"),
+  tokenId: z
+    .string()
+    .regex(/^[0-9]+$/)
+    .max(100)
+    .describe(
+      "ERC-721 tokenId of the LP NFT to rebalance. Must be owned by `wallet`. " +
+        "Its (token0, token1, fee) are reused for the new mint — only the tick " +
+        "range changes.",
+    ),
+  newTickLower: z
+    .number()
+    .int()
+    .describe(
+      "Lower tick of the NEW range. Must align to the position's fee-tier tickSpacing " +
+        "(100→1, 500→10, 3000→60, 10000→200) and be < newTickUpper.",
+    ),
+  newTickUpper: z.number().int(),
+  burnOld: z
+    .boolean()
+    .optional()
+    .describe(
+      "Whether to also burn the old NFT in the same multicall. Default true — the old " +
+        "position has zero liquidity after the close phase and a stub NFT serves no " +
+        "purpose. Set to false to keep the old tokenId alive (e.g. for off-chain bookkeeping).",
+    ),
+  slippageBps: z
+    .number()
+    .int()
+    .min(0)
+    .max(500)
+    .optional()
+    .describe(
+      "Slippage tolerance in bps applied INDEPENDENTLY to the close phase " +
+        "(decreaseLiquidity floor) and the re-deposit phase (mint floor). The " +
+        "effective tolerance against the spot price is roughly 2× this value. " +
+        "Default 50 bps; soft cap 100 bps requires acknowledgeHighSlippage.",
+    ),
+  acknowledgeHighSlippage: z.boolean().optional(),
+  deadlineSec: z.number().int().min(60).max(3600).optional(),
+  approvalCap: approvalCapSchema,
+});
+
+export type PrepareUniswapV3RebalanceArgs = z.infer<
+  typeof prepareUniswapV3RebalanceInput
+>;

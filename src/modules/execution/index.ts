@@ -99,6 +99,7 @@ import {
   buildUniswapDecrease,
   buildUniswapCollect,
   buildUniswapBurn,
+  buildUniswapRebalance,
 } from "../lp/uniswap-v3/actions.js";
 import {
   buildLidoStake,
@@ -120,6 +121,7 @@ import type {
   PrepareUniswapV3DecreaseLiquidityArgs,
   PrepareUniswapV3CollectArgs,
   PrepareUniswapV3BurnArgs,
+  PrepareUniswapV3RebalanceArgs,
   PrepareLidoStakeArgs,
   PrepareLidoUnstakeArgs,
   PrepareEigenLayerDepositArgs,
@@ -2313,6 +2315,25 @@ export async function prepareUniswapV3Burn(
       wallet: args.wallet as `0x${string}`,
       chain: args.chain as SupportedChain,
       tokenId: args.tokenId,
+    }),
+  );
+}
+
+export async function prepareUniswapV3Rebalance(
+  args: PrepareUniswapV3RebalanceArgs,
+): Promise<UnsignedTx> {
+  return enrichTx(
+    await buildUniswapRebalance({
+      wallet: args.wallet as `0x${string}`,
+      chain: args.chain as SupportedChain,
+      tokenId: args.tokenId,
+      newTickLower: args.newTickLower,
+      newTickUpper: args.newTickUpper,
+      burnOld: args.burnOld,
+      slippageBps: args.slippageBps,
+      acknowledgeHighSlippage: args.acknowledgeHighSlippage,
+      deadlineSec: args.deadlineSec,
+      approvalCap: args.approvalCap,
     }),
   );
 }
