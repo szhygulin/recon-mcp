@@ -1,6 +1,7 @@
 import { mainnet, arbitrum, polygon, base, optimism } from "viem/chains";
 import type { Chain } from "viem";
 import type { RpcProvider, SupportedChain, UserConfig } from "../types/index.js";
+import { getRuntimeSolanaRpc } from "../data/runtime-rpc-overrides.js";
 
 export const VIEM_CHAINS: Record<SupportedChain, Chain> = {
   ethereum: mainnet,
@@ -246,6 +247,14 @@ function resolveRpcUrlRaw(chain: SupportedChain, userConfig: UserConfig | null):
  * before being handed to `Connection` — same safety bar as EVM RPCs.
  */
 export function resolveSolanaRpcUrl(userConfig: UserConfig | null): string {
+  // Issue #371 follow-up: a runtime override (set via `set_helius_api_key`
+  // in demo mode) takes precedence over env/config/public-fallback. The
+  // override is constructed by the override module from a validated
+  // bare API key, so we skip validateRpcUrl here — the URL has already
+  // passed shape validation and is hardcoded to the canonical Helius
+  // mainnet endpoint.
+  const override = getRuntimeSolanaRpc();
+  if (override) return override;
   const envUrl = process.env.SOLANA_RPC_URL;
   if (envUrl) {
     validateRpcUrl("solana", envUrl);

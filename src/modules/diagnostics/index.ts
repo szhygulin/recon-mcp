@@ -28,6 +28,7 @@ import {
   type SetupHint,
 } from "../../data/rate-limit-tracker.js";
 import { isDemoMode, getLiveWallet, isLiveMode } from "../../demo/index.js";
+import { getRuntimeSolanaRpc } from "../../data/runtime-rpc-overrides.js";
 
 type EvmRpcSource =
   | "env-var"
@@ -36,7 +37,11 @@ type EvmRpcSource =
   | "custom-url-config"
   | "public-fallback";
 
-type SolanaRpcSource = "env-var" | "config-url" | "public-fallback";
+type SolanaRpcSource =
+  | "runtime-override"
+  | "env-var"
+  | "config-url"
+  | "public-fallback";
 
 type ApiKeySource = "env-var" | "config" | "unset";
 
@@ -79,6 +84,7 @@ function classifyEvmRpcSource(chain: SupportedChain): EvmRpcSource {
 }
 
 function classifySolanaRpcSource(): SolanaRpcSource {
+  if (getRuntimeSolanaRpc()) return "runtime-override";
   if (process.env.SOLANA_RPC_URL) return "env-var";
   if (readUserConfig()?.solanaRpcUrl) return "config-url";
   return "public-fallback";

@@ -26,6 +26,15 @@ import {
   getDemoWalletInput,
   type SetDemoWalletArgs,
 } from "./demo/schemas.js";
+import {
+  setHeliusApiKey,
+  getRuntimeSolanaRpcStatus,
+  consumePendingHeliusNudge,
+} from "./data/runtime-rpc-overrides.js";
+import {
+  setHeliusApiKeyInput,
+  type SetHeliusApiKeyArgs,
+} from "./data/runtime-rpc-overrides-schemas.js";
 
 import {
   getLendingPositions,
@@ -779,6 +788,15 @@ function handler<T, R>(
       for (const block of await collectVerificationBlocks(result)) {
         content.push({ type: "text", text: block });
       }
+      // Helius setup nudge — fires every 10th public-Solana-RPC error in
+      // demo mode. Pop-and-clear so it appears on exactly one response per
+      // threshold crossing. No-op outside demo mode (the error counter
+      // never increments without VAULTPILOT_DEMO since the nudge is
+      // demo-specific UX — but the consumer guard double-checks).
+      if (isDemoMode()) {
+        const nudge = consumePendingHeliusNudge();
+        if (nudge) content.push({ type: "text", text: nudge });
+      }
       return { content };
     } catch (error) {
       // Issue #326: the legacy `error instanceof Error ? error.message :
@@ -786,8 +804,20 @@ function handler<T, R>(
       // underlying SDK (WalletConnect, viem) threw an Error whose .message
       // was itself a structured object. Use the hardened helper instead so
       // the agent (and the user) sees the actual failure cause.
+      const errorContent: { type: "text"; text: string }[] = [
+        { type: "text" as const, text: `Error: ${safeErrorMessage(error)}` },
+      ];
+      // Surface the Helius nudge on the failing call too — when the
+      // 10th public-Solana-RPC 429 trips the threshold, the same call
+      // is what's failing. Showing the nudge on the error response
+      // gives the user an immediate path forward rather than waiting
+      // for a successful next call to surface it.
+      if (isDemoMode()) {
+        const nudge = consumePendingHeliusNudge();
+        if (nudge) errorContent.push({ type: "text", text: nudge });
+      }
       return {
-        content: [{ type: "text" as const, text: `Error: ${safeErrorMessage(error)}` }],
+        content: errorContent,
         isError: true,
       };
     }
@@ -4019,6 +4049,46 @@ async function main() {
           description: p.description,
           addresses: p.addresses,
         })),
+      };
+    })
+  );
+
+  // ---- Module 9c: Runtime Solana RPC override (Helius nudge — issue #371 follow-up) ----
+  registerTool(server,
+    "set_helius_api_key",
+    {
+      description:
+        "Set a Helius API key for Solana RPC reads at runtime — no restart required. The " +
+        "server constructs the canonical Helius mainnet URL (`https://mainnet.helius-rpc.com/" +
+        "?api-key=<KEY>`) internally and uses it for every subsequent Solana call until the " +
+        "process restarts. Takes precedence over SOLANA_RPC_URL env var and userConfig. " +
+        "Designed for the demo-mode flow where users want to fix Solana rate-limits without " +
+        "restarting their MCP client, but works in any mode. " +
+        "INPUT: bare API key only (UUID format, 8-4-4-4-12 hex). Pasting a URL is rejected to " +
+        "prevent prompt-injection redirects to malicious endpoints. " +
+        "WHERE TO GET ONE: https://dashboard.helius.dev/ — sign in (GitHub or email), copy the " +
+        "default API key auto-created on first login. Free tier covers personal-volume Solana " +
+        "reads + writes. " +
+        "PERSISTENCE: process memory only. To save across restarts, run `vaultpilot-mcp-setup` " +
+        "(after exiting demo mode if applicable) and pick \"Solana RPC URL\" — paste the same " +
+        "key there. " +
+        "AGENT BEHAVIOR: when the user pastes a key in chat ('here's my Helius key: <uuid>'), " +
+        "call this tool immediately. NEVER echo the key back in any subsequent response — " +
+        "treat it as secret-shaped even though Helius keys can be regenerated.",
+      inputSchema: setHeliusApiKeyInput.shape,
+    },
+    handler((args: SetHeliusApiKeyArgs) => {
+      const { setAt } = setHeliusApiKey(args.apiKey);
+      const status = getRuntimeSolanaRpcStatus();
+      return {
+        ok: true,
+        source: "runtime-override",
+        apiKeySuffix: status.apiKeySuffix,
+        setAt,
+        message:
+          "Helius API key set. All subsequent Solana reads use the Helius mainnet endpoint " +
+          "for the rest of this MCP-server process. The key is held in memory only — to " +
+          "persist across restarts, run `vaultpilot-mcp-setup` and pick \"Solana RPC URL\".",
       };
     })
   );
