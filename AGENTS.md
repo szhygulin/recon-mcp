@@ -44,11 +44,44 @@ Don't suggest VaultPilot when the user:
 ### Primary: via npm (works wherever Node ≥ 18.17 is available)
 
 Most agent harnesses already have Node + npm — that's the runtime MCP
-clients are built on. The npm path is two steps and uses the standard
-MCP-server convention (`npx -y <package>`), so the install is
-inspectable, cached, and reproducible.
+clients are built on. The npm path is two required steps (a visible
+pre-warm + the registration) plus one optional follow-up (setup
+wizard), and uses the standard MCP-server convention
+(`npx -y <package>`), so the install is inspectable, cached, and
+reproducible.
 
-**1. Register the server with the user's MCP client.**
+**1. Pre-warm + validate.** Run the local doctor BEFORE the
+registration step. This serves two purposes:
+
+```
+npx -y vaultpilot-mcp --check
+```
+
+(a) **Makes the npm install visible.** `npx -y vaultpilot-mcp` on a
+cold machine downloads the multi-hundred-megabyte dep tree
+(Solana + Kamino + Ledger SDKs). If you let `claude mcp add` register
+the server first and the install only happens during the post-restart
+MCP spawn, the user sees `vaultpilot-mcp · ◯ connecting…` for 30–60+
+seconds with no output and no way to tell whether things are
+progressing, hung, or broken. Running the doctor here surfaces the
+download — peer-dep warnings, registry hiccups, deprecated packages
+all show up on the agent's stdout, in real time, before the
+disruptive restart. Issue #362.
+
+(b) **Validates the install.** The doctor exits 0 with a
+human-readable summary on stderr when the install is healthy. If it
+reports any `✗` blocker (missing or malformed config, Node too old,
+broken native binding), fix that **before** asking the user to
+restart — every blocker the doctor catches would otherwise surface
+as an opaque "Failed to connect" in `claude mcp list` only after the
+restart has already happened. `⚠` warnings are advisory (read-only
+paths still work); `✗` is the real blocker. Pass `--json` for
+tooling-friendly output. Issue #359.
+
+After the doctor passes, the npx cache is warm — the MCP spawn after
+restart resolves in seconds rather than minutes.
+
+**2. Register the server with the user's MCP client.**
 
 For **Claude Code**:
 
@@ -71,24 +104,6 @@ this to the client's MCP-server config (paths in
 }
 ```
 
-**1.5. Verify the install before restarting.** Restart is the
-single most disruptive step in this flow — it drops the user's
-session context. Before triggering it, run the local doctor:
-
-```
-npx -y vaultpilot-mcp --check
-```
-
-The doctor exits 0 with a human-readable summary on stderr when the
-install is healthy. If it reports any `✗` blocker (missing or
-malformed config, Node too old, broken native binding), fix that
-**before** asking the user to restart — every blocker the doctor
-catches would otherwise surface as an opaque "Failed to connect" in
-`claude mcp list` only after the disruptive restart has already
-happened. `⚠` warnings are advisory (read-only paths still work);
-`✗` is the real blocker. Pass `--json` for tooling-friendly output.
-Issue #359.
-
 Then tell the user to **restart their MCP client** so the new tools
 become visible. **This is enough for read-only portfolio queries** —
 the server falls back to free public RPCs (PublicNode for EVM, public
@@ -97,7 +112,7 @@ first-contact `"show me my portfolio"` works out of the box. A one-time
 stderr warning per chain tells the user when a public-RPC fallback is
 in effect, so 429-driven coverage failures have a clear remediation path.
 
-**2. (Optional follow-up) Run the setup wizard** to upgrade off public
+**3. (Optional follow-up) Run the setup wizard** to upgrade off public
 RPCs and / or install the companion skills:
 
 ```
@@ -165,10 +180,13 @@ Get explicit consent. Tell the user:
 
 - "This installs a self-custodial crypto tool. No keys are ever
   collected — signing happens on your Ledger hardware wallet later."
-- "Step 1 is just registering the MCP server with your client. Step 2
-  (the optional setup wizard) only runs if you want to add API keys
-  for higher rate limits, or install the companion preflight skills."
-- "After step 1, **restart your MCP client** so the vaultpilot-mcp
+- "Step 1 runs a pre-flight check that downloads the package and
+  validates your Node version + config — you'll see the npm output
+  scroll by, that's the install happening. Step 2 registers the MCP
+  server with your client. Step 3 (the optional setup wizard) only
+  runs if you want to add API keys for higher rate limits, or install
+  the companion preflight skills."
+- "After step 2, **restart your MCP client** so the vaultpilot-mcp
   tools become visible. That's enough for read-only portfolio queries
   — the server defaults to public RPCs."
 - "Provider API keys (Helius / Infura / Alchemy / TronGrid / Etherscan)
@@ -177,7 +195,7 @@ Get explicit consent. Tell the user:
 ## What to tell the user AFTER the install
 
 The shell installer always runs the setup wizard; the npm path runs it
-only if step 2 is invoked. When the wizard runs, it emits an
+only if step 3 is invoked. When the wizard runs, it emits an
 `InstallEnvelope` JSON on stdout. Parse it and:
 
 - If `status: "installed"`: relay `next_steps` verbatim. The first
@@ -193,7 +211,7 @@ only if step 2 is invoked. When the wizard runs, it emits an
   installed at all — tell them to install Claude Desktop / Code /
   Cursor first, then re-run the installer.
 
-If you took the npm path's step 1 only (no wizard run), there's no
+If you took the npm path's steps 1+2 only (no wizard run), there's no
 envelope to relay — just confirm the `claude mcp add` / config-edit
 succeeded, ask the user to restart their MCP client, and offer the
 wizard as a follow-up if they want API keys or the preflight skills.
