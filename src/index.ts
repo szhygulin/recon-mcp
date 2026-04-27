@@ -8,10 +8,24 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { parseDoctorFlags, runDoctor, formatDoctorReport } from "./check.js";
 import {
   isDemoMode,
-  isSigningTool,
-  getDemoFixture,
-  demoSigningRefusalMessage,
+  isAlwaysGatedTool,
+  isConditionallyGatedTool,
+  isBroadcastTool,
+  alwaysGatedRefusalMessage,
+  defaultModeRefusalMessage,
+  buildSimulationEnvelope,
+  isLiveMode,
+  getLiveWallet,
+  setLivePersona,
+  setLiveCustomAddresses,
+  clearLiveWallet,
 } from "./demo/index.js";
+import { PERSONAS } from "./demo/personas.js";
+import {
+  setDemoWalletInput,
+  getDemoWalletInput,
+  type SetDemoWalletArgs,
+} from "./demo/schemas.js";
 
 import {
   getLendingPositions,
@@ -795,25 +809,32 @@ function txHandler<T>(toolName: string, fn: (args: T) => Promise<UnsignedTx> | U
 }
 
 /**
- * Demo-mode-aware wrapper around `server.registerTool`. When
- * `VAULTPILOT_DEMO=true` is set in the environment AT REQUEST TIME (not
- * at startup), every tool call is intercepted before reaching its real
- * handler:
+ * Demo-mode-aware wrapper around `server.registerTool` (issue #371 PR 4).
+ * When `VAULTPILOT_DEMO=true` is set, the dispatcher routes each call
+ * through one of three branches:
  *
- *   - signing tools (prepare_*, send_transaction, pair_ledger_*, etc.)
- *     refuse with a structured demo-mode error (`isSigningTool` decides);
- *   - read tools return a deterministic fixture from `DEMO_FIXTURES`,
- *     or — for tools without a fixture — a `_demoFixture: "not-implemented"`
- *     payload so the user sees what's covered.
+ *   1. ALWAYS-GATED tools (`pair_ledger_*`, `sign_message_*`,
+ *      `request_capability`) — refuse with a structured `[VAULTPILOT_DEMO]`
+ *      error regardless of live-mode state. These either write off-process
+ *      state (Ledger config, GitHub) or require real hardware; no
+ *      simulation equivalent exists.
  *
- * When the env var is unset, this function is a transparent pass-through
- * to the real `server.registerTool` — zero runtime cost on the hot path.
+ *   2. CONDITIONALLY-GATED tools (`prepare_*`, `preview_send`,
+ *      `preview_solana_send`, `verify_tx_decode`, `get_verification_artifact`,
+ *      `send_transaction`):
+ *        - default demo (no live wallet) → refuse with a recovery hint
+ *          pointing at `set_demo_wallet`;
+ *        - live demo (live wallet set) → broadcast tool returns a
+ *          simulation envelope (delegating internally to the real handler
+ *          for the unsigned-tx + simulate result), every other tool runs
+ *          REAL against chain RPC for the persona's address.
  *
- * Single point of demo enforcement so adding a new tool only requires
- * (a) registering it through `registerTool(server, ...)` like every
- * other tool and optionally (b) adding a fixture entry. The signing-vs-
- * read classification is pattern-based so new prepare_* / pair_ledger_*
- * tools are gated automatically.
+ *   3. Everything else (read tools) — passes straight through to the
+ *      real handler. Reads run real chain RPC; the user must have
+ *      configured RPC keys (or accept the public-fallback rate limits).
+ *
+ * When the env var is unset this function is a transparent pass-through —
+ * zero runtime cost on the hot path.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function registerTool(
@@ -829,25 +850,112 @@ function registerTool(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   realHandler: (args: any) => Promise<{ content: unknown[]; isError?: boolean }> | { content: unknown[]; isError?: boolean },
 ): ReturnType<InstanceType<typeof McpServer>["registerTool"]> {
-  // Pre-build the demo handler at registration time; it's only invoked
-  // when `isDemoMode()` is true at request time, but allocating it once
-  // up front keeps the request-path branch trivial.
-  const demoHandler = handler<unknown, unknown>(
-    (args: unknown) => {
-      if (isSigningTool(name)) {
-        throw new Error(demoSigningRefusalMessage(name));
-      }
-      return getDemoFixture(name, args);
+  const alwaysGated = isAlwaysGatedTool(name);
+  const conditionallyGated = isConditionallyGatedTool(name);
+  const broadcastTool = isBroadcastTool(name);
+
+  const refuseAlwaysGated = handler<unknown, unknown>(
+    () => {
+      throw new Error(alwaysGatedRefusalMessage(name));
     },
     { toolName: name },
   );
+  const refuseDefaultMode = handler<unknown, unknown>(
+    () => {
+      throw new Error(defaultModeRefusalMessage(name));
+    },
+    { toolName: name },
+  );
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const dispatch = async (args: any) => {
-    if (isDemoMode()) return demoHandler(args);
+    if (!isDemoMode()) return realHandler(args);
+    if (alwaysGated) return refuseAlwaysGated(args);
+    if (conditionallyGated) {
+      if (!isLiveMode()) return refuseDefaultMode(args);
+      // Live mode: prepare_* / preview_* / verify_* / get_verification_artifact
+      // run the real handler. send_transaction is intercepted post-real to
+      // wrap the result in a simulation envelope (the broadcast layer is the
+      // only one we cannot let through).
+      if (!broadcastTool) return realHandler(args);
+      return broadcastSimulationDispatch(name, args, realHandler);
+    }
     return realHandler(args);
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return server.registerTool(name, opts, dispatch as any);
+}
+
+/**
+ * Live-mode `send_transaction` interception. Auto-runs the real
+ * simulate_transaction step against the unsigned-tx handle (so the
+ * envelope is self-contained — agent doesn't have to thread an earlier
+ * simulate result manually), then returns a structured simulation
+ * envelope shaped for verbatim relay. NEVER reaches the broadcast path —
+ * the real handler is bypassed entirely.
+ *
+ * `realHandler` is unused here on the broadcast path because we never
+ * want it invoked in live mode; it's threaded into this function only
+ * for symmetry with the dispatcher's signature. The broadcast tool's
+ * real implementation has chain-write side effects we must not trigger.
+ */
+async function broadcastSimulationDispatch(
+  toolName: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  args: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  _realHandler: (args: any) => unknown,
+): Promise<{ content: { type: "text"; text: string }[] }> {
+  const handleArg =
+    (args && typeof args === "object" && (args.handle ?? args.txHandle)) ?? "demo-handle";
+  let simulationResult: unknown;
+  try {
+    // Peek the unsigned tx via the handle store, then auto-run a fresh
+    // simulate_transaction so the envelope is self-contained. We import
+    // both modules lazily to avoid top-of-file cycles. `hasHandle` (not
+    // `consumeHandle`) so the demo flow doesn't burn the handle — the
+    // user can re-run send_transaction in a follow-up turn without a
+    // re-prepare. The real broadcast handler is never invoked.
+    const { hasHandle, consumeHandle, issueHandles } = await import(
+      "./signing/tx-store.js"
+    );
+    const { simulateTransaction } = await import(
+      "./modules/simulation/index.js"
+    );
+    if (typeof handleArg === "string" && hasHandle(handleArg)) {
+      const tx = consumeHandle(handleArg);
+      issueHandles(tx); // re-issue so a follow-up call still works
+      simulationResult = await simulateTransaction({
+        chain: tx.chain,
+        from: tx.from,
+        to: tx.to,
+        data: tx.data,
+        value: tx.value,
+      });
+    } else {
+      simulationResult = {
+        simulationSkipped: true,
+        reason:
+          "Handle not found in tx-store. Call a prepare_* tool first to obtain a handle, then pass it to send_transaction.",
+      };
+    }
+  } catch (err) {
+    simulationResult = {
+      simulationFailed: true,
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+  const envelope = buildSimulationEnvelope({
+    toolName,
+    unsignedTxHandle: String(handleArg),
+    simulationResult,
+    pinnedPreview: null,
+  });
+  return {
+    content: [
+      { type: "text" as const, text: JSON.stringify(envelope, bigintReplacer, 2) },
+    ],
+  };
 }
 
 /**
@@ -1121,17 +1229,27 @@ async function main() {
         "NOT block the user's current request waiting on skill installation. Relay each once as",
         "informational, keep working on what the user asked for.",
         "",
-        "DEMO MODE — `VAULTPILOT_DEMO=true` env var: this server ships a try-before-install fixture",
-        "mode for prospective users who want to evaluate the read-only UX without committing to a",
-        "Ledger or API keys. When the env var is set at MCP-process boot, every read tool returns a",
-        "deterministic curated fixture (multi-chain portfolio, lending positions, LP positions, BTC",
-        "balance, TRON staking, Solana balances) and every signing tool refuses with a structured",
-        "`[VAULTPILOT_DEMO]` error. If the user asks 'how do I try this without a Ledger', 'is there",
-        "a demo mode', or 'show me what this can do without setup', call `get_vaultpilot_config_status`",
-        "— the response carries a `demoMode` field with `active` (is it on right now) and",
-        "`howToEnable` (the exact `claude mcp add ... --env VAULTPILOT_DEMO=true` recipe). Relay",
-        "`howToEnable` verbatim. The agent CANNOT toggle the env var mid-session — the MCP process",
-        "reads it at boot, so activation requires a restart.",
+        "DEMO MODE — `VAULTPILOT_DEMO=true` env var: try-before-install evaluation mode for",
+        "users who don't have a Ledger yet. Two sub-modes coexist behind the env var:",
+        "  - DEFAULT (env set, no live wallet): all read tools run REAL chain RPC against any",
+        "    address the user passes; every signing-class tool refuses with a structured",
+        "    `[VAULTPILOT_DEMO]` error. Useful for browsing arbitrary on-chain state without a",
+        "    hardware wallet. RPC keys recommended; falls back to public-fallback endpoints.",
+        "  - LIVE (env set + `set_demo_wallet` called): a curated PERSONA or custom address bundle",
+        "    is active. Reads still run real RPC; prepare_*, simulate_*, preview_*, verify_* run",
+        "    real; ONLY `send_transaction` is intercepted with a structured simulation envelope",
+        "    (`outcome: \"simulated\"`, `simulatedTxHash` prefixed `0xdemo`, no real broadcast).",
+        "    Personas: defi-power-user, stable-saver, staking-maxi, whale.",
+        "  - ALWAYS-GATED tools (regardless of sub-mode): `pair_ledger_*`, `sign_message_*`,",
+        "    `request_capability`. These write off-process state or need real hardware — no",
+        "    on-chain simulation equivalent. They never work in demo, ever.",
+        "AGENT BEHAVIOR: if the user asks 'how do I try this without a Ledger' / 'is there a",
+        "demo mode', call `get_vaultpilot_config_status` and relay `demoMode.howToEnable`",
+        "verbatim — that field carries the exact `claude mcp add ... --env VAULTPILOT_DEMO=true`",
+        "recipe. Once demo is on and the user wants to walk a write flow, call `get_demo_wallet`",
+        "to surface the persona list, then `set_demo_wallet({ persona: \"...\" })` to upgrade to",
+        "live mode. The agent CANNOT toggle VAULTPILOT_DEMO mid-session (MCP reads env at boot)",
+        "but CAN toggle live-mode wallets at any time via `set_demo_wallet`.",
         "",
         "HARD RULE — wallet enumeration: NEVER ask the user to paste a wallet address.",
         "If the user refers to their wallets collectively or positionally — \"my wallet\",",
@@ -2868,8 +2986,12 @@ async function main() {
         "(which is noise), `setupHints` are real remediation paths the user wants to act on. " +
         "AGENT BEHAVIOR for demoMode: if the user asks 'how do I try this without a Ledger / " +
         "API keys' or 'is there a demo mode', read `demoMode.howToEnable` and relay it " +
-        "verbatim — that field carries the exact `claude mcp add ... --env " +
-        "VAULTPILOT_DEMO=true` recipe.",
+        "verbatim. The same field also carries `liveMode: { active, personaId, addresses }` " +
+        "reflecting whether `set_demo_wallet` has been called this session — when " +
+        "`liveMode.active` is true, signing-class tools have been re-enabled in simulation-only " +
+        "mode (broadcast intercepted with a structured envelope). When the user wants the " +
+        "write-flow walkthrough, call `get_demo_wallet` to surface the persona list, then " +
+        "`set_demo_wallet({ persona: \"...\" })` to upgrade.",
       inputSchema: getVaultPilotConfigStatusInput.shape,
     },
     configStatusHandler(getVaultPilotConfigStatus),
@@ -3790,8 +3912,119 @@ async function main() {
     txHandler("prepare_morpho_withdraw_collateral", buildMorphoWithdrawCollateral)
   );
 
+  // ---- Module 9b: Demo-mode live-wallet selection (issue #371 PR 4) ----
+  // Always registered — irrelevant when VAULTPILOT_DEMO is unset (the
+  // tools just no-op with a "demo not active" message), useful when set.
+  registerTool(server,
+    "set_demo_wallet",
+    {
+      description:
+        "DEMO MODE ONLY — switch the active demo wallet to a curated persona or a custom " +
+        "address bundle. Once a wallet is set, demo mode upgrades from default (signing-class " +
+        "tools refuse) to live mode (prepare_*, simulate_*, preview_send run REAL against the " +
+        "persona's on-chain state; send_transaction returns a simulation envelope instead of " +
+        "broadcasting). Personas: defi-power-user (active multi-protocol DeFi — Aave + " +
+        "Compound + Uniswap V3 LP + Lido), stable-saver (primarily stablecoin lending, no BTC), " +
+        "staking-maxi (Lido + EigenLayer + Solana validator stake, no BTC), whale (large " +
+        "multi-chain holdings, light DeFi). Each persona carries 1-3 EVM addresses, 1 each on " +
+        "Solana / TRON, and 0-1 on Bitcoin (null when the archetype doesn't fit BTC). Pass " +
+        "`{ persona: \"<id>\" }` to activate a persona, `{ custom: { evm: [...], solana: [...], " +
+        "tron: [...], bitcoin: [...] } }` for arbitrary addresses (read-only — pubkeys carry no " +
+        "security risk), or `{}` to clear and return to default demo mode. Calling outside demo " +
+        "mode (env unset) returns a no-op response — the tool stays available so an agent can " +
+        "always discover the surface, but it never affects real signing.",
+      inputSchema: setDemoWalletInput.shape,
+    },
+    handler((args: SetDemoWalletArgs) => {
+      if (!isDemoMode()) {
+        return {
+          ok: false,
+          message:
+            "set_demo_wallet is a no-op when VAULTPILOT_DEMO is unset. To use it, set " +
+            "VAULTPILOT_DEMO=true in the MCP server environment and restart.",
+          demoActive: false,
+        };
+      }
+      if (args.persona && args.custom) {
+        throw new Error(
+          "set_demo_wallet: pass either `persona` OR `custom`, not both. Use empty args ({}) to clear."
+        );
+      }
+      if (!args.persona && !args.custom) {
+        clearLiveWallet();
+        return {
+          ok: true,
+          mode: "default",
+          message:
+            "Live wallet cleared. Demo mode is now in default state — read tools run real RPC, " +
+            "signing-class tools refuse with a recovery hint pointing back here.",
+        };
+      }
+      if (args.persona) {
+        const persona = setLivePersona(args.persona);
+        return {
+          ok: true,
+          mode: "live",
+          personaId: persona.id,
+          description: persona.description,
+          addresses: persona.addresses,
+          message:
+            `Live demo mode active. Reads run real RPC against persona '${persona.id}'. ` +
+            `prepare_* / preview_* / verify_* run real. send_transaction returns a simulation ` +
+            `envelope (no broadcast). pair_ledger_*, sign_message_*, request_capability remain ` +
+            `gated regardless of live state.`,
+        };
+      }
+      // custom
+      setLiveCustomAddresses(args.custom!);
+      const w = getLiveWallet()!;
+      return {
+        ok: true,
+        mode: "live",
+        personaId: null,
+        addresses: w.addresses,
+        message:
+          "Live demo mode active with custom addresses. Reads run real RPC against the addresses you provided.",
+      };
+    })
+  );
+
+  registerTool(server,
+    "get_demo_wallet",
+    {
+      description:
+        "DEMO MODE ONLY — report the active demo wallet (live mode) or confirm default mode " +
+        "(no wallet set). Also enumerates the available personas + their addresses + " +
+        "descriptions, so the agent can offer the user a choice without hardcoding the list. " +
+        "When VAULTPILOT_DEMO is unset, returns `{ demoActive: false }` — the tool stays " +
+        "registered so agents can always discover the surface.",
+      inputSchema: getDemoWalletInput.shape,
+    },
+    handler(() => {
+      if (!isDemoMode()) {
+        return {
+          demoActive: false,
+          mode: null,
+          message: "VAULTPILOT_DEMO is unset — the server is in normal mode.",
+          personas: [],
+        };
+      }
+      const live = getLiveWallet();
+      return {
+        demoActive: true,
+        mode: live === null ? "default" : "live",
+        active: live,
+        personas: Object.values(PERSONAS).map((p) => ({
+          id: p.id,
+          description: p.description,
+          addresses: p.addresses,
+        })),
+      };
+    })
+  );
+
   // ---- Module 10: Capability requests (agent → maintainers) ----
-  registerTool(server, 
+  registerTool(server,
     "request_capability",
     {
       description:

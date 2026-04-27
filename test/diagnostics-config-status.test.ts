@@ -322,6 +322,29 @@ describe("get_vaultpilot_config_status — demo-mode discoverability (issue #371
     ({ getVaultPilotConfigStatus } = await loadFresh());
     expect(getVaultPilotConfigStatus().demoMode.active).toBe(false);
   });
+
+  it("surfaces demoMode.liveMode sub-object reflecting set_demo_wallet state (PR 4)", async () => {
+    process.env.VAULTPILOT_DEMO = "true";
+    const { getVaultPilotConfigStatus } = await loadFresh();
+    const { _resetLiveWalletForTests, setLivePersona } = await import(
+      "../src/demo/live-mode.js"
+    );
+    _resetLiveWalletForTests();
+    // Default sub-mode: liveMode.active=false, no persona, no addresses.
+    let status = getVaultPilotConfigStatus();
+    expect(status.demoMode.liveMode.active).toBe(false);
+    expect(status.demoMode.liveMode.personaId).toBeNull();
+    expect(status.demoMode.liveMode.addresses).toBeNull();
+
+    // After set_demo_wallet({persona}), liveMode reflects it.
+    setLivePersona("defi-power-user");
+    status = getVaultPilotConfigStatus();
+    expect(status.demoMode.liveMode.active).toBe(true);
+    expect(status.demoMode.liveMode.personaId).toBe("defi-power-user");
+    expect(status.demoMode.liveMode.addresses).not.toBeNull();
+    expect(status.demoMode.liveMode.addresses!.evm.length).toBeGreaterThan(0);
+    _resetLiveWalletForTests();
+  });
 });
 
 describe("get_vaultpilot_config_status — first-run demo-mode hint (issue #371 Option 3)", () => {

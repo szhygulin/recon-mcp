@@ -27,7 +27,7 @@ import {
   getActiveHints,
   type SetupHint,
 } from "../../data/rate-limit-tracker.js";
-import { isDemoMode } from "../../demo/index.js";
+import { isDemoMode, getLiveWallet, isLiveMode } from "../../demo/index.js";
 
 type EvmRpcSource =
   | "env-var"
@@ -138,19 +138,32 @@ interface VaultPilotConfigStatus {
   setupHints: SetupHint[];
   /**
    * Demo-mode discoverability surface (issue #371). The demo feature
-   * (`VAULTPILOT_DEMO=true`) lets a prospective user try the read-only
-   * UX with deterministic fixtures and no Ledger / RPC keys, but the
-   * env-var gate is invisible to an agent introspecting the server —
-   * this field makes it discoverable on the canonical "is my MCP set
-   * up?" tool. `active` reflects request-time env state; `howToEnable`
-   * carries the activation recipe so the agent can guide the user to
-   * the env-var + restart step (the agent itself can't toggle the var
-   * mid-session — the MCP process reads the env at boot).
+   * (`VAULTPILOT_DEMO=true`) lets a prospective user evaluate VaultPilot
+   * without a Ledger; this field makes the env-var gate AND the live
+   * sub-mode discoverable from the canonical "is my MCP set up?" tool.
+   *
+   *   - `active`: env-var state at request time.
+   *   - `howToEnable`: activation recipe (env unset) or exit recipe
+   *     (env set) — verbatim-relayable.
+   *   - `liveMode`: whether `set_demo_wallet` has been called this
+   *     session, the persona ID + address bundle if so. Mutates at
+   *     runtime — the agent CAN toggle live-mode wallets via
+   *     `set_demo_wallet`, unlike the env var which requires a restart.
    */
   demoMode: {
     active: boolean;
     envVar: "VAULTPILOT_DEMO";
     howToEnable: string;
+    liveMode: {
+      active: boolean;
+      personaId: string | null;
+      addresses: {
+        evm: string[];
+        solana: string[];
+        tron: string[];
+        bitcoin: string[] | null;
+      } | null;
+    };
   };
 }
 
@@ -255,14 +268,19 @@ export function getVaultPilotConfigStatus(_args: Record<string, never> = {}): Va
       kind: "demo-mode",
       source: "demo-mode-suggestion",
       message:
-        "No setup detected — try demo mode to evaluate VaultPilot without a Ledger or API keys.",
+        "No setup detected — try demo mode to evaluate VaultPilot without a Ledger.",
       recommendation:
         "VaultPilot ships a try-before-install demo mode (`VAULTPILOT_DEMO=true`). " +
         "Activate by adding `--env VAULTPILOT_DEMO=true` to your `claude mcp add " +
         "vaultpilot-mcp` command (or edit the existing MCP entry's env), then restart " +
-        "Claude Code. Read tools return curated multi-chain portfolio fixtures and " +
-        "every signing tool refuses — no Ledger, RPC keys, or pairing required. Unset " +
-        "the env var and restart to exit demo mode and proceed with real setup.",
+        "Claude Code. Reads run real chain RPC against any address (rate-limited public " +
+        "fallback works without keys; RPC keys recommended for production-grade reads), " +
+        "and signing-class tools refuse by default. Once active, call `set_demo_wallet" +
+        "({ persona: \"defi-power-user\" })` (or stable-saver / staking-maxi / whale) to " +
+        "upgrade to live mode — the broadcast step is then simulated against the persona's " +
+        "real on-chain state, letting you walk a full prepare → simulate → \"broadcast\" " +
+        "flow with no hardware wallet. Unset the env var and restart to exit demo mode and " +
+        "proceed with real setup.",
     });
   }
 
@@ -291,8 +309,13 @@ export function getVaultPilotConfigStatus(_args: Record<string, never> = {}): Va
       active: isDemoMode(),
       envVar: "VAULTPILOT_DEMO",
       howToEnable: isDemoMode()
-        ? "Demo mode is active — read tools return deterministic fixture data, signing tools refuse with a structured demo error. To exit, unset VAULTPILOT_DEMO and restart the MCP server."
-        : "Set VAULTPILOT_DEMO=true in the MCP server environment and restart. Add via `claude mcp add vaultpilot-mcp --env VAULTPILOT_DEMO=true -- npx -y vaultpilot-mcp` (or edit the existing MCP entry's env). In demo mode read tools return curated multi-chain portfolio fixtures and every signing tool refuses — no Ledger, RPC keys, or pairing required.",
+        ? "Demo mode is active. In default sub-mode, read tools run real chain RPC and signing-class tools refuse. Call `set_demo_wallet({ persona: \"...\" })` to upgrade to live sub-mode — the broadcast step is then simulated against a curated persona's on-chain state. To exit demo mode entirely, unset VAULTPILOT_DEMO and restart the MCP server."
+        : "Set VAULTPILOT_DEMO=true in the MCP server environment and restart. Add via `claude mcp add vaultpilot-mcp --env VAULTPILOT_DEMO=true -- npx -y vaultpilot-mcp` (or edit the existing MCP entry's env). In demo mode, read tools run real chain RPC against any address you pass (RPC keys recommended; falls back to public-fallback endpoints) and signing-class tools refuse. Calling `set_demo_wallet({ persona: \"defi-power-user\" | \"stable-saver\" | \"staking-maxi\" | \"whale\" })` upgrades to live mode where the broadcast step is simulated — no Ledger required.",
+      liveMode: {
+        active: isLiveMode(),
+        personaId: getLiveWallet()?.personaId ?? null,
+        addresses: getLiveWallet()?.addresses ?? null,
+      },
     },
   };
 }

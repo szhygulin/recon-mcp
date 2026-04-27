@@ -1,0 +1,34 @@
+/**
+ * Zod input schemas for the demo-mode tool surface (set_demo_wallet,
+ * get_demo_wallet). Kept in a sibling file rather than inline at the
+ * registerTool call sites so src/index.ts stays free of zod imports
+ * (matches the convention every other module follows).
+ */
+
+import { z } from "zod";
+
+export const setDemoWalletInput = z.object({
+  persona: z
+    .enum(["defi-power-user", "stable-saver", "staking-maxi", "whale"])
+    .optional()
+    .describe(
+      "Persona ID to activate. Mutually exclusive with `custom`. Omit both to clear live wallet.",
+    ),
+  custom: z
+    .object({
+      evm: z.array(z.string()).optional(),
+      solana: z.array(z.string()).optional(),
+      tron: z.array(z.string()).optional(),
+      bitcoin: z.array(z.string()).optional(),
+    })
+    .optional()
+    .describe(
+      "Custom address bundle. Mutually exclusive with `persona`. At least one chain field must be non-empty.",
+    ),
+});
+
+export type SetDemoWalletArgs = z.infer<typeof setDemoWalletInput>;
+
+export const getDemoWalletInput = z.object({});
+
+export type GetDemoWalletArgs = z.infer<typeof getDemoWalletInput>;
