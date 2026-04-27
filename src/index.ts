@@ -4248,10 +4248,20 @@ async function main() {
         "descriptions regardless of VAULTPILOT_DEMO state, so the agent can offer the " +
         "user a choice without hardcoding the list (issue #392). " +
         "RESPONSE: `{ demoActive, mode, envState: 'enabled' | 'unset' | 'invalid', " +
-        "personas, [active], [message] }`. When envState is 'unset' or 'invalid' the " +
+        "personas, matrix, [active], [message] }`. When envState is 'unset' or 'invalid' the " +
         "`message` field tells the user how to fix it (set `VAULTPILOT_DEMO=true` exact " +
         "literal, lowercase). When envState is 'enabled', `active` carries the current " +
-        "live wallet (or null in default demo mode).",
+        "live wallet (or null in default demo mode). " +
+        "MATRIX (issue #409 enrichment): each cell in `matrix[chain][type]` carries a " +
+        "`rehearsableFlows: string[]` field listing multi-step / state-dependent demo flows " +
+        "the cell's existing on-chain state already supports end-to-end (e.g. `aave_supply`, " +
+        "`marinade_stake`, `swap_eth_usdc`), and an optional `flowGaps` field listing flows " +
+        "the persona archetype implies but the wallet's current state does NOT support, with " +
+        "a one-line `recommendation` (switch persona / exit demo / pair Ledger). Read these " +
+        "BEFORE the user picks a flow so you offer rehearsable flows up-front and steer them " +
+        "off flows that would loop on missing on-chain state (the `simulated` send returned " +
+        "in demo mode never mutates state, so any flow whose precondition is itself a state " +
+        "change can't be rehearsed end-to-end against a wallet that doesn't already have it).",
       inputSchema: getDemoWalletInput.shape,
     },
     handler(() => buildGetDemoWalletResponse())

@@ -361,7 +361,9 @@ describe("DEMO_WALLETS matrix — coverage matches curation", () => {
     expect(DEMO_TYPES.sort()).toEqual(
       ["defi-degen", "stable-saver", "staking-maxi", "whale"].sort(),
     );
-    // Every present cell carries address + archetype + verifiedAt.
+    // Every present cell carries address + archetype + verifiedAt +
+    // rehearsableFlows. Optional flowGaps must be array-shaped when
+    // present.
     for (const chain of DEMO_CHAINS) {
       for (const type of DEMO_TYPES) {
         const cell = DEMO_WALLETS[chain][type];
@@ -369,9 +371,51 @@ describe("DEMO_WALLETS matrix — coverage matches curation", () => {
           expect(cell.address.length).toBeGreaterThan(20);
           expect(cell.archetype.length).toBeGreaterThan(0);
           expect(cell.verifiedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+          expect(Array.isArray(cell.rehearsableFlows)).toBe(true);
+          // Every cell rehearses at least one flow — even minimum-state
+          // cells walk `read_portfolio`. A cell with zero rehearsable
+          // flows is a curation bug (the persona is unusable).
+          expect(cell.rehearsableFlows.length).toBeGreaterThan(0);
+          for (const flow of cell.rehearsableFlows) {
+            expect(typeof flow).toBe("string");
+            expect(flow).toMatch(/^[a-z][a-z0-9_]+$/);
+          }
+          if (cell.flowGaps) {
+            expect(Array.isArray(cell.flowGaps)).toBe(true);
+            for (const gap of cell.flowGaps) {
+              expect(typeof gap.flow).toBe("string");
+              expect(gap.reason.length).toBeGreaterThan(0);
+              expect(gap.recommendation.length).toBeGreaterThan(0);
+            }
+            // A flow listed as a gap must NOT also be in
+            // rehearsableFlows — that's an internal contradiction.
+            const gapNames = new Set(cell.flowGaps.map((g) => g.flow));
+            for (const flow of cell.rehearsableFlows) {
+              expect(gapNames.has(flow)).toBe(false);
+            }
+          }
         }
       }
     }
+  });
+
+  it("rehearsableFlows + flowGaps surface through buildGetDemoWalletResponse via the matrix view", async () => {
+    process.env.VAULTPILOT_DEMO = "true";
+    const { buildGetDemoWalletResponse } = await import("../src/demo/index.js");
+    const resp = buildGetDemoWalletResponse();
+    expect(resp.demoActive).toBe(true);
+    // Sample a known-rich cell: EVM defi-degen has multi-protocol flows.
+    const cell = resp.matrix.evm["defi-degen"];
+    expect(cell).not.toBeNull();
+    expect(cell?.rehearsableFlows).toContain("aave_supply");
+    // Sample a known-gap cell: Solana whale has no SPL tokens.
+    const solanaWhale = resp.matrix.solana.whale;
+    expect(solanaWhale).not.toBeNull();
+    expect(solanaWhale?.flowGaps?.length ?? 0).toBeGreaterThan(0);
+    expect(
+      solanaWhale?.flowGaps?.some((g) => g.flow === "token_send_usdc"),
+    ).toBe(true);
+    delete process.env.VAULTPILOT_DEMO;
   });
 
   it("whale row is fully populated (every chain has a whale cell)", async () => {
