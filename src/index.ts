@@ -190,6 +190,7 @@ import {
   getBitcoinTxHistory,
   prepareBitcoinNativeSend,
   prepareBitcoinRbfBump,
+  prepareBitcoinLifiSwap,
   registerBtcMultisigWallet,
   unregisterBtcMultisigWallet,
   signBtcMultisigPsbt,
@@ -281,6 +282,7 @@ import {
   getBitcoinTxHistoryInput,
   prepareBitcoinNativeSendInput,
   prepareBitcoinRbfBumpInput,
+  prepareBitcoinLifiSwapInput,
   registerBitcoinMultisigWalletInput,
   unregisterBitcoinMultisigWalletInput,
   signBitcoinMultisigPsbtInput,
@@ -2751,6 +2753,33 @@ async function main() {
       inputSchema: prepareBitcoinNativeSendInput.shape,
     },
     handler(prepareBitcoinNativeSend, { toolName: "prepare_btc_send" })
+  );
+
+  registerTool(server,
+    "prepare_btc_lifi_swap",
+    {
+      description:
+        "Build an unsigned Bitcoin PSBT-v0 that bridges native BTC to a token " +
+        "on another chain via LiFi's aggregator. LiFi auctions the route across " +
+        "intent solvers (NEAR Intents, Garden, Thorswap, Chainflip, Symbiosis, …) " +
+        "and returns a PSBT depositing to the chosen solver's vault address with " +
+        "an OP_RETURN memo committing to the cross-chain destination. " +
+        "Destinations: every EVM chain (`ethereum`/`arbitrum`/`polygon`/`base`/" +
+        "`optimism`) and Solana — TRON has no LiFi route from BTC and is rejected. " +
+        "Source-side scope (Phase 1, mirrors prepare_btc_send): native segwit and " +
+        "taproot only. Returns a 15-min handle the agent forwards to send_transaction; " +
+        "the Ledger BTC app clear-signs every output (vault deposit + OP_RETURN + " +
+        "change-back-to-source + LiFi fee output) on-screen, so there is NO blind-sign " +
+        "hash to pre-match in chat. The verification block surfaces the vault address, " +
+        "OP_RETURN bytes (hex + ASCII prefix), expected and minimum output on the " +
+        "destination, slippage, the chosen solver, and execution duration estimate. " +
+        "Server-side checks before forwarding: every PSBT input belongs to the source " +
+        "address, exactly one OP_RETURN output is present, the deposit output address " +
+        "matches the LiFi-advertised vault, and `nonWitnessUtxo` is hydrated on every " +
+        "input (Ledger 2.x rejects segwit/taproot inputs without it).",
+      inputSchema: prepareBitcoinLifiSwapInput.shape,
+    },
+    handler(prepareBitcoinLifiSwap, { toolName: "prepare_btc_lifi_swap" })
   );
 
   registerTool(server,
