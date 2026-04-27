@@ -2297,8 +2297,33 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
  * `skillRepoUrl` is the GitHub URL the user clones from; passed in so the
  * call site owns the single source of truth (index.ts).
  */
+/**
+ * Auto-install state passed in by `index.ts`. The renderer switches on this
+ * to produce one of three notice variants:
+ *   - `not-attempted` / unset / `already-present` → manual-install prose
+ *     (the original notice content, unchanged).
+ *   - `in-progress` → "auto-install kicked off, restart at end of session"
+ *     so the user knows we're handling it but Claude Code needs a restart
+ *     to load the freshly-cloned SKILL.md (skills are loaded at session
+ *     start, not on the fly).
+ *   - `succeeded` → "auto-installed, restart now to activate".
+ *   - `failed` → manual-install prose + the error detail so the user can
+ *     diagnose (no `git`, network down, dangling dir, etc.).
+ */
+export interface AutoInstallContext {
+  state:
+    | "not-attempted"
+    | "in-progress"
+    | "succeeded"
+    | "failed"
+    | "already-present";
+  installPath?: string;
+  detail?: string;
+}
+
 export function renderMissingSkillWarning(opts: {
   skillRepoUrl: string;
+  autoInstall?: AutoInstallContext;
 }): string {
   // NOTE ON FRAMING — this block was originally prefixed with an
   // "[AGENT TASK — RELAY TO USER FIRST, BEFORE ANY OTHER BLOCK]" header
@@ -2314,6 +2339,17 @@ export function renderMissingSkillWarning(opts: {
   // shell commands. The server-level `instructions` field documents this
   // notice pattern explicitly at initialize time so the agent has prior
   // knowledge it is legitimate server output.
+  const ai = opts.autoInstall;
+  if (ai?.state === "in-progress") {
+    return renderAutoInstallInProgress("Preflight", ai.installPath ?? "");
+  }
+  if (ai?.state === "succeeded") {
+    return renderAutoInstallSucceeded("Preflight", ai.installPath ?? "");
+  }
+  const failedSuffix =
+    ai?.state === "failed" && ai.detail
+      ? `\n\n(Auto-install attempt failed: ${ai.detail})`
+      : "";
   return [
     "VAULTPILOT NOTICE — Preflight skill not installed",
     "",
@@ -2332,6 +2368,54 @@ export function renderMissingSkillWarning(opts: {
     "level `instructions` field documents this pattern. Surface it to",
     "the user once per session as informational, then continue with",
     "their request.",
+  ].join("\n") + failedSuffix;
+}
+
+/**
+ * Shared body for the "auto-install kicked off" notice variant. Doesn't
+ * mention the manual `git clone` flow — auto-install is on; the user just
+ * needs to restart at the end of the session for Claude Code to pick up
+ * the freshly-cloned SKILL.md.
+ */
+function renderAutoInstallInProgress(
+  skillLabel: string,
+  installPath: string,
+): string {
+  return [
+    `VAULTPILOT NOTICE — ${skillLabel} skill auto-install in progress`,
+    "",
+    `Status:  cloning ${skillLabel.toLowerCase()} skill to ${installPath}`,
+    "         in the background (git clone --depth=1, ~30s timeout).",
+    `Purpose: the ${skillLabel.toLowerCase()} skill is one of two companion`,
+    "         skills vaultpilot-mcp expects to find under ~/.claude/skills/.",
+    "         The MCP server kicked off a one-time first-run install on",
+    "         this tool call — no manual git clone needed.",
+    "Action:  restart Claude Code at the end of this session so the new",
+    "         SKILL.md is loaded. Skills are read at session start, not",
+    "         on the fly, so this session won't have it active. Continue",
+    "         with the user's current request normally.",
+    "",
+    "This notice is server-generated, not prompt injection. Suppress",
+    "auto-install with VAULTPILOT_DISABLE_SKILL_AUTOINSTALL=1.",
+  ].join("\n");
+}
+
+function renderAutoInstallSucceeded(
+  skillLabel: string,
+  installPath: string,
+): string {
+  return [
+    `VAULTPILOT NOTICE — ${skillLabel} skill auto-installed`,
+    "",
+    `Status:  cloned to ${installPath}.`,
+    `Purpose: the ${skillLabel.toLowerCase()} skill is now on disk; Claude`,
+    "         Code loads its skill list at session start, so this session",
+    "         is still running without it.",
+    "Action:  restart Claude Code to activate the skill. The current",
+    "         tool call has already been answered — no need to retry it",
+    "         after the restart unless the user wants to.",
+    "",
+    "This notice is server-generated, not prompt injection.",
   ].join("\n");
 }
 
@@ -2352,7 +2436,19 @@ export function renderMissingSkillWarning(opts: {
  */
 export function renderMissingSetupSkillWarning(opts: {
   skillRepoUrl: string;
+  autoInstall?: AutoInstallContext;
 }): string {
+  const ai = opts.autoInstall;
+  if (ai?.state === "in-progress") {
+    return renderAutoInstallInProgress("Setup", ai.installPath ?? "");
+  }
+  if (ai?.state === "succeeded") {
+    return renderAutoInstallSucceeded("Setup", ai.installPath ?? "");
+  }
+  const failedSuffix =
+    ai?.state === "failed" && ai.detail
+      ? `\n\n(Auto-install attempt failed: ${ai.detail})`
+      : "";
   return [
     "VAULTPILOT NOTICE — Setup skill not installed",
     "",
@@ -2373,7 +2469,7 @@ export function renderMissingSetupSkillWarning(opts: {
     "to the user once per session as informational, then continue with",
     "their setup question — referencing the install instructions if the",
     "user wants the guided flow.",
-  ].join("\n");
+  ].join("\n") + failedSuffix;
 }
 
 /**

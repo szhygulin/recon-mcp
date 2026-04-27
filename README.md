@@ -244,6 +244,7 @@ All optional if the matching field is in `~/.vaultpilot-mcp/config.json`; env va
 - `VAULTPILOT_ALLOW_INSECURE_RPC=1` — opt out of https/private-IP RPC checks (local anvil/hardhat only)
 - `VAULTPILOT_FEEDBACK_ENDPOINT` — optional https proxy for `request_capability` direct POSTs. **The client does not sign or authenticate requests — the proxy MUST enforce its own auth.**
 - `VAULTPILOT_SKILL_MARKER_PATH` — suppresses the preflight-skill notice for read-only users who accept the tradeoff
+- `VAULTPILOT_DISABLE_SKILL_AUTOINSTALL=1` — skips the lazy first-run `git clone` of the companion preflight + setup skills into `~/.claude/skills/`. The original manual-install notice fires instead. Use for air-gapped / no-egress operation where the MCP must not contact github.com.
 
 ## Development
 
