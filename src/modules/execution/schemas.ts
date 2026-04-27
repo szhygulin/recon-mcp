@@ -1571,3 +1571,87 @@ export type GetLitecoinBalanceArgs = z.infer<typeof getLitecoinBalanceInput>;
 export type PrepareLitecoinNativeSendArgs = z.infer<typeof prepareLitecoinNativeSendInput>;
 export type SignLtcMessageArgs = z.infer<typeof signLtcMessageInput>;
 export type RescanLitecoinAccountArgs = z.infer<typeof rescanLitecoinAccountInput>;
+
+// Uniswap V3 LP — first slice of Milestone 1 in
+// `claude-work/plan-dex-liquidity-provision.md`. v1: WETH-on-both-sides
+// (no native-ETH refund-via-multicall — follow-up).
+export const prepareUniswapV3MintInput = z.object({
+  wallet: walletSchema,
+  chain: chainEnum.default("ethereum"),
+  tokenA: addressSchema.describe(
+    "First token in the LP pair. Pass either order; the builder canonically " +
+      "sorts to (token0, token1) before submission. Native ETH is NOT supported " +
+      "in v1 — wrap to WETH first via prepare_native_send to the WETH contract.",
+  ),
+  tokenB: addressSchema.describe(
+    "Second token in the LP pair. Must differ from tokenA.",
+  ),
+  feeTier: z
+    .union([z.literal(100), z.literal(500), z.literal(3000), z.literal(10000)])
+    .describe(
+      "Pool fee in hundredths of a bip: 100 = 0.01%, 500 = 0.05%, 3000 = 0.3%, 10000 = 1%. " +
+        "Each fee tier is a separate pool; pick the one that matches the pair's volatility.",
+    ),
+  tickLower: z
+    .number()
+    .int()
+    .describe(
+      "Lower tick of the position's price range. MUST align to the fee tier's " +
+        "tickSpacing (100→1, 500→10, 3000→60, 10000→200) — mis-aligned ticks are rejected. " +
+        "Use Uniswap UI or a tick-from-price helper to derive the value; passing arbitrary " +
+        "ints risks creating a position at a price the user did not intend.",
+    ),
+  tickUpper: z
+    .number()
+    .int()
+    .describe(
+      "Upper tick. Must be > tickLower and aligned to tickSpacing.",
+    ),
+  amountADesired: z
+    .string()
+    .max(50)
+    .describe(
+      'Human-readable decimal amount of tokenA to deposit. Example: "100.5" for ' +
+        '100.5 USDC. NOT raw wei. Pass "0" for a single-sided range deposit when ' +
+        "the current price is outside the range and only the other token is needed.",
+    ),
+  amountBDesired: z
+    .string()
+    .max(50)
+    .describe("Human-readable decimal amount of tokenB. Same shape as amountADesired."),
+  slippageBps: z
+    .number()
+    .int()
+    .min(0)
+    .max(500)
+    .optional()
+    .describe(
+      "Slippage tolerance in basis points (1 bp = 0.01%). Default 50 bps (0.5%). " +
+        "Hard ceiling 500 bps; soft cap 100 bps requires acknowledgeHighSlippage: true. " +
+        "Higher slippage masks bad fills and is a sandwich-bait misconfiguration.",
+    ),
+  acknowledgeHighSlippage: z
+    .boolean()
+    .optional()
+    .describe(
+      "Required when slippageBps is in (100, 500]. Surface the trade-off to the user " +
+        "before proceeding — wide slippage on an LP mint locks the unfavourable amounts.",
+    ),
+  deadlineSec: z
+    .number()
+    .int()
+    .min(60)
+    .max(3600)
+    .optional()
+    .describe(
+      "Seconds from now until the on-chain `deadline` parameter expires. Default 1200 (20 min).",
+    ),
+  recipient: addressSchema
+    .optional()
+    .describe(
+      "Address to receive the minted LP NFT. Default: wallet (the depositor).",
+    ),
+  approvalCap: approvalCapSchema,
+});
+
+export type PrepareUniswapV3MintArgs = z.infer<typeof prepareUniswapV3MintInput>;

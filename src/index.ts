@@ -169,6 +169,7 @@ import {
   prepareAaveWithdraw,
   prepareAaveBorrow,
   prepareAaveRepay,
+  prepareUniswapV3Mint,
   prepareLidoStake,
   prepareLidoUnstake,
   prepareEigenLayerDeposit,
@@ -251,6 +252,7 @@ import {
   prepareAaveWithdrawInput,
   prepareAaveBorrowInput,
   prepareAaveRepayInput,
+  prepareUniswapV3MintInput,
   prepareLidoStakeInput,
   prepareLidoUnstakeInput,
   prepareEigenLayerDepositInput,
@@ -2804,7 +2806,7 @@ async function main() {
     txHandler("prepare_aave_borrow", prepareAaveBorrow)
   );
 
-  registerTool(server, 
+  registerTool(server,
     "prepare_aave_repay",
     {
       description:
@@ -2814,7 +2816,22 @@ async function main() {
     txHandler("prepare_aave_repay", prepareAaveRepay)
   );
 
-  registerTool(server, 
+  registerTool(server,
+    "prepare_uniswap_v3_mint",
+    {
+      description:
+        "Build an unsigned Uniswap V3 LP mint transaction — opens a new concentrated-liquidity position on the (tokenA, tokenB, feeTier) pool, bounded by [tickLower, tickUpper]. " +
+        "Up to two ERC-20 approvals are chained ahead of the mint() call (one per nonzero deposit side); USDT-style reset is handled automatically. " +
+        "The pool must already exist (initialized) — refuses with a clear error otherwise. Tick bounds MUST align to the fee tier's tickSpacing (100→1, 500→10, 3000→60, 10000→200); mis-aligned ticks are rejected rather than silently rounded. " +
+        "v1 limitation: only WETH (not native ETH) is supported as a pair side; wrap ETH first via `prepare_native_send` to the WETH contract. " +
+        "Slippage defaults to 50 bps (0.5%); soft cap at 100 bps requires `acknowledgeHighSlippage: true`. " +
+        "After signing the mint, the resulting LP NFT appears in `get_lp_positions` for the recipient address.",
+      inputSchema: prepareUniswapV3MintInput.shape,
+    },
+    txHandler("prepare_uniswap_v3_mint", prepareUniswapV3Mint)
+  );
+
+  registerTool(server,
     "prepare_lido_stake",
     {
       description:
