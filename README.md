@@ -268,3 +268,11 @@ The repo owner and Dependabot are exempt from the CLA check.
 - **Hosted services and embedded redistribution require a commercial license.** You may not offer the software (or substantial features of it) to third parties on a paid hosted, managed, or embedded basis without a separate agreement. Open an issue or contact the maintainer for licensing.
 - **Auto-converts to Apache 2.0 on 2030-04-26.** Each version's restrictions expire four years after its public release; on the Change Date the license switches to Apache 2.0.
 - **Versions ≤ 0.8.2 remain MIT-licensed.** The license change applies to v0.9.0 onward only.
+
+## 💰 Bounty Contribution
+
+- **Task:** get_protocol_risk_score returns score:null for major protocols (Compound V3, Aav
+- **Reward:** $3
+- **Source:** GitHub-Bounty
+- **Date:** 2026-04-27
+
