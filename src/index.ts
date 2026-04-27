@@ -172,6 +172,7 @@ import {
   prepareAaveBorrow,
   prepareAaveRepay,
   prepareUniswapV3Mint,
+  prepareUniswapV3IncreaseLiquidity,
   prepareLidoStake,
   prepareLidoUnstake,
   prepareEigenLayerDeposit,
@@ -257,6 +258,7 @@ import {
   prepareAaveBorrowInput,
   prepareAaveRepayInput,
   prepareUniswapV3MintInput,
+  prepareUniswapV3IncreaseLiquidityInput,
   prepareLidoStakeInput,
   prepareLidoUnstakeInput,
   prepareEigenLayerDepositInput,
@@ -2879,6 +2881,22 @@ async function main() {
       inputSchema: prepareUniswapV3MintInput.shape,
     },
     txHandler("prepare_uniswap_v3_mint", prepareUniswapV3Mint)
+  );
+
+  registerTool(server,
+    "prepare_uniswap_v3_increase_liquidity",
+    {
+      description:
+        "Build an unsigned Uniswap V3 LP increaseLiquidity transaction — adds liquidity to an existing position identified by `tokenId`. " +
+        "Reads the position's (token0, token1, fee, tickLower, tickUpper) on-chain via positions(tokenId), so the caller only supplies the tokenId + amounts. " +
+        "Hard-refuses when the tokenId is not owned by `wallet` (the on-chain call would still succeed and route the deposit into someone else's position — the position owner gets the new liquidity). Use `get_lp_positions` to enumerate the wallet's tokenIds. " +
+        "Up to two ERC-20 approvals are chained ahead of the increaseLiquidity() call. " +
+        "v1 limitation: only WETH (not native ETH) is supported as a pair side; wrap ETH first via `prepare_native_send` to the WETH contract. " +
+        "Slippage defaults to 50 bps (0.5%); soft cap at 100 bps requires `acknowledgeHighSlippage: true`. " +
+        "Pass `amount0Desired: \"0\"` (or amount1Desired) for a single-sided range deposit when the current price is outside the position's range.",
+      inputSchema: prepareUniswapV3IncreaseLiquidityInput.shape,
+    },
+    txHandler("prepare_uniswap_v3_increase_liquidity", prepareUniswapV3IncreaseLiquidity)
   );
 
   registerTool(server,
