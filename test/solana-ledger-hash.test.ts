@@ -245,6 +245,16 @@ describe("renderSolanaAgentTaskBlock", () => {
     // v1.6 Phase 2: send-call contract compressed to a one-liner.
     expect(block).toContain("send_transaction({handle, confirmed:true})");
     expect(block).not.toContain("previewToken");
+    // Issue #396: label the AGENT TASK block so the user sees a one-line
+    // explanation BEFORE the Bash approval prompt fires (otherwise the
+    // 30-line `node -e` script lands as an opaque scary modal mid-send).
+    expect(block).toContain(
+      "BEFORE invoking Bash, surface ONE labeling line to the user",
+    );
+    expect(block).toContain("VaultPilot Solana integrity check");
+    expect(block).toContain(
+      "[Verifier source](https://github.com/szhygulin/vaultpilot-mcp/blob/main/src/signing/render-verification.ts)",
+    );
   });
 
   it("native_send: CHECK 1 only (no hash recompute), clear-sign on-device branch", () => {
@@ -257,6 +267,9 @@ describe("renderSolanaAgentTaskBlock", () => {
     // No hash to match against for native.
     expect(block).not.toContain(hash);
     expect(block).not.toContain("Allow blind signing");
+    // Issue #396: labeling fires for clear-sign too — CHECK 1 still runs
+    // the script, so the Bash prompt still needs the one-line preface.
+    expect(block).toContain("VaultPilot Solana integrity check");
   });
 
   it("CHECK 1 + CHECK 2 share a single combined Bash command (one approval, two verdicts)", () => {
