@@ -172,6 +172,7 @@ import type {
   GetBitcoinTxHistoryArgs,
   PrepareBitcoinNativeSendArgs,
   PrepareBitcoinRbfBumpArgs,
+  PrepareBitcoinLifiSwapArgs,
   RegisterBitcoinMultisigWalletArgs,
   SignBitcoinMultisigPsbtArgs,
   CombineBitcoinPsbtsArgs,
@@ -1245,6 +1246,21 @@ export async function prepareBitcoinRbfBump(args: PrepareBitcoinRbfBumpArgs) {
     txid: args.txid,
     newFeeRate: args.newFeeRate,
     ...(args.allowHighFee !== undefined ? { allowHighFee: args.allowHighFee } : {}),
+  });
+}
+
+export async function prepareBitcoinLifiSwap(args: PrepareBitcoinLifiSwapArgs) {
+  const { buildBitcoinLifiSwap } = await import("../btc/lifi-swap.js");
+  return buildBitcoinLifiSwap({
+    wallet: args.wallet,
+    toChain: args.toChain as Parameters<typeof buildBitcoinLifiSwap>[0]["toChain"],
+    toToken: args.toToken,
+    toAddress: args.toAddress,
+    amount: args.amount,
+    ...(args.slippageBps !== undefined ? { slippageBps: args.slippageBps } : {}),
+    ...(args.acknowledgeHighSlippage !== undefined
+      ? { acknowledgeHighSlippage: args.acknowledgeHighSlippage }
+      : {}),
   });
 }
 

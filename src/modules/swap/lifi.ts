@@ -238,3 +238,107 @@ export async function fetchSolanaQuote(req: LifiSolanaQuoteRequest) {
 // Re-export so the Solana wrapper module can use the wSOL constant without
 // re-defining it (single source of truth).
 export { SOLANA_WSOL_MINT, SOLANA_NATIVE_SENTINEL };
+
+/**
+ * LiFi numeric chain ID for native Bitcoin. Source: live
+ * `https://li.quest/v1/chains?chainTypes=UTXO` returns
+ * `{ id: 20000000000001, key: "btc", chainType: "UTXO" }`. Hoisted as a
+ * constant so the BTC quote helper doesn't have to reach into the SDK
+ * (the `ChainId` enum bundled with `@lifi/types` does include BTC under
+ * `BTC = 20000000000001`, but spelling it here keeps lifi.ts independent
+ * of SDK-version drift on this exact constant).
+ */
+export const LIFI_BITCOIN_CHAIN_ID = 20000000000001 as const;
+
+/**
+ * LiFi sentinel for the native BTC token. The chains endpoint reports
+ * `nativeToken.address: "bitcoin"` for BTC — not 0x0…0 like EVM, not a
+ * mint like Solana. The aggregator's quote endpoint accepts this exact
+ * lowercase string.
+ */
+export const LIFI_BITCOIN_NATIVE_SENTINEL = "bitcoin";
+
+/**
+ * Quote request for a BTC-source LiFi swap/bridge. Constrained to the
+ * destination chain types LiFi actually exposes a route for from native
+ * BTC: every EVM chain in `SupportedChain`, plus Solana. TRON is NOT in
+ * LiFi's BTC route table (empirical: `fromChain=BTC&toChain=TRX` returns
+ * `tool: null, toAmount: null` — no aggregator path).
+ *
+ * Why BTC source has its own request type rather than widening
+ * `LifiQuoteRequest`:
+ *   - `fromAddress` is a Bitcoin bech32 / legacy / p2sh string, not 0x-hex
+ *   - `fromToken` is the literal `"bitcoin"` sentinel, not a 0x token addr
+ *   - exact-out (`toAmount`) is unsupported for BTC source — bridge
+ *     deposit-tag-style memos commit to a fromAmount at quote time
+ */
+export interface LifiBitcoinQuoteRequest {
+  /** Bitcoin source wallet (bech32/taproot/p2sh/legacy). LiFi reads UTXOs from this address. */
+  fromAddress: string;
+  /** Raw integer satoshi amount as a string (e.g. "500000" for 0.005 BTC). */
+  fromAmount: string;
+  /**
+   * Destination chain. EVM `SupportedChain` for an EVM bridge target,
+   * `"solana"` for native SOL/SPL delivery. Other chains rejected by the
+   * upstream API.
+   */
+  toChain: SupportedChain | "solana";
+  /**
+   * Destination token. EVM hex when `toChain` is EVM; SPL mint (base58)
+   * when `toChain === "solana"`. `"native"` resolves to the chain's
+   * conventional native sentinel (`0x0…0` for EVM, wSOL mint for Solana).
+   */
+  toToken: string | "native";
+  /**
+   * Destination wallet — REQUIRED. The Bitcoin source address is not a
+   * valid recipient on any other chain; LiFi has no source-defaults
+   * fallback for cross-chain-type routes.
+   */
+  toAddress: string;
+  /** Optional slippage override — LiFi default is 0.5% (0.005). */
+  slippage?: number;
+}
+
+/**
+ * Fetch a LiFi quote with Bitcoin as the source chain. The response's
+ * `transactionRequest` has a different shape than EVM/Solana sources:
+ *   - `to` — the BTC vault deposit address chosen by the routing solver
+ *     (NEAR Intents / Garden / Thorswap / Chainflip / etc.; LiFi
+ *     auctions the route across them per request)
+ *   - `data` — a hex-encoded PSBT v0 (NOT EVM calldata). The PSBT
+ *     carries the OP_RETURN memo committing to the destination chain +
+ *     recipient + minOut. `data` field naming is shared with the EVM
+ *     shape but the bytes are a Bitcoin PSBT.
+ *   - `value` — satoshi amount that the deposit output (output #0)
+ *     pays to the vault. Includes any LiFi-side fee outputs the PSBT
+ *     also contains.
+ *
+ * The PSBT inputs are pre-selected by LiFi from `fromAddress`'s on-chain
+ * UTXO set (LiFi runs its own indexer pass). Each input carries
+ * `witnessUtxo` only — `nonWitnessUtxo` is missing, which Ledger BTC
+ * app 2.x rejects (issue #213). Caller MUST hydrate prev-tx hex on every
+ * input before forwarding the PSBT to `signPsbtBuffer`.
+ */
+export async function fetchBitcoinQuote(req: LifiBitcoinQuoteRequest) {
+  initLifi();
+  const toIsSolana = req.toChain === "solana";
+  const toChainId = toIsSolana
+    ? LIFI_SOLANA_CHAIN_ID
+    : CHAIN_IDS[req.toChain as SupportedChain];
+  const toTokenResolved =
+    req.toToken === "native"
+      ? toIsSolana
+        ? SOLANA_WSOL_MINT
+        : NATIVE
+      : req.toToken;
+  return getQuote({
+    fromChain: LIFI_BITCOIN_CHAIN_ID as LifiChainId,
+    toChain: toChainId as LifiChainId,
+    fromToken: LIFI_BITCOIN_NATIVE_SENTINEL,
+    toToken: toTokenResolved,
+    fromAmount: req.fromAmount,
+    fromAddress: req.fromAddress,
+    toAddress: req.toAddress,
+    ...(req.slippage !== undefined ? { slippage: req.slippage } : {}),
+  });
+}

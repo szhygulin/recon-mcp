@@ -1357,6 +1357,86 @@ export const prepareBitcoinRbfBumpInput = z.object({
     ),
 });
 
+/**
+ * BTC-source LiFi swap / cross-chain bridge. The user signs a Bitcoin
+ * PSBT-v0 on Ledger over USB; the LiFi-selected solver (NEAR Intents,
+ * Garden, Thorswap, Chainflip, Symbiosis, …) decodes the OP_RETURN memo
+ * server-side and releases funds on the destination chain after the
+ * BTC deposit confirms.
+ *
+ * Source-chain scope (Phase 1 — matches `prepare_btc_send`): native
+ * segwit (`bc1q…`) and taproot (`bc1p…`) only.
+ *
+ * Destination scope: every EVM chain in `SupportedChain`, plus Solana.
+ * TRON has no LiFi route from BTC and is rejected up-front. For native
+ * Litecoin source/dest support: LiFi exposes only Bitcoin from the
+ * Bitcoin-fork family even though the underlying NEAR Intents protocol
+ * supports LTC/DOGE/BCH/ZEC — tracked as a separate primitive.
+ */
+export const prepareBitcoinLifiSwapInput = z.object({
+  wallet: bitcoinAddressSchema.describe(
+    "Paired Bitcoin source address. Phase 1 source-side scope: native segwit " +
+      "(`bc1q…`) and taproot (`bc1p…`) only. Multi-source consolidation is " +
+      "out of scope here — LiFi runs its own UTXO scan against `fromAddress` " +
+      "and bakes the input set into the PSBT."
+  ),
+  toChain: z
+    .enum([
+      ...(SUPPORTED_CHAINS as unknown as [string, ...string[]]),
+      "solana",
+    ])
+    .describe(
+      'Destination chain. EVM `SupportedChain` (ethereum/arbitrum/polygon/' +
+        'base/optimism) for an EVM bridge, or `"solana"` for native SOL/SPL ' +
+        "delivery. TRON is NOT routable from BTC via LiFi (rejected with a " +
+        "clear error)."
+    ),
+  toToken: z
+    .string()
+    .max(80)
+    .describe(
+      'Destination token. EVM hex when `toChain` is EVM; SPL mint (base58) ' +
+        'when `toChain === "solana"`. `"native"` resolves to the chain\'s ' +
+        "conventional native sentinel (`0x0…0` for EVM, wrapped-SOL mint " +
+        "for Solana)."
+    ),
+  toAddress: z
+    .string()
+    .max(80)
+    .describe(
+      "Destination wallet — REQUIRED. The Bitcoin source address is not a " +
+        "valid recipient on any destination chain. Format must match the " +
+        "destination (Solana base58 for `\"solana\"`, EVM hex otherwise)."
+    ),
+  amount: z
+    .string()
+    .max(50)
+    .regex(/^\d+(\.\d{1,8})?$/)
+    .describe(
+      'Decimal BTC string (up to 8 fractional digits, e.g. "0.005"). "max" is ' +
+        "NOT supported — bridges commit to an exact deposit amount via the " +
+        "OP_RETURN memo at quote time, so the amount must be known up-front."
+    ),
+  slippageBps: z
+    .number()
+    .int()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe(
+      "Slippage tolerance in basis points (50 = 0.5%, 100 = 1%). Default ~50. " +
+        "Hard-capped at 500 (5%); above 100 (1%) requires `acknowledgeHighSlippage: " +
+        "true` to opt in. Cross-chain bridges may impose their own minimums above this."
+    ),
+  acknowledgeHighSlippage: z
+    .boolean()
+    .optional()
+    .describe(
+      "Required when `slippageBps > 100`. Mirrors the `prepare_swap` guard — " +
+        "forces the caller to state that an unusually-high slippage is intentional."
+    ),
+});
+
 export const registerBitcoinMultisigWalletInput = z.object({
   name: z
     .string()
@@ -1642,6 +1722,7 @@ export type UnregisterBitcoinMultisigWalletArgs = z.infer<
   typeof unregisterBitcoinMultisigWalletInput
 >;
 export type PrepareBitcoinRbfBumpArgs = z.infer<typeof prepareBitcoinRbfBumpInput>;
+export type PrepareBitcoinLifiSwapArgs = z.infer<typeof prepareBitcoinLifiSwapInput>;
 export type SignBtcMessageArgs = z.infer<typeof signBtcMessageInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
 export type GetLedgerDeviceInfoArgs = z.infer<typeof getLedgerDeviceInfoInput>;
