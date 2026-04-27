@@ -24,8 +24,11 @@ import { PERSONAS } from "./demo/personas.js";
 import {
   setDemoWalletInput,
   getDemoWalletInput,
+  exitDemoModeInput,
   type SetDemoWalletArgs,
+  type ExitDemoModeArgs,
 } from "./demo/schemas.js";
+import { buildExitDemoGuide } from "./demo/exit-flow.js";
 import {
   setHeliusApiKey,
   getRuntimeSolanaRpcStatus,
@@ -1280,6 +1283,12 @@ async function main() {
         "to surface the persona list, then `set_demo_wallet({ persona: \"...\" })` to upgrade to",
         "live mode. The agent CANNOT toggle VAULTPILOT_DEMO mid-session (MCP reads env at boot)",
         "but CAN toggle live-mode wallets at any time via `set_demo_wallet`.",
+        "When the user signals they want to LEAVE demo and switch to real-signing operational",
+        "mode (\"I have my Ledger now\", \"set this up for real\", \"exit demo\"), call",
+        "`exit_demo_mode` for a step-by-step setup guide. The tool is informational — it",
+        "doesn't actually unset VAULTPILOT_DEMO (which is impossible mid-process anyway), it",
+        "produces a tailored decision tree the agent walks the user through. ASK the user about",
+        "their Ledger + chain selection BEFORE calling so the response is targeted.",
         "",
         "HARD RULE — wallet enumeration: NEVER ask the user to paste a wallet address.",
         "If the user refers to their wallets collectively or positionally — \"my wallet\",",
@@ -4091,6 +4100,31 @@ async function main() {
           "persist across restarts, run `vaultpilot-mcp-setup` and pick \"Solana RPC URL\".",
       };
     })
+  );
+
+  // ---- Module 9d: Demo → operational handoff guide ----
+  registerTool(server,
+    "exit_demo_mode",
+    {
+      description:
+        "Build a step-by-step guide for the user to exit demo mode and switch to operational " +
+        "(real signing) mode. The MCP server CANNOT actually unset VAULTPILOT_DEMO or invoke " +
+        "the setup wizard — both require user action outside the MCP. This tool produces a " +
+        "tailored decision tree the agent walks the user through. Stateless / read-only — " +
+        "calling it does NOT change demo state. " +
+        "AGENT BEHAVIOR — call this tool ONLY after explicitly confirming with the user that " +
+        "they want to leave demo mode (e.g., 'I'm ready to set this up for real', 'I have my " +
+        "Ledger now', 'exit demo'). DO NOT call it as a probe — the response is verbose and " +
+        "presumes intent. Before calling, ASK the user: (1) do you have a Ledger device? " +
+        "(2) have you already run `vaultpilot-mcp-setup`? (3) which chains do you intend to " +
+        "use? Pass the answers as args so the response is tailored. " +
+        "If hasLedger=false, the response recommends DEFERRING the exit (without a Ledger, " +
+        "operational mode gives no functionality demo doesn't already have). Surface that " +
+        "verbatim. " +
+        "Outside demo mode, the tool returns a no-op response indicating there's nothing to exit.",
+      inputSchema: exitDemoModeInput.shape,
+    },
+    handler((args: ExitDemoModeArgs) => buildExitDemoGuide(args))
   );
 
   // ---- Module 10: Capability requests (agent → maintainers) ----

@@ -99,8 +99,10 @@ export function alwaysGatedRefusalMessage(toolName: string): string {
   return (
     `[VAULTPILOT_DEMO] '${toolName}' is unavailable in demo mode regardless of live-wallet ` +
     `state. This tool either writes persistent off-chain state (Ledger pairing, GitHub) or ` +
-    `requires a real Ledger device — neither has an on-chain simulation equivalent. To use ` +
-    `it, unset VAULTPILOT_DEMO and restart the MCP server with a real Ledger paired.`
+    `requires a real Ledger device — neither has an on-chain simulation equivalent. ` +
+    `Ready to leave demo and use this for real? Call \`exit_demo_mode\` for a tailored ` +
+    `step-by-step setup guide (asks about your Ledger + chain selection). Otherwise: unset ` +
+    `VAULTPILOT_DEMO and restart the MCP server with a real Ledger paired.`
   );
 }
 
@@ -115,7 +117,9 @@ export function defaultModeRefusalMessage(toolName: string): string {
     `\`set_demo_wallet({ persona: "<id>" })\` first to enable the simulated transaction ` +
     `flow. Available personas: defi-power-user, stable-saver, staking-maxi, whale. ` +
     `In default demo mode (no live wallet), only read tools and \`set_demo_wallet\` work — ` +
-    `signing-class tools refuse to avoid any chance of fake-signing or fake-broadcasting.`
+    `signing-class tools refuse to avoid any chance of fake-signing or fake-broadcasting. ` +
+    `If you'd rather leave demo entirely and use this tool against your real wallet, call ` +
+    `\`exit_demo_mode\` for a step-by-step setup guide.`
   );
 }
 
