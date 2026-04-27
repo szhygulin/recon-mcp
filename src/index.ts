@@ -155,6 +155,8 @@ import {
   prepareBitcoinRbfBump,
   registerBtcMultisigWallet,
   signBtcMultisigPsbt,
+  combineBtcPsbts,
+  finalizeBtcPsbt,
   signBtcMessage,
   pairLedgerLitecoin,
   getLitecoinBalance,
@@ -234,6 +236,8 @@ import {
   prepareBitcoinRbfBumpInput,
   registerBitcoinMultisigWalletInput,
   signBitcoinMultisigPsbtInput,
+  combineBitcoinPsbtsInput,
+  finalizeBitcoinPsbtInput,
   signBtcMessageInput,
   pairLedgerLitecoinInput,
   getLitecoinBalanceInput,
@@ -2502,6 +2506,40 @@ async function main() {
       inputSchema: signBitcoinMultisigPsbtInput.shape,
     },
     handler(signBtcMultisigPsbt, { toolName: "sign_btc_multisig_psbt" })
+  );
+
+  registerTool(server,
+    "combine_btc_psbts",
+    {
+      description:
+        "Merge 2-15 partial PSBTs from multi-sig cosigners into one whose inputs " +
+        "carry every cosigner's signature. Each entry must be a base64-encoded PSBT " +
+        "v0 sharing the same unsigned tx body (same inputs/outputs/sequences/locktime); " +
+        "only per-cosigner witness data may differ. Refuses with a clear error when " +
+        "bodies disagree — combining across distinct unsigned txs would silently merge " +
+        "signatures across different transactions. Returns the merged PSBT plus a " +
+        "per-input signature count so the caller can tell whether the threshold has " +
+        "been reached. No device touch.",
+      inputSchema: combineBitcoinPsbtsInput.shape,
+    },
+    handler(combineBtcPsbts, { toolName: "combine_btc_psbts" })
+  );
+
+  registerTool(server,
+    "finalize_btc_psbt",
+    {
+      description:
+        "Finalize a fully-signed multi-sig PSBT (typically the output of " +
+        "`combine_btc_psbts` once the threshold is met) and extract the " +
+        "broadcast-ready tx hex. Refuses with a per-input breakdown when any input " +
+        "is below its threshold (e.g. \"input 0: 1/2 signatures\"). Pass " +
+        "`broadcast: true` to send via the configured indexer in the same call — " +
+        "returns `broadcastedTxid` on success. Pass `broadcast: false` (default) " +
+        "when the caller wants to inspect the hex first or broadcast through a " +
+        "different relay. No device touch.",
+      inputSchema: finalizeBitcoinPsbtInput.shape,
+    },
+    handler(finalizeBtcPsbt, { toolName: "finalize_btc_psbt" })
   );
 
   registerTool(server,
