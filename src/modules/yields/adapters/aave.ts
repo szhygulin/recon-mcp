@@ -8,7 +8,7 @@
  * address from `CONTRACTS[chain].aave.uiPoolDataProvider`.
  */
 import { getClient } from "../../../data/rpc.js";
-import { aaveUiPoolDataProviderAbi } from "../../../abis/aave-ui-pool-data-provider.js";
+import { readAaveReservesData } from "../../../abis/aave-ui-pool-data-provider.js";
 import { CONTRACTS } from "../../../config/contracts.js";
 import type { SupportedChain } from "../../../types/index.js";
 import type { YieldRow, UnavailableProtocolEntry } from "../types.js";
@@ -46,15 +46,14 @@ export async function readAaveYields(
     const targetAddrLc = targetAsset.address.toLowerCase();
 
     const client = getClient(chain);
-    let reservesRaw: ReadonlyArray<unknown> = [];
+    let reservesRaw: Awaited<ReturnType<typeof readAaveReservesData>>["reserves"] = [];
     try {
-      const result = (await client.readContract({
-        address: cfg.uiPoolDataProvider as `0x${string}`,
-        abi: aaveUiPoolDataProviderAbi,
-        functionName: "getReservesData",
-        args: [cfg.poolAddressProvider as `0x${string}`],
-      })) as unknown as [unknown[], unknown];
-      reservesRaw = result[0];
+      const result = await readAaveReservesData(
+        client,
+        cfg.uiPoolDataProvider as `0x${string}`,
+        cfg.poolAddressProvider as `0x${string}`,
+      );
+      reservesRaw = result.reserves;
     } catch (err) {
       unavailable.push({
         protocol: "aave-v3",
@@ -65,20 +64,7 @@ export async function readAaveYields(
       continue;
     }
 
-    for (const r of reservesRaw) {
-      const reserve = r as {
-        underlyingAsset: `0x${string}`;
-        symbol: string;
-        decimals: bigint;
-        liquidityRate: bigint;
-        availableLiquidity?: bigint;
-        totalScaledVariableDebt?: bigint;
-        liquidityIndex?: bigint;
-        priceInMarketReferenceCurrency?: bigint;
-        isActive?: boolean;
-        isFrozen?: boolean;
-        isPaused?: boolean;
-      };
+    for (const reserve of reservesRaw) {
       if (reserve.underlyingAsset.toLowerCase() !== targetAddrLc) continue;
 
       const apr = rayToFraction(reserve.liquidityRate);

@@ -262,22 +262,91 @@ describe("get_market_incident_status (compound-v3)", () => {
   });
 
   it("flags a paused Aave reserve and a high-utilization reserve", async () => {
+    const { _resetAaveAbiCacheForTest } = await import(
+      "../src/abis/aave-ui-pool-data-provider.js"
+    );
+    _resetAaveAbiCacheForTest();
+
     // Three reserves: WETH (paused, low utilization), USDC (clean, 99% utilization),
     // DAI (clean, normal utilization). Expect incident=true with two flagged entries.
+    // Builds a full V3.2-shape reserve tuple per entry — extra fields the
+    // incident logic doesn't read (rates, eMode-free V3.2 trailers, etc.)
+    // are zeroed but must be present so viem's decoder agrees with the V3.2
+    // shape the helper now uses.
+    const { encodeFunctionResult } = await import("viem");
+    const { aaveUiPoolDataProviderAbiV3_2 } = await import(
+      "../src/abis/aave-ui-pool-data-provider.js"
+    );
+
+    function makeReserve(p: {
+      underlyingAsset: `0x${string}`;
+      name: string;
+      symbol: string;
+      decimals: bigint;
+      isPaused: boolean;
+      isFrozen: boolean;
+      isActive: boolean;
+      availableLiquidity: bigint;
+      totalScaledVariableDebt: bigint;
+    }) {
+      return {
+        underlyingAsset: p.underlyingAsset,
+        name: p.name,
+        symbol: p.symbol,
+        decimals: p.decimals,
+        baseLTVasCollateral: 0n,
+        reserveLiquidationThreshold: 0n,
+        reserveLiquidationBonus: 0n,
+        reserveFactor: 0n,
+        usageAsCollateralEnabled: true,
+        borrowingEnabled: true,
+        isActive: p.isActive,
+        isFrozen: p.isFrozen,
+        liquidityIndex: 10n ** 27n,
+        variableBorrowIndex: 10n ** 27n,
+        liquidityRate: 0n,
+        variableBorrowRate: 0n,
+        lastUpdateTimestamp: 0n,
+        aTokenAddress: "0x0000000000000000000000000000000000000000" as `0x${string}`,
+        variableDebtTokenAddress: "0x0000000000000000000000000000000000000000" as `0x${string}`,
+        interestRateStrategyAddress: "0x0000000000000000000000000000000000000000" as `0x${string}`,
+        availableLiquidity: p.availableLiquidity,
+        totalScaledVariableDebt: p.totalScaledVariableDebt,
+        priceInMarketReferenceCurrency: 0n,
+        priceOracle: "0x0000000000000000000000000000000000000000" as `0x${string}`,
+        variableRateSlope1: 0n,
+        variableRateSlope2: 0n,
+        baseVariableBorrowRate: 0n,
+        optimalUsageRatio: 0n,
+        isPaused: p.isPaused,
+        isSiloedBorrowing: false,
+        accruedToTreasury: 0n,
+        unbacked: 0n,
+        isolationModeTotalDebt: 0n,
+        flashLoanEnabled: true,
+        debtCeiling: 0n,
+        debtCeilingDecimals: 0n,
+        borrowCap: 0n,
+        supplyCap: 0n,
+        borrowableInIsolation: false,
+        virtualAccActive: false,
+        virtualUnderlyingBalance: 0n,
+      };
+    }
+
     const reserves = [
-      {
+      makeReserve({
         underlyingAsset: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
         name: "Wrapped Ether",
         symbol: "WETH",
         decimals: 18n,
         isActive: true,
         isFrozen: false,
-        isPaused: true, // flagged: paused
-        variableBorrowIndex: 10n ** 27n,
+        isPaused: true,
         availableLiquidity: 1000n * 10n ** 18n,
         totalScaledVariableDebt: 100n * 10n ** 18n,
-      },
-      {
+      }),
+      makeReserve({
         underlyingAsset: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
         name: "USD Coin",
         symbol: "USDC",
@@ -285,12 +354,10 @@ describe("get_market_incident_status (compound-v3)", () => {
         isActive: true,
         isFrozen: false,
         isPaused: false,
-        variableBorrowIndex: 10n ** 27n,
-        // 1 unit liquid, 99 units borrowed → 99% util → flagged.
         availableLiquidity: 1_000_000n,
         totalScaledVariableDebt: 99_000_000n,
-      },
-      {
+      }),
+      makeReserve({
         underlyingAsset: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
         name: "Dai Stablecoin",
         symbol: "DAI",
@@ -298,30 +365,27 @@ describe("get_market_incident_status (compound-v3)", () => {
         isActive: true,
         isFrozen: false,
         isPaused: false,
-        variableBorrowIndex: 10n ** 27n,
         availableLiquidity: 500n * 10n ** 18n,
-        totalScaledVariableDebt: 500n * 10n ** 18n, // 50% util, not flagged
-      },
+        totalScaledVariableDebt: 500n * 10n ** 18n,
+      }),
     ];
+
+    const baseCurrency = {
+      marketReferenceCurrencyUnit: 10n ** 8n,
+      marketReferenceCurrencyPriceInUsd: 10n ** 8n,
+      networkBaseTokenPriceInUsd: 0n,
+      networkBaseTokenPriceDecimals: 8,
+    };
+
+    const reservesEncoded = encodeFunctionResult({
+      abi: aaveUiPoolDataProviderAbiV3_2,
+      functionName: "getReservesData",
+      result: [reserves, baseCurrency],
+    });
 
     const mockClient = {
       getBlockNumber: vi.fn(async () => 19_800_000n),
-      readContract: vi.fn(
-        async ({ functionName }: { functionName: string }) => {
-          if (functionName === "getReservesData") {
-            return [
-              reserves,
-              {
-                marketReferenceCurrencyUnit: 10n ** 8n,
-                marketReferenceCurrencyPriceInUsd: 10n ** 8n,
-                networkBaseTokenPriceInUsd: 0n,
-                networkBaseTokenPriceDecimals: 8,
-              },
-            ];
-          }
-          throw new Error(`unexpected readContract ${functionName}`);
-        }
-      ),
+      call: vi.fn(async () => ({ data: reservesEncoded })),
     };
 
     vi.doMock("../src/data/rpc.js", () => ({

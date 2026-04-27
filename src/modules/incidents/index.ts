@@ -3,7 +3,7 @@ import { getClient } from "../../data/rpc.js";
 import { CONTRACTS } from "../../config/contracts.js";
 import { cometAbi } from "../../abis/compound-comet.js";
 import { erc20Abi } from "../../abis/erc20.js";
-import { aaveUiPoolDataProviderAbi } from "../../abis/aave-ui-pool-data-provider.js";
+import { readAaveReservesData } from "../../abis/aave-ui-pool-data-provider.js";
 import { readCometPausedActions, type CometPausedAction } from "../compound/index.js";
 import { round } from "../../data/format.js";
 import type { SupportedChain } from "../../types/index.js";
@@ -210,18 +210,6 @@ async function getCompoundIncidentStatus(
   };
 }
 
-interface AaveReserveRaw {
-  underlyingAsset: `0x${string}`;
-  symbol: string;
-  decimals: bigint;
-  isActive: boolean;
-  isFrozen: boolean;
-  isPaused: boolean;
-  variableBorrowIndex: bigint;
-  availableLiquidity: bigint;
-  totalScaledVariableDebt: bigint;
-}
-
 async function getAaveIncidentStatus(
   chain: SupportedChain
 ): Promise<AaveMarketIncidentStatus> {
@@ -237,13 +225,7 @@ async function getAaveIncidentStatus(
   const client = getClient(chain);
   const blockNumber = await client.getBlockNumber();
 
-  const reservesResult = await client.readContract({
-    address: uiProvider,
-    abi: aaveUiPoolDataProviderAbi,
-    functionName: "getReservesData",
-    args: [provider],
-  });
-  const [reserves] = reservesResult as unknown as [AaveReserveRaw[], unknown];
+  const { reserves } = await readAaveReservesData(client, uiProvider, provider);
 
   const entries: AaveReserveIncidentEntry[] = reserves.map((r) => {
     const decimals = Number(r.decimals);

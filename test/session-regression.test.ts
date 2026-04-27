@@ -51,7 +51,13 @@ describe("Bug 2: Aave lending returns aggregate-only when UiPoolDataProvider ABI
 
   it("returns aggregate position (HF, totals, LTV) even if getUserReservesData throws", async () => {
     // Mock getClient to return a client whose Pool.getUserAccountData succeeds but
-    // UiPoolDataProvider reads throw (simulating ABI mismatch).
+    // UiPoolDataProvider reads throw (simulating ABI mismatch). After the
+    // ABI-drift refactor, UiPoolDataProvider reads go through `client.call`
+    // (raw eth_call + decode-by-trial), not `client.readContract`.
+    const { _resetAaveAbiCacheForTest } = await import(
+      "../src/abis/aave-ui-pool-data-provider.js"
+    );
+    _resetAaveAbiCacheForTest();
     const mockClient = {
       readContract: vi.fn(async (params: { functionName: string }) => {
         if (params.functionName === "getPool") {
@@ -61,23 +67,20 @@ describe("Bug 2: Aave lending returns aggregate-only when UiPoolDataProvider ABI
           // [collateralBase, debtBase, availableBorrows, liqThreshold, ltv, healthFactor]
           // 10,000 USD collateral, 5,000 debt, 8250 bps liqThresh, 8000 LTV, HF=1.65e18.
           return [
-            1_000_000_000_000n, // 10,000 * 1e8
-            500_000_000_000n, // 5,000 * 1e8
+            1_000_000_000_000n,
+            500_000_000_000n,
             300_000_000_000n,
             8250n,
             8000n,
-            1_650_000_000_000_000_000n, // 1.65e18
+            1_650_000_000_000_000_000n,
           ];
         }
-        if (
-          params.functionName === "getUserReservesData" ||
-          params.functionName === "getReservesData"
-        ) {
-          throw new Error(
-            `Bytes value "..." is not a valid boolean.` // mirrors real viem decode failure
-          );
-        }
-        throw new Error(`unexpected call: ${params.functionName}`);
+        throw new Error(`unexpected readContract: ${params.functionName}`);
+      }),
+      call: vi.fn(async () => {
+        throw new Error(
+          `Bytes value "..." is not a valid boolean.`,
+        );
       }),
     };
 

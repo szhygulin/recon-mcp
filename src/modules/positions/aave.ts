@@ -4,7 +4,13 @@ import { cache } from "../../data/cache.js";
 import { CACHE_TTL } from "../../config/cache.js";
 import { CONTRACTS } from "../../config/contracts.js";
 import { aavePoolAbi, aavePoolAddressProviderAbi } from "../../abis/aave-pool.js";
-import { aaveUiPoolDataProviderAbi } from "../../abis/aave-ui-pool-data-provider.js";
+import {
+  readAaveReservesData,
+  readAaveUserReservesData,
+  type AaveBaseCurrencyNormalized,
+  type AaveReserveNormalized,
+  type AaveUserReserveNormalized,
+} from "../../abis/aave-ui-pool-data-provider.js";
 import { round } from "../../data/format.js";
 import type { LendingPosition, SupportedChain, TokenAmount } from "../../types/index.js";
 
@@ -19,35 +25,9 @@ interface AggregateData {
   healthFactor: bigint;
 }
 
-interface UserReserve {
-  underlyingAsset: `0x${string}`;
-  scaledATokenBalance: bigint;
-  usageAsCollateralEnabledOnUser: boolean;
-  scaledVariableDebt: bigint;
-  principalStableDebt: bigint;
-  stableBorrowRate: bigint;
-  stableBorrowLastUpdateTimestamp: number;
-}
-
-interface ReserveData {
-  underlyingAsset: `0x${string}`;
-  symbol: string;
-  decimals: bigint;
-  reserveLiquidationThreshold: bigint;
-  priceInMarketReferenceCurrency: bigint;
-  liquidityIndex: bigint;
-  variableBorrowIndex: bigint;
-  isActive: boolean;
-  isFrozen: boolean;
-  isPaused: boolean;
-}
-
-interface BaseCurrencyInfo {
-  marketReferenceCurrencyUnit: bigint;
-  marketReferenceCurrencyPriceInUsd: bigint;
-  networkBaseTokenPriceInUsd: bigint;
-  networkBaseTokenPriceDecimals: number;
-}
+type UserReserve = AaveUserReserveNormalized;
+type ReserveData = AaveReserveNormalized;
+type BaseCurrencyInfo = AaveBaseCurrencyNormalized;
 
 const RAY = 10n ** 27n;
 
@@ -211,25 +191,15 @@ async function readAaveLendingPosition(
   let baseCurrencyRaw: BaseCurrencyInfo | null = null;
   try {
     const [userReservesResult, reservesResult] = await Promise.all([
-      client.readContract({
-        address: uiProvider,
-        abi: aaveUiPoolDataProviderAbi,
-        functionName: "getUserReservesData",
-        args: [provider, wallet],
-      }),
-      client.readContract({
-        address: uiProvider,
-        abi: aaveUiPoolDataProviderAbi,
-        functionName: "getReservesData",
-        args: [provider],
-      }),
+      readAaveUserReservesData(client, uiProvider, provider, wallet),
+      readAaveReservesData(client, uiProvider, provider),
     ]);
-    [userReservesRaw] = userReservesResult as unknown as [UserReserve[], number];
-    const [rr, bc] = reservesResult as unknown as [ReserveData[], BaseCurrencyInfo];
-    reservesRaw = rr;
-    baseCurrencyRaw = bc;
+    userReservesRaw = userReservesResult.userReserves;
+    reservesRaw = reservesResult.reserves;
+    baseCurrencyRaw = reservesResult.baseCurrency;
   } catch {
-    // UiPoolDataProvider ABI drift — surface what we have (aggregate only).
+    // UiPoolDataProvider read/decode failure — surface what we have
+    // (aggregate only).
   }
 
   const reservesBySymbol = new Map<string, ReserveData>(
@@ -262,8 +232,7 @@ async function readAaveLendingPosition(
     // aToken balance (actual) = scaled × liquidityIndex / RAY
     const aTokenBalance = rayMul(ur.scaledATokenBalance, reserve.liquidityIndex);
     const variableDebt = rayMul(ur.scaledVariableDebt, reserve.variableBorrowIndex);
-    const stableDebt = ur.principalStableDebt; // approximation; stable is near-zero in practice
-    const totalDebt = variableDebt + stableDebt;
+    const totalDebt = variableDebt;
 
     if (aTokenBalance > 0n) {
       const amount = Number(formatUnits(aTokenBalance, decimals));
