@@ -43,6 +43,33 @@ function readBit(data: bigint, bit: bigint): boolean {
 }
 
 /**
+ * Format the asset for an error message. We include the symbol because the
+ * raw 0x… address tells the user nothing about which market they hit; a frozen
+ * `USDT` reserve is recognisable, `0xdAC1…` is not.
+ */
+function describeAsset(symbol: string, asset: `0x${string}`): string {
+  return symbol ? `${symbol} (${asset})` : asset;
+}
+
+/**
+ * Suggest concrete alternatives for a blocked supply/borrow. Aave-V3 governance
+ * tends to freeze high-risk mainnet reserves (USDT supply being the canonical
+ * example as of this writing) while leaving the same asset live on L2
+ * deployments; Compound V3 and Morpho also list the same blue-chip stables on
+ * every chain we support. Keep the suggestion list short — the agent can
+ * always probe the alternatives via the corresponding prepare_* tools.
+ */
+function suggestAlternatives(chain: SupportedChain): string {
+  const otherAaveChains = (["arbitrum", "base", "optimism", "polygon"] as const).filter(
+    (c) => c !== chain
+  );
+  return (
+    `Alternatives: Aave V3 on ${otherAaveChains.join("/")} (same asset is often live there), ` +
+    `Compound V3 (prepare_compound_supply), or Morpho (prepare_morpho_supply).`
+  );
+}
+
+/**
  * Refuse to build a tx when the reserve's pause/frozen/inactive state would
  * cause the action to revert on send. One `getReserveData` read per prepare.
  *
@@ -53,6 +80,7 @@ function readBit(data: bigint, bit: bigint): boolean {
 async function assertAaveActionAllowed(
   chain: SupportedChain,
   asset: `0x${string}`,
+  symbol: string,
   action: "supply" | "withdraw" | "borrow" | "repay"
 ): Promise<void> {
   const pool = await getAavePoolAddress(chain);
@@ -67,19 +95,23 @@ async function assertAaveActionAllowed(
   const active = readBit(data, BIT_ACTIVE);
   const frozen = readBit(data, BIT_FROZEN);
   const paused = readBit(data, BIT_PAUSED);
+  const market = describeAsset(symbol, asset);
+  const supplyOrBorrow = action === "supply" || action === "borrow";
   if (!active) {
+    const tail = supplyOrBorrow ? ` ${suggestAlternatives(chain)}` : "";
     throw new Error(
-      `Aave V3 reserve ${asset} on ${chain} is not active. Refusing to prepare ${action}; it would revert on send.`
+      `Aave V3 ${chain} ${market} reserve is not active. Refusing to prepare ${action}; it would revert on send.${tail}`
     );
   }
   if (paused) {
+    const tail = supplyOrBorrow ? ` ${suggestAlternatives(chain)}` : "";
     throw new Error(
-      `Aave V3 reserve ${asset} on ${chain} is paused by governance. All supply/withdraw/borrow/repay are blocked until Aave governance unpauses. Refusing to prepare ${action}.`
+      `Aave V3 ${chain} ${market} reserve is paused by governance. All supply/withdraw/borrow/repay are blocked until Aave governance unpauses. Refusing to prepare ${action}.${tail}`
     );
   }
-  if (frozen && (action === "supply" || action === "borrow")) {
+  if (frozen && supplyOrBorrow) {
     throw new Error(
-      `Aave V3 reserve ${asset} on ${chain} is frozen. New supplies and borrows are blocked (withdraws and repays still work). Refusing to prepare ${action}.`
+      `Aave V3 ${chain} ${market} ${action} is frozen by governance — new ${action === "supply" ? "supplies" : "borrows"} are blocked (withdraws and repays still work). ${suggestAlternatives(chain)}`
     );
   }
 }
@@ -97,7 +129,7 @@ interface AaveActionParams {
 
 export async function buildAaveSupply(p: AaveActionParams): Promise<UnsignedTx> {
   assertNotNativePseudoaddr(p.asset, "supply");
-  await assertAaveActionAllowed(p.chain, p.asset, "supply");
+  await assertAaveActionAllowed(p.chain, p.asset, p.symbol, "supply");
   const pool = await getAavePoolAddress(p.chain);
   const amountWei = parseUnits(p.amount, p.decimals);
   const { approvalAmount, display } = resolveApprovalCap(
@@ -138,7 +170,7 @@ export async function buildAaveSupply(p: AaveActionParams): Promise<UnsignedTx> 
 }
 
 export async function buildAaveWithdraw(p: AaveActionParams): Promise<UnsignedTx> {
-  await assertAaveActionAllowed(p.chain, p.asset, "withdraw");
+  await assertAaveActionAllowed(p.chain, p.asset, p.symbol, "withdraw");
   const pool = await getAavePoolAddress(p.chain);
   // Special case: passing max uint means "withdraw all" in Aave V3.
   const amountWei =
@@ -165,7 +197,7 @@ export async function buildAaveWithdraw(p: AaveActionParams): Promise<UnsignedTx
 const VARIABLE_RATE_MODE = 2n;
 
 export async function buildAaveBorrow(p: AaveActionParams): Promise<UnsignedTx> {
-  await assertAaveActionAllowed(p.chain, p.asset, "borrow");
+  await assertAaveActionAllowed(p.chain, p.asset, p.symbol, "borrow");
   const pool = await getAavePoolAddress(p.chain);
   const amountWei = parseUnits(p.amount, p.decimals);
   return {
@@ -222,7 +254,7 @@ async function getCurrentVariableDebt(
 
 export async function buildAaveRepay(p: AaveActionParams): Promise<UnsignedTx> {
   assertNotNativePseudoaddr(p.asset, "repay");
-  await assertAaveActionAllowed(p.chain, p.asset, "repay");
+  await assertAaveActionAllowed(p.chain, p.asset, p.symbol, "repay");
   const pool = await getAavePoolAddress(p.chain);
   let amountWei: bigint;
   let neededForApproval: bigint;
