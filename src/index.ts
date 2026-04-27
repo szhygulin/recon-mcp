@@ -3782,9 +3782,11 @@ async function main() {
     "add_contact",
     {
       description:
-        "Save a label → address binding to the on-disk address book. The blob is signed with the user's paired Ledger key on that chain (BIP-137 for BTC, EIP-191 for EVM in v1.0; Solana / TRON support deferred to v1.5). " +
-        "v1.0 chains: `btc` + `evm`. `solana` / `tron` return CONTACTS_CHAIN_NOT_YET_SUPPORTED. The `notes` and `tags` fields update the unsigned metadata sidecar (joined across chains by label) so editing them doesn't require a fresh device signature. " +
-        "Sends like `prepare_native_send({ to: \"Mom\" })` then resolve `Mom` against the verified blob automatically — no separate lookup tool. Adding the same label twice on the same chain replaces the address (with a fresh signature). Adding a different label that maps to an already-saved address rejects with CONTACTS_DUPLICATE_ADDRESS.",
+        "Save a label → address binding to the address book. " +
+        "**Production mode**: blob is signed with the user's paired Ledger key on that chain (BIP-137 for BTC, EIP-191 for EVM in v1.0; Solana / TRON support deferred to v1.5). " +
+        "v1.0 production chains: `btc` + `evm`. `solana` / `tron` return CONTACTS_CHAIN_NOT_YET_SUPPORTED. The `notes` and `tags` fields update the unsigned metadata sidecar (joined across chains by label) so editing them doesn't require a fresh device signature. " +
+        "**Demo mode** (`VAULTPILOT_DEMO=true`): writes to a process-local in-memory store (lost on restart, never persisted to disk). No Ledger interaction. All four chains usable from day one (btc/evm/solana/tron). Less secure by design — there's no signature chain to detect tamper — but matches demo mode's broader trade-off where `send_transaction` is intercepted as a simulation. " +
+        "Sends like `prepare_native_send({ to: \"Mom\" })` then resolve `Mom` against the verified blob (or, in demo mode, the in-memory store) automatically — no separate lookup tool. Adding the same label twice on the same chain replaces the address (with a fresh signature in production). Adding a different label that maps to an already-saved address rejects with CONTACTS_DUPLICATE_ADDRESS.",
       inputSchema: addContactInput.shape,
     },
     handler(addContact)
@@ -3794,7 +3796,7 @@ async function main() {
     "remove_contact",
     {
       description:
-        "Remove a labeled contact. Without `chain`, removes the label from EVERY chain that has it (one device interaction per chain). With `chain`, removes only that chain's entry — the label can survive on other chains. The unsigned metadata row (notes / tags) is dropped only when no chain still references the label. Issues CONTACTS_LABEL_NOT_FOUND if no chain has the label.",
+        "Remove a labeled contact. Without `chain`, removes the label from EVERY chain that has it (one device interaction per chain in production; no device in demo). With `chain`, removes only that chain's entry — the label can survive on other chains. The unsigned metadata row (notes / tags) is dropped only when no chain still references the label. Issues CONTACTS_LABEL_NOT_FOUND if no chain has the label. In demo mode, removal is from the in-memory store with no signing.",
       inputSchema: removeContactInput.shape,
     },
     handler(removeContact)
@@ -3805,7 +3807,8 @@ async function main() {
     {
       description:
         "Verify + return the joined per-label view across chains. Each row contains the label, addresses keyed by chain, optional notes / tags, and the earliest `addedAt` across the joined entries. " +
-        "Strict-fail on tamper: any signature failure / anchor mismatch / version rollback throws immediately (CONTACTS_TAMPERED / CONTACTS_ANCHOR_MISMATCH / CONTACTS_VERSION_ROLLBACK) rather than silently dropping rows — agents must surface the failure to the user.",
+        "Strict-fail on tamper (production): any signature failure / anchor mismatch / version rollback throws immediately (CONTACTS_TAMPERED / CONTACTS_ANCHOR_MISMATCH / CONTACTS_VERSION_ROLLBACK) rather than silently dropping rows — agents must surface the failure to the user. " +
+        "In demo mode, the demo in-memory store is read directly (no signature path); all four chains supported.",
       inputSchema: listContactsInput.shape,
     },
     handler(listContacts)
@@ -3815,7 +3818,7 @@ async function main() {
     "verify_contacts",
     {
       description:
-        "Explicit re-verify. Returns one row per requested chain: `{ chain, ok, anchorAddress?, version?, entryCount?, reason? }`. Useful for periodic integrity checks or after a suspected tamper event. Does NOT throw on per-chain failure — caller inspects the `results` array.",
+        "Explicit re-verify. Returns one row per requested chain: `{ chain, ok, anchorAddress?, version?, entryCount?, reason? }`. Useful for periodic integrity checks or after a suspected tamper event. Does NOT throw on per-chain failure — caller inspects the `results` array. In demo mode, returns a count of in-memory entries per chain (no signature path) with `anchorAddress: \"DEMO_ANCHOR\"` so callers can distinguish the demo result.",
       inputSchema: verifyContactsInput.shape,
     },
     handler(verifyContacts)
