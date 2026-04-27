@@ -100,8 +100,7 @@ describe("pLimitMap (issue #199)", () => {
 });
 
 describe("rescan_btc_account — bounded fan-out (issue #199)", () => {
-  // retry: 2 — flakes on full-suite runs from upstream module-cache contamination.
-  it("caps concurrent indexer probes at BITCOIN_INDEXER_PARALLELISM (default 8)", { retry: 2 }, async () => {
+  it("caps concurrent indexer probes at BITCOIN_INDEXER_PARALLELISM (default 8)", async () => {
     // Pre-populate the cache with 30 entries so a serial fan-out
     // would be obviously different from a parallel one.
     const { setPairedBtcAddress } = await import(

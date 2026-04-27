@@ -315,10 +315,7 @@ describe("pairLedgerBitcoin (BIP44 gap-limit scan, issues #189 + #192)", () => {
     }));
   });
 
-  // retry: 2 — flakes on full-suite runs from upstream module-cache contamination.
-  // Always passes in isolation. See PR introducing this annotation for the
-  // tracking issue.
-  it("walks gap-limit empty receive chains and skips change for a fresh wallet", { retry: 2 }, async () => {
+  it("walks gap-limit empty receive chains and skips change for a fresh wallet", async () => {
     getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.4.6" });
     setupAccountFixtures(0);
 
@@ -350,8 +347,7 @@ describe("pairLedgerBitcoin (BIP44 gap-limit scan, issues #189 + #192)", () => {
     expect(transportCloseMock).toHaveBeenCalledTimes(1);
   });
 
-  // retry: 2 — same flake class as the prior `it`.
-  it("walks both receive and change chains when receive has activity", { retry: 2 }, async () => {
+  it("walks both receive and change chains when receive has activity", async () => {
     getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.4.6" });
     const { deriveLeaf } = setupAccountFixtures(0);
     // Mark the segwit /0/0 (receive index 0) as USED. Every other

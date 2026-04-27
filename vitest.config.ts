@@ -4,5 +4,15 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     environment: "node",
+    // 152 test files × parallel forks compete for CPU/IO; a test doing
+    // `await import("…")` of a heavy module (Solana web3, MarginFi, Curve)
+    // can spend several seconds in import alone. The default 5s caused
+    // shifting timeout flakes (issue #344). 15s leaves headroom while
+    // still bounding genuinely-hung tests.
+    testTimeout: 15000,
+    // Auto-clean per-test stubs so a forgotten `vi.unstubAllGlobals()` /
+    // `vi.unstubAllEnvs()` doesn't leak across `it` blocks within a file.
+    unstubGlobals: true,
+    unstubEnvs: true,
   },
 });
