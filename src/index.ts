@@ -257,6 +257,16 @@ import {
 import { getTokenAllowances } from "./modules/allowances/index.js";
 import { getTokenAllowancesInput } from "./modules/allowances/schemas.js";
 import {
+  getNftCollection,
+  getNftHistory,
+  getNftPortfolio,
+} from "./modules/nft/index.js";
+import {
+  getNftCollectionInput,
+  getNftHistoryInput,
+  getNftPortfolioInput,
+} from "./modules/nft/schemas.js";
+import {
   getTokenBalanceInput,
   getTokenMetadataInput,
   resolveNameInput,
@@ -2865,6 +2875,36 @@ async function main() {
       inputSchema: getTokenAllowancesInput.shape,
     },
     handler(getTokenAllowances)
+  );
+
+  registerTool(server,
+    "get_nft_portfolio",
+    {
+      description:
+        "List the NFT collections a wallet owns across one or more supported EVM chains, with per-collection floor price and a rolled-up total floor value. Source: Reservoir. Multi-chain fan-out via `Promise.allSettled` so a per-chain rate-limit or 5xx degrades to a `coverage[].errored` flag rather than aborting the whole call. Each row aggregates per-collection (one row per (chain, contract)), summing `tokenCount` across token IDs the wallet holds. Optional filters: `minFloorEth` drops dust / spam / scam collections; `collections[]` whitelists a specific contract set. Results sorted by `totalFloorUsd` descending. v1 read-only EVM-only — Solana NFT support needs a different API surface (Helius DAS / Magic Eden) and is deferred. NFT signing actions (list, sweep, accept-bid, transfer) deferred — separate plan; biggest UX risk because of approval / proxy patterns. Caveat surfaced in `notes[]`: floor != liquidation; `totalFloorUsd` is an upper-bound, not what the wallet would net selling everything immediately. Optional `RESERVOIR_API_KEY` env var avoids the anonymous-tier rate limit on multi-chain fan-out.",
+      inputSchema: getNftPortfolioInput.shape,
+    },
+    handler(getNftPortfolio)
+  );
+
+  registerTool(server,
+    "get_nft_collection",
+    {
+      description:
+        "Wallet-less NFT collection metadata: name, symbol, image, description, current floor ask + top bid (in native asset and USD), volume by 24h / 7d / 30d / all-time windows, owner count, total supply, secondary-sale royalty (basis points + recipient address). Source: Reservoir. Use this for \"what's this collection's vitals?\" lookups before adding it to a watchlist or evaluating exposure. EVM-only in v1 — Solana NFTs need a different API surface and are deferred. Pass the contract address on its deployed chain (defaults to ethereum). Read-only.",
+      inputSchema: getNftCollectionInput.shape,
+    },
+    handler(getNftCollection)
+  );
+
+  registerTool(server,
+    "get_nft_history",
+    {
+      description:
+        "Recent NFT activity for a wallet across one or more supported EVM chains: mints, sales, transfers, listings (asks), bids, and cancels. Source: Reservoir's `/users/{user}/activity/v6`. Multi-chain results are merged + sorted by timestamp descending; capped at `limit` (default 25, max 100). Mirrors `get_transaction_history`'s shape but limited to NFT-relevant events — same agent ergonomics, scoped to the NFT side of the wallet. EVM-only in v1; Solana deferred. Read-only.",
+      inputSchema: getNftHistoryInput.shape,
+    },
+    handler(getNftHistory)
   );
 
   registerTool(server,

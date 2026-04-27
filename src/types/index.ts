@@ -1534,6 +1534,14 @@ export interface UserConfig {
   /** Optional 1inch Developer Portal API key for intra-chain swap-quote comparison. */
   oneInchApiKey?: string;
   /**
+   * Optional Reservoir API key for the NFT-portfolio tools (`get_nft_*`).
+   * Reservoir's free tier serves anonymous requests but rate-limits at
+   * a tight ceiling that doesn't survive multi-chain portfolio fan-out;
+   * configuring a key avoids 429s. Free key at https://reservoir.tools/.
+   * Env var `RESERVOIR_API_KEY` takes priority over this field.
+   */
+  reservoirApiKey?: string;
+  /**
    * Safe Transaction Service API key. Required to call `get_safe_positions` and
    * the v2/v3 propose/execute Safe tools — modern `*.safe.global` endpoints
    * authenticate every request. Get one at https://developer.safe.global/.

@@ -153,6 +153,17 @@ export function resolveOneInchApiKey(userConfig: UserConfig | null): string | un
 }
 
 /**
+ * Pull the Reservoir API key (NFT data) from env or user config; undefined
+ * if none set. An undefined key falls back to Reservoir's anonymous tier,
+ * which the NFT handlers' multi-chain fan-out can hit the rate limit on —
+ * the rate-limit error is surfaced with a "set RESERVOIR_API_KEY" hint so
+ * the user has a clear remediation path.
+ */
+export function resolveReservoirApiKey(userConfig: UserConfig | null): string | undefined {
+  return process.env.RESERVOIR_API_KEY || userConfig?.reservoirApiKey;
+}
+
+/**
  * Pull the TronGrid API key from env or user config; undefined if none set.
  * An undefined key means TRON reads are either disabled or fall back to
  * anonymous TronGrid (rate-limited — the reader flags that in its errored
