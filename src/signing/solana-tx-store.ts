@@ -183,6 +183,17 @@ export function issueSolanaDraftHandle(draft: SolanaTxDraft): { handle: string }
 }
 
 /**
+ * Non-throwing presence check — used by demo-mode's
+ * `broadcastSimulationDispatch` to decide whether the handle lives in
+ * the Solana draft store before falling through to "unknown handle"
+ * (issue #409 side-note). Mirrors the EVM tx-store's `hasHandle`.
+ */
+export function hasSolanaDraft(handle: string): boolean {
+  prune();
+  return store.has(handle);
+}
+
+/**
  * Look up the draft for `handle`. Used by `preview_solana_send` to
  * re-serialize with a fresh blockhash. Throws for unknown / expired
  * handles (same TTL semantics as the pinned path).

@@ -15,6 +15,7 @@ import {
   defaultModeRefusalMessage,
   buildSimulationEnvelope,
   buildGetDemoWalletResponse,
+  demoStatePreconditionHint,
   getDemoModeReason,
   initDemoMode,
   isLiveMode,
@@ -953,6 +954,15 @@ function handler<T, R>(
         for (const { nudge } of consumeAllPendingNudges()) {
           errorContent.push({ type: "text", text: nudge });
         }
+        // Issue #409 — when a prepare_* fails in demo mode, append a
+        // one-shot advisory hint that demo can't satisfy state-changing
+        // preconditions. Closes the agent-loop trap where the agent
+        // walks the user through a "fix" that's itself a simulation,
+        // then re-runs the original prepare and hits the same refusal.
+        if (opts?.toolName) {
+          const stateHint = demoStatePreconditionHint(opts.toolName);
+          if (stateHint) errorContent.push({ type: "text", text: stateHint });
+        }
       }
       return {
         content: errorContent,
@@ -1084,9 +1094,20 @@ async function broadcastSimulationDispatch(
     // `consumeHandle`) so the demo flow doesn't burn the handle — the
     // user can re-run send_transaction in a follow-up turn without a
     // re-prepare. The real broadcast handler is never invoked.
+    //
+    // Issue #409 side-note: handles produced by `prepare_solana_*`
+    // live in a separate Solana draft store, not the EVM tx-store.
+    // The previous code only checked the EVM store and reported
+    // "Handle not found in tx-store" for a perfectly valid Solana
+    // handle that had just been pinned by `preview_solana_send`.
+    // Now we check both stores; if the handle is Solana, treat the
+    // simulation as deferred-to-preview (pre-sign simulation already
+    // ran during preview_solana_send for non-nonce_init actions, so
+    // the broadcast-time simulate is redundant).
     const { hasHandle, consumeHandle, issueHandles } = await import(
       "./signing/tx-store.js"
     );
+    const { hasSolanaDraft } = await import("./signing/solana-tx-store.js");
     const { simulateTransaction } = await import(
       "./modules/simulation/index.js"
     );
@@ -1100,11 +1121,28 @@ async function broadcastSimulationDispatch(
         data: tx.data,
         value: tx.value,
       });
+    } else if (typeof handleArg === "string" && hasSolanaDraft(handleArg)) {
+      // Solana handle recognized — preview_solana_send already ran the
+      // pre-sign simulation against the pinned message bytes during
+      // its handler (see modules/execution/index.ts:previewSolanaSend),
+      // so a redundant broadcast-time simulate would just duplicate
+      // that work. Mark the envelope as "preview-time simulation
+      // already validated this tx" rather than the misleading
+      // "Handle not found" we used to surface.
+      simulationResult = {
+        simulationDeferredToPreview: true,
+        chain: "solana",
+        note:
+          "Solana pre-sign simulation runs at preview_solana_send time, not at " +
+          "broadcast. The pinned message bytes were already simulated for program-" +
+          "level reverts before the user blind-signed.",
+      };
     } else {
       simulationResult = {
         simulationSkipped: true,
         reason:
-          "Handle not found in tx-store. Call a prepare_* tool first to obtain a handle, then pass it to send_transaction.",
+          "Handle not found in tx-store or Solana draft store. Call a prepare_* " +
+          "tool first to obtain a handle, then pass it to send_transaction.",
       };
     }
   } catch (err) {

@@ -98,6 +98,68 @@ export function _setAutoDemoLatchForTests(value: boolean | null): void {
 }
 
 /**
+ * Per-session dedup for the demo-mode state-precondition hint
+ * (issue #409). Once an agent has been told a given prepare_* tool's
+ * failure might stem from "demo can't satisfy state-changing
+ * prerequisites", repeating the hint on every retry of the same tool
+ * is noise. The set is keyed by tool name so different prepare_*
+ * tools each get their own one-shot.
+ */
+const statePreconditionHintEmittedFor = new Set<string>();
+
+export function _resetStatePreconditionHintDedup(): void {
+  statePreconditionHintEmittedFor.clear();
+}
+
+/**
+ * Issue #409 — the agent-loop trap. When a prepare_* tool refuses
+ * because of an on-chain state precondition (durable-nonce account
+ * missing, ATA not yet created, allowance still 0 because the prior
+ * approve was simulated, etc.), the agent walks the user through a
+ * "fix" that's itself just another simulation, then re-runs the
+ * original prepare_*, hits the same refusal, and loops.
+ *
+ * Demo mode `simulates` sends but doesn't mutate state — neither real
+ * chain state nor a virtual overlay — so any flow whose preconditions
+ * ARE state changes can't be rehearsed end-to-end. This helper emits
+ * a one-shot advisory note alongside the underlying error so the
+ * agent and user know: the failure might be the demo-mode wall, not
+ * a bug to debug.
+ *
+ * Intentionally advisory (NOT assertive): some prepare_* failures in
+ * demo mode are real (wrong arg, RPC outage, protocol pause). The
+ * agent reads BOTH the original error and this hint and chooses.
+ *
+ * Returns null when:
+ *   - demo mode is OFF (no need to surface),
+ *   - the tool isn't a prepare_* (the loop class is specific to
+ *     state-changing prepare flows),
+ *   - we've already emitted the hint for this tool this session
+ *     (dedup keeps it from being noise on retries).
+ */
+export function demoStatePreconditionHint(toolName: string): string | null {
+  if (!isDemoMode()) return null;
+  if (!toolName.startsWith("prepare_")) return null;
+  if (statePreconditionHintEmittedFor.has(toolName)) return null;
+  statePreconditionHintEmittedFor.add(toolName);
+  return (
+    `[VAULTPILOT_DEMO] If '${toolName}' failed because of an on-chain state ` +
+    `precondition (e.g. durable-nonce account not initialized, ATA not yet ` +
+    `created, allowance still zero because the prior approve was simulated), ` +
+    `note that demo mode CANNOT satisfy state-changing prerequisites — ` +
+    `simulated sends don't mutate real chain state or a virtual demo overlay. ` +
+    `Walking the user through "do step 1 first" would loop because step 1's ` +
+    `simulation also doesn't land on chain. To rehearse this multi-step flow ` +
+    `end-to-end: leave demo (set VAULTPILOT_DEMO=false in the MCP client config ` +
+    `or run \`vaultpilot-mcp-setup\` and restart) and use a wallet whose ` +
+    `precondition is already met on real chain. Demo mode remains useful for ` +
+    `single-step flows (one-shot swap / send / supply on a fresh wallet). ` +
+    `If the error is unrelated (wrong arg, protocol pause, RPC issue), ignore ` +
+    `this hint. Surfaced once per (tool, session).`
+  );
+}
+
+/**
  * Why the server is (or isn't) in demo mode. Drives error-message
  * branching: an `auto-fresh-install` user gets pointed at
  * `vaultpilot-mcp-setup` as the leave path (since they have no env var
