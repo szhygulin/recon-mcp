@@ -95,6 +95,7 @@ import { getPortfolioSummaryInput } from "./modules/portfolio/schemas.js";
 
 import { getVaultPilotConfigStatus } from "./modules/diagnostics/index.js";
 import { getLedgerDeviceInfo } from "./modules/diagnostics/ledger-device-info.js";
+import { verifyLedgerFirmware } from "./modules/diagnostics/ledger-firmware-verify.js";
 
 import { getTransactionHistory } from "./modules/history/index.js";
 import { getTransactionHistoryInput } from "./modules/history/schemas.js";
@@ -259,6 +260,7 @@ import {
   getSolanaSetupStatusInput,
   getVaultPilotConfigStatusInput,
   getLedgerDeviceInfoInput,
+  verifyLedgerFirmwareInput,
   getLedgerStatusInput,
   prepareAaveSupplyInput,
   prepareAaveWithdrawInput,
@@ -2794,7 +2796,33 @@ async function main() {
     handler(getLedgerDeviceInfo)
   );
 
-  registerTool(server, 
+  registerTool(server,
+    "verify_ledger_firmware",
+    {
+      description:
+        "READ-ONLY firmware-pinning check (issue #325 P3). Reads the connected " +
+        "Ledger's Secure Element firmware version + MCU bootloader version + " +
+        "device target_id via the dashboard-level `getDeviceInfo` APDU " +
+        "(CLA=0xE0 INS=0x01), asserts them against a hardcoded canonical " +
+        "manifest covering Nano S Plus / Nano X / Stax / Flex. REQUIRES the " +
+        "device to be in DASHBOARD MODE — no app open. Ask the user to close " +
+        "every Ledger app (return to the dashboard / home menu) before calling. " +
+        "Returns one of: `verified` (firmware in known-good list), `warn` (at " +
+        "or above floor but not in known-good — likely a fresh Ledger release " +
+        "we haven't manifest-bumped; surface to user but proceed), " +
+        "`below-floor` (firmware below the supported floor — refuse signing " +
+        "until upgraded via Ledger Live Manager), `unknown-device` (target_id " +
+        "doesn't match any known model — too-new MCP / discontinued / " +
+        "counterfeit), `wrong-mode` (an app is open — close apps and retry), " +
+        "`no-device` (no Ledger over USB), `error` (unexpected failure). One " +
+        "USB round-trip; never throws — surfaces every failure as a structured " +
+        "verdict for the agent to relay.",
+      inputSchema: verifyLedgerFirmwareInput.shape,
+    },
+    handler(verifyLedgerFirmware)
+  );
+
+  registerTool(server,
     "get_marginfi_positions",
     {
       description:

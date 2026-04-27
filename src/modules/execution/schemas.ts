@@ -603,6 +603,23 @@ export const getVaultPilotConfigStatusInput = z.object({});
  */
 export const getLedgerDeviceInfoInput = z.object({});
 
+/**
+ * No args — `verify_ledger_firmware` opens a USB HID transport, issues
+ * the dashboard-level `getDeviceInfo` APDU (CLA=0xE0 INS=0x01), parses
+ * the SE/MCU firmware versions and target_id, asserts them against a
+ * hardcoded canonical-firmware manifest. Issue #325 P3.
+ *
+ * Requires the device to be in DASHBOARD mode (no app open) — the
+ * dashboard CLA returns 0x6E00/0x6D00 when any app is open. The agent
+ * should ask the user to close all Ledger apps before invoking this tool.
+ *
+ * Returns a structured verdict (`verified` / `warn` / `below-floor` /
+ * `unknown-device` / `wrong-mode` / `no-device` / `error`) plus the raw
+ * firmware fields for diagnostic surfacing. Read-only; closes the
+ * transport before returning.
+ */
+export const verifyLedgerFirmwareInput = z.object({});
+
 export const getMarginfiPositionsInput = z.object({
   wallet: solanaAddressSchema.describe(
     "Solana wallet to enumerate MarginFi positions for. Probes the first 4 MarginfiAccount " +
@@ -1537,6 +1554,7 @@ export type PrepareBitcoinRbfBumpArgs = z.infer<typeof prepareBitcoinRbfBumpInpu
 export type SignBtcMessageArgs = z.infer<typeof signBtcMessageInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
 export type GetLedgerDeviceInfoArgs = z.infer<typeof getLedgerDeviceInfoInput>;
+export type VerifyLedgerFirmwareArgs = z.infer<typeof verifyLedgerFirmwareInput>;
 
 /**
  * Litecoin (initial release) — minimal core surface: pair, single-address
