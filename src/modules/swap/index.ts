@@ -307,6 +307,50 @@ async function readOnchainDecimals(
 }
 
 /**
+ * Issue #411 — when an `exchanges` / `bridges` filter is set and LiFi
+ * can't satisfy it, the SDK throws a generic "No available routes"
+ * error that doesn't tell the user the filter was the cause. Wrap
+ * the original error with context naming the filter so the agent can
+ * relay an actionable message ("no route via 1inch — retry without
+ * the filter to use the best-output route").
+ *
+ * Pass-through unchanged when no filter was set.
+ */
+function rephraseLifiNoRouteError(
+  err: unknown,
+  args: { exchanges?: string[]; bridges?: string[] },
+): Error {
+  const baseErr = err instanceof Error ? err : new Error(String(err));
+  const noFilter =
+    (!args.exchanges || args.exchanges.length === 0) &&
+    (!args.bridges || args.bridges.length === 0);
+  if (noFilter) return baseErr;
+  // LiFi's no-route errors carry messages like "No available routes" /
+  // "NotFoundError". Match liberally — false positives just add a hint
+  // to the message, no harm.
+  const msg = baseErr.message.toLowerCase();
+  const looksLikeNoRoute =
+    msg.includes("no available") ||
+    msg.includes("notfound") ||
+    msg.includes("no route") ||
+    msg.includes("not found");
+  if (!looksLikeNoRoute) return baseErr;
+  const filterParts: string[] = [];
+  if (args.exchanges && args.exchanges.length > 0) {
+    filterParts.push(`exchanges=[${args.exchanges.join(", ")}]`);
+  }
+  if (args.bridges && args.bridges.length > 0) {
+    filterParts.push(`bridges=[${args.bridges.join(", ")}]`);
+  }
+  return new Error(
+    `LiFi found no route satisfying ${filterParts.join(" + ")}. ` +
+      `Original LiFi error: ${baseErr.message}. ` +
+      `Try without the filter to use the best-output route across all ` +
+      `aggregators, or pick a different exchange/bridge.`,
+  );
+}
+
+/**
  * Reject slippage configurations that are almost certainly user/agent error.
  * The schema already caps at 500 bps (5%); this adds a soft-cap at 100 bps
  * (1%) that requires an explicit ack. MEV sandwich bots target open-slippage
@@ -365,10 +409,18 @@ export async function getSwapQuote(args: GetSwapQuoteArgs) {
     ...(args.toAddress !== undefined ? { toAddress: args.toAddress } : {}),
     slippage: args.slippageBps !== undefined ? args.slippageBps / 10_000 : undefined,
     ...(isExactOut ? { toAmount: amountWei } : { fromAmount: amountWei }),
+    ...(args.exchanges && args.exchanges.length > 0
+      ? { allowExchanges: args.exchanges }
+      : {}),
+    ...(args.bridges && args.bridges.length > 0
+      ? { allowBridges: args.bridges }
+      : {}),
   } as Parameters<typeof fetchQuote>[0];
 
   const [quote, oneInchRaw] = await Promise.all([
-    fetchQuote(lifiReq),
+    fetchQuote(lifiReq).catch((err: unknown) => {
+      throw rephraseLifiNoRouteError(err, args);
+    }),
     oneInchApiKey
       ? fetchOneInchQuote({
           chain,
@@ -471,6 +523,23 @@ export async function getSwapQuote(args: GetSwapQuoteArgs) {
     }
   }
 
+  // Issue #411 — top-level `routedVia` makes the actual route prominent
+  // in the response so an agent can compare against the user's stated
+  // protocol preference before relaying. `requestedExchanges` /
+  // `requestedBridges` echo the filter that was applied so the
+  // structured shape carries both intent + result.
+  const routedVia = {
+    tool: quote.tool,
+    requestedExchanges: args.exchanges,
+    requestedBridges: args.bridges,
+    matchedRequestedExchanges:
+      args.exchanges && args.exchanges.length > 0
+        ? args.exchanges.some(
+            (e) => e.toLowerCase() === quote.tool.toLowerCase(),
+          )
+        : undefined,
+  };
+
   return {
     fromChain: args.fromChain,
     toChain: args.toChain,
@@ -482,6 +551,7 @@ export async function getSwapQuote(args: GetSwapQuoteArgs) {
     fromAmountUsd,
     toAmountUsd,
     tool: quote.tool,
+    routedVia,
     executionDurationSeconds: quote.estimate.executionDuration,
     feeCostsUsd: sumLifiCostsUsd(quote.estimate.feeCosts),
     gasCostsUsd: sumLifiCostsUsd(quote.estimate.gasCosts),
@@ -525,8 +595,16 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
     ...(args.toAddress !== undefined ? { toAddress: args.toAddress } : {}),
     slippage: args.slippageBps !== undefined ? args.slippageBps / 10_000 : undefined,
     ...(isExactOut ? { toAmount: amountWei } : { fromAmount: amountWei }),
+    ...(args.exchanges && args.exchanges.length > 0
+      ? { allowExchanges: args.exchanges }
+      : {}),
+    ...(args.bridges && args.bridges.length > 0
+      ? { allowBridges: args.bridges }
+      : {}),
   } as Parameters<typeof fetchQuote>[0];
-  const quote = await fetchQuote(lifiReq);
+  const quote = await fetchQuote(lifiReq).catch((err: unknown) => {
+    throw rephraseLifiNoRouteError(err, args);
+  });
 
   const txRequest = quote.transactionRequest;
   if (!txRequest || !txRequest.to || !txRequest.data) {
@@ -647,9 +725,24 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
   );
   const fromDisplay = isExactOut ? `~${quotedFromAmount}` : args.amount;
   const toDisplay = isExactOut ? args.amount : `~${quotedToAmount}`;
+  // Issue #411 — when the agent passed an `exchanges` filter and the
+  // route matches, surface it so the receipt confirms the preference
+  // was honoured. When the filter was set but the resolved tool
+  // differs (LiFi sometimes exposes a tool name aliased differently
+  // from the filter input — e.g. "1inch" vs "oneinch"), the prepare
+  // receipt notes the mismatch even though no error was raised.
+  const exchangeFilterApplied = args.exchanges && args.exchanges.length > 0;
+  const matchedFilter = exchangeFilterApplied
+    ? args.exchanges!.some((e) => e.toLowerCase() === quote.tool.toLowerCase())
+    : undefined;
+  const routingNote = exchangeFilterApplied
+    ? matchedFilter
+      ? ` (matched requested exchange filter: ${args.exchanges!.join(", ")})`
+      : ` (NOTE: requested exchange filter ${JSON.stringify(args.exchanges)} did not match resolved tool '${quote.tool}' — verify before signing)`
+    : "";
   const description = crossChain
-    ? `Bridge ${fromDisplay} ${fromSym} from ${args.fromChain} to ${toDisplay} ${toSym} on ${args.toChain} via ${quote.tool}`
-    : `Swap ${fromDisplay} ${fromSym} → ${toDisplay} ${toSym} on ${args.fromChain} via ${quote.tool}`;
+    ? `Bridge ${fromDisplay} ${fromSym} from ${args.fromChain} to ${toDisplay} ${toSym} on ${args.toChain} via ${quote.tool}${routingNote}`
+    : `Swap ${fromDisplay} ${fromSym} → ${toDisplay} ${toSym} on ${args.fromChain} via ${quote.tool}${routingNote}`;
 
   const swapTx: UnsignedTx = {
     chain,
@@ -665,6 +758,12 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
         from: `${fromDisplay} ${fromSym}`,
         expectedOut: `${quotedToAmount} ${toSym}`,
         minOut: `${formatUnits(BigInt(quote.estimate.toAmountMin), quote.action.toToken.decimals)} ${toSym}`,
+        ...(exchangeFilterApplied
+          ? {
+              requestedExchanges: args.exchanges!.join(", "),
+              matchedRequestedExchanges: matchedFilter ? "yes" : "no",
+            }
+          : {}),
       },
     },
     gasEstimate: txRequest.gasLimit ? BigInt(txRequest.gasLimit).toString() : undefined,

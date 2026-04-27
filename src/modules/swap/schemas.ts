@@ -113,6 +113,36 @@ const baseSwapSchema = z.object({
         "that an unusually-high slippage is intentional — the default rejects the tx " +
         "to protect the user from MEV sandwich attacks."
     ),
+  // Issue #411 — explicit DEX / bridge routing preferences. Without
+  // these, LiFi picks whatever pool gives the best output (Sushi,
+  // Uniswap, 1inch, KyberSwap, Paraswap, etc.). When the user names a
+  // protocol — "swap on 1inch" — the agent should pass
+  // `exchanges: ["1inch"]` so LiFi only considers that DEX. Filter
+  // is hard: LiFi returns NO_ROUTE if the named DEX can't satisfy the
+  // request, surfacing as a clear error rather than silent fallback.
+  exchanges: z
+    .array(z.string().min(1).max(40))
+    .max(20)
+    .optional()
+    .describe(
+      "Restrict LiFi routing to a specific set of DEX/exchange aggregators. Common " +
+        'values: "1inch", "sushiswap", "uniswap", "paraswap", "0x", "kyberswap", ' +
+        '"odos", "openocean". When the user explicitly names a DEX ("swap on 1inch"), ' +
+        "pass it here — without a filter, LiFi silently picks the best-output route " +
+        "regardless of what the user asked for. Multiple entries OR'd. If no route " +
+        "exists via the requested exchange(s) the call errors clearly; agent should " +
+        "offer to retry without the filter.",
+    ),
+  bridges: z
+    .array(z.string().min(1).max(40))
+    .max(20)
+    .optional()
+    .describe(
+      "Restrict cross-chain routing to a specific set of bridge protocols. Common " +
+        'values: "across", "stargate", "hop", "cbridge", "amarok", "polygon", ' +
+        '"arbitrum-bridge". Mirrors `exchanges` but for bridge selection. Only ' +
+        "applies to cross-chain routes; ignored for intra-chain swaps.",
+    ),
 });
 
 export const getSwapQuoteInput = baseSwapSchema;

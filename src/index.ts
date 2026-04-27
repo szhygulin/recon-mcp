@@ -2083,18 +2083,20 @@ async function main() {
       description:
         "Get a LiFi aggregator quote for a token swap (same-chain) or bridge (cross-chain). Returns expected output, fees, execution time, and the underlying tool selected. Default is exact-in (`amount` = fromToken); set `amountSide: \"to\"` for exact-out quotes (`amount` = target toToken output). " +
         "Source chain is always EVM. Destination can be any EVM chain, Solana, or TRON — pass `toChain: \"solana\"` / `toChain: \"tron\"` + an explicit `toAddress` (Solana base58 / TRON T-prefixed base58); the bridge protocol delivers tokens on the destination chain after the EVM source tx confirms (typically 1-15 min). Exact-out is not supported for cross-chain bridges to Solana or TRON. For Solana-source swaps and bridges (the reverse direction) use `prepare_solana_lifi_swap`. TRON-source LiFi is not yet wired. " +
+        "PROTOCOL ROUTING (issue #411): without `exchanges` / `bridges`, LiFi picks the best-output route across all aggregators (Sushi, Uniswap, 1inch, Paraswap, etc.). When the user names a specific DEX (\"swap on 1inch\"), pass `exchanges: [\"1inch\"]` so LiFi only routes via that DEX — without the filter, the prepare receipt would silently use a different protocol. The response's `routedVia.tool` is the actually-resolved route; surface it to the user before they sign. " +
         "No transaction is built by this tool.",
       inputSchema: getSwapQuoteInput.shape,
     },
     handler(getSwapQuote)
   );
 
-  registerTool(server, 
+  registerTool(server,
     "prepare_swap",
     {
       description:
         "Prepare an unsigned swap or bridge transaction via LiFi aggregator. Same-chain swaps use the best DEX route; cross-chain swaps use a bridge + DEX combo. Default is exact-in (`amount` = fromToken); set `amountSide: \"to\"` for exact-out (`amount` = target toToken output, e.g. \"I want 100 USDC out\"). " +
         "Source chain is always EVM. Destination can be any EVM chain, Solana, or TRON. For non-EVM destinations pass `toChain: \"solana\"` / `\"tron\"` + an explicit `toAddress` in the destination chain's format; the user signs an EVM tx and the bridge protocol delivers tokens to the destination after confirmation. The destination-side decimals cross-check is dropped for non-EVM destinations (we can't read SPL/TRC-20 via EVM RPC); LiFi's reported decimals are the source of truth there. Exact-out is not supported for cross-chain-to-non-EVM. For Solana-source swaps and bridges use `prepare_solana_lifi_swap`. TRON-source LiFi is not yet wired. " +
+        "PROTOCOL ROUTING (issue #411): without `exchanges` / `bridges`, LiFi picks the best-output route across all aggregators. When the user explicitly names a DEX (\"swap on 1inch\", \"use Sushi\"), pass `exchanges: [\"1inch\"]` (or the named protocol) — without the filter LiFi may silently route via a different DEX. If no route satisfies the filter the call errors with a clear message; the agent can offer to retry without the filter. The unsigned tx's `description` includes \"via <tool>\" and notes whether the resolved tool matched the filter. " +
         "DECODING DEFENSE: every cross-chain bridge calldata is parsed into its `BridgeData` tuple and the encoded `destinationChainId` + `receiver` are cross-checked against what the user requested — refuses on mismatch. Catches a compromised MCP that returns calldata routing to a different chain or recipient than the prepare receipt advertises. " +
         "INTERMEDIATE-CHAIN BRIDGES: NEAR Intents (notably for ETH→TRON USDT routes) settles on NEAR and releases on the final chain via an off-chain relayer, so its on-chain `destinationChainId` is NEAR's pseudo-id (1885080386571452) rather than the user's requested chain. The defense allows this ONLY for an explicit hardcoded (bridge name, intermediate chain ID) pair held as a source-code constant — not loaded from env / config / LiFi response — so a compromised aggregator can't claim arbitrary chains as 'intermediate'. Receiver-side checks (non-EVM sentinel, etc.) still apply unchanged. " +
         "The returned tx can be sent via `send_transaction`.",

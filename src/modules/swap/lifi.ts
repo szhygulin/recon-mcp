@@ -75,6 +75,16 @@ interface LifiQuoteRequestBase {
   toAddress?: string;
   /** Optional slippage override — LiFi default is 0.5% (0.005). */
   slippage?: number;
+  /**
+   * Issue #411 — restrict LiFi routing to a specific set of DEX
+   * aggregators / bridges. When set, LiFi's quote engine refuses to
+   * route through any tool not in the allowlist; if no satisfying
+   * route exists the SDK throws (NotFoundError / similar), surfacing
+   * as a clear error to the caller. When omitted, LiFi picks the
+   * best-output tool unconstrained.
+   */
+  allowExchanges?: string[];
+  allowBridges?: string[];
 }
 
 export type LifiQuoteRequest =
@@ -122,6 +132,18 @@ export async function fetchQuote(req: LifiQuoteRequest) {
           : NATIVE
       : req.toToken;
 
+  // LiFi's `getQuote` accepts `allowExchanges`/`allowBridges` as
+  // optional filters; spread them in only when set so the default
+  // (full routing graph) is preserved.
+  const filterFields = {
+    ...(req.allowExchanges && req.allowExchanges.length > 0
+      ? { allowExchanges: req.allowExchanges }
+      : {}),
+    ...(req.allowBridges && req.allowBridges.length > 0
+      ? { allowBridges: req.allowBridges }
+      : {}),
+  };
+
   if (req.toAmount !== undefined) {
     return getQuote({
       fromChain: fromChain as LifiChainId,
@@ -132,6 +154,7 @@ export async function fetchQuote(req: LifiQuoteRequest) {
       fromAddress: req.fromAddress,
       ...(req.toAddress !== undefined ? { toAddress: req.toAddress } : {}),
       slippage: req.slippage,
+      ...filterFields,
     });
   }
   return getQuote({
@@ -143,6 +166,7 @@ export async function fetchQuote(req: LifiQuoteRequest) {
     fromAddress: req.fromAddress,
     ...(req.toAddress !== undefined ? { toAddress: req.toAddress } : {}),
     slippage: req.slippage,
+    ...filterFields,
   });
 }
 
