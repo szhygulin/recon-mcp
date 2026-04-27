@@ -11,6 +11,7 @@
   },
   "files": [
     "dist",
+    "patches",
     "README.md",
     "LICENSE"
   ],
@@ -157,6 +158,7 @@
     "bs58check": "^3.0.1",
     "coinselect": "^3.1.13",
     "ledger-bitcoin": "^0.3.0",
+    "patch-package": "^8.0.1",
     "qrcode-terminal": "^0.12.0",
     "viem": "^2.21.0",
     "zod": "^3.23.8"
@@ -165,7 +167,6 @@
     "@types/node": "^22.0.0",
     "@types/qrcode-terminal": "^0.12.2",
     "@yao-pkg/pkg": "^6.19.0",
-    "patch-package": "^8.0.1",
     "typescript": "^5.6.0",
     "vitest": "^4.1.4"
   },
