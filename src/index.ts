@@ -1397,7 +1397,7 @@ async function main() {
         "",
         "PIN DATA:",
         "  Expected SHA-256 of SKILL.md:",
-        "    cd689838314a700dfff80d4c881bf51190cd6c71c747f3152e7cab8d943df2cc",
+        "    1f437e7e0870438ebe7d4c8b40b210b54041bd31a16110152f091761fb053ff5",
         "  Expected in-file sentinel — NOTE: assembled from fragments below so the",
         "  full literal does not appear in these instructions (if it did, searching",
         "  context for it would always succeed and defeat the check). Concatenate:",
