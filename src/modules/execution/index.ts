@@ -93,6 +93,7 @@ import {
   buildAaveBorrow,
   buildAaveRepay,
 } from "../positions/actions.js";
+import { buildUniswapMint } from "../lp/uniswap-v3/actions.js";
 import {
   buildLidoStake,
   buildLidoUnstake,
@@ -108,6 +109,7 @@ import type {
   PrepareAaveWithdrawArgs,
   PrepareAaveBorrowArgs,
   PrepareAaveRepayArgs,
+  PrepareUniswapV3MintArgs,
   PrepareLidoStakeArgs,
   PrepareLidoUnstakeArgs,
   PrepareEigenLayerDepositArgs,
@@ -2199,6 +2201,31 @@ export async function prepareAaveRepay(args: PrepareAaveRepayArgs): Promise<Unsi
       symbol: meta.symbol,
       approvalCap: args.approvalCap,
     })
+  );
+}
+
+// ----- Uniswap V3 LP preparation handlers -----
+
+export async function prepareUniswapV3Mint(
+  args: PrepareUniswapV3MintArgs,
+): Promise<UnsignedTx> {
+  return enrichTx(
+    await buildUniswapMint({
+      wallet: args.wallet as `0x${string}`,
+      chain: args.chain as SupportedChain,
+      tokenA: args.tokenA as `0x${string}`,
+      tokenB: args.tokenB as `0x${string}`,
+      feeTier: args.feeTier,
+      tickLower: args.tickLower,
+      tickUpper: args.tickUpper,
+      amountADesired: args.amountADesired,
+      amountBDesired: args.amountBDesired,
+      slippageBps: args.slippageBps,
+      acknowledgeHighSlippage: args.acknowledgeHighSlippage,
+      deadlineSec: args.deadlineSec,
+      recipient: args.recipient as `0x${string}` | undefined,
+      approvalCap: args.approvalCap,
+    }),
   );
 }
 
