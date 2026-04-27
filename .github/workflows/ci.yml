@@ -42,3 +42,42 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+  binary-smoke-test:
+    # Build the linux-x64 binary the same way `release-binaries.yml` does
+    # and run the cross-OS smoke test against it. Catches startup-time
+    # regressions that only surface inside a pkg-bundled snapshot — e.g.
+    # `await import()` calls in the boot path tripping
+    # ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING (issue #330). Linux only on
+    # PRs; the macOS / Windows targets keep building on the release event,
+    # where pkg cross-compile cost is acceptable. Linux catches the common
+    # class because pkg's snapshot host is the same across targets — the
+    # dynamic-import bug shows up identically on every OS.
+    name: Binary smoke test (linux-x64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Build dist/
+        run: npm run build
+
+      - name: Bundle server binary
+        run: npx pkg . --target node22-linux-x64 --output release/vaultpilot-mcp-linux-x64-server
+        env:
+          CI: "true"
+
+      - name: Mark server binary executable
+        run: chmod +x ./release/vaultpilot-mcp-linux-x64-server
+
+      - name: Smoke-test server binary
+        run: node scripts/smoke-test-binary.mjs ./release/vaultpilot-mcp-linux-x64-server
