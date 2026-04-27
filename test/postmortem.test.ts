@@ -423,7 +423,7 @@ describe("explainTx — narrative output", () => {
       format: "both",
     });
     expect(typeof r.narrative).toBe("string");
-    expect(r.narrative!).toContain("TRANSACTION POST-MORTEM");
+    expect(r.narrative!).toContain("TRANSACTION ANALYSIS");
     expect(r.narrative!).toContain("Hash:");
     expect(r.narrative!).toContain("Status: SUCCESS");
     expect(r.narrative!).toContain("Summary:");

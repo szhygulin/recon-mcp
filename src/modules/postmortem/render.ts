@@ -29,7 +29,7 @@ export function renderPostmortemNarrative(r: ExplainTxResult): string {
   const lines: string[] = [];
   const chainLabel =
     r.chain.charAt(0).toUpperCase() + r.chain.slice(1);
-  lines.push(`TRANSACTION POST-MORTEM (${chainLabel})`);
+  lines.push(`TRANSACTION ANALYSIS (${chainLabel})`);
   lines.push("");
   lines.push(`Hash: ${r.hash}`);
   lines.push(`Status: ${r.status.toUpperCase()}`);
