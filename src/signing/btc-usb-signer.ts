@@ -7,6 +7,7 @@ import {
   type BtcLedgerApp,
   type BtcLedgerTransport,
 } from "./btc-usb-loader.js";
+import { assertCanonicalLedgerApp } from "./canonical-apps.js";
 import {
   accountNodeFromLedgerResponse,
   deriveAccountChildAddress,
@@ -209,16 +210,11 @@ export async function getBtcLedgerAddress(
     const { app, transport, rawTransport } = await openLedger();
     try {
       const appVer = await getAppAndVersion(rawTransport);
-      if (
-        appVer.name !== "Bitcoin" &&
-        appVer.name !== "Bitcoin Test" &&
-        appVer.name !== "BTC"
-      ) {
-        throw new Error(
-          `Ledger reports the open app as "${appVer.name}" v${appVer.version}, but Bitcoin is required. ` +
-            `Open the Bitcoin app on your device and retry.`,
-        );
-      }
+      assertCanonicalLedgerApp({
+        reportedName: appVer.name,
+        reportedVersion: appVer.version,
+        expectedNames: ["Bitcoin"],
+      });
       const { format } = TYPE_META[addressType];
       const out = await app.getWalletPublicKey(path, { format });
       const parsed = parseBtcPath(path);
@@ -332,16 +328,11 @@ export async function scanBtcAccount(args: {
     const { app, transport, rawTransport } = await openLedger();
     try {
       const appVer = await getAppAndVersion(rawTransport);
-      if (
-        appVer.name !== "Bitcoin" &&
-        appVer.name !== "Bitcoin Test" &&
-        appVer.name !== "BTC"
-      ) {
-        throw new Error(
-          `Ledger reports the open app as "${appVer.name}" v${appVer.version}, but Bitcoin is required. ` +
-            `Open the Bitcoin app on your device and retry.`,
-        );
-      }
+      assertCanonicalLedgerApp({
+        reportedName: appVer.name,
+        reportedVersion: appVer.version,
+        expectedNames: ["Bitcoin"],
+      });
 
       const all: Array<DerivedAddress & { txCount: number }> = [];
       for (const addressType of BTC_ADDRESS_TYPES) {
@@ -501,16 +492,11 @@ export async function deriveBtcLedgerAccount(
     const { app, transport, rawTransport } = await openLedger();
     try {
       const appVer = await getAppAndVersion(rawTransport);
-      if (
-        appVer.name !== "Bitcoin" &&
-        appVer.name !== "Bitcoin Test" &&
-        appVer.name !== "BTC"
-      ) {
-        throw new Error(
-          `Ledger reports the open app as "${appVer.name}" v${appVer.version}, but Bitcoin is required. ` +
-            `Open the Bitcoin app on your device and retry.`,
-        );
-      }
+      assertCanonicalLedgerApp({
+        reportedName: appVer.name,
+        reportedVersion: appVer.version,
+        expectedNames: ["Bitcoin"],
+      });
       const entries: DerivedAddress[] = [];
       for (const addressType of BTC_ADDRESS_TYPES) {
         const path = btcPathForAccountIndex(accountIndex, addressType);
@@ -672,16 +658,11 @@ export async function signBtcPsbtOnLedger(args: {
     const { app, transport, rawTransport } = await openLedger();
     try {
       const appVer = await getAppAndVersion(rawTransport);
-      if (
-        appVer.name !== "Bitcoin" &&
-        appVer.name !== "Bitcoin Test" &&
-        appVer.name !== "BTC"
-      ) {
-        throw new Error(
-          `Ledger reports the open app as "${appVer.name}" v${appVer.version}, but Bitcoin is required. ` +
-            `Open the Bitcoin app on your device and retry.`,
-        );
-      }
+      assertCanonicalLedgerApp({
+        reportedName: appVer.name,
+        reportedVersion: appVer.version,
+        expectedNames: ["Bitcoin"],
+      });
 
       // Build knownAddressDerivations. The SDK keys the map by the
       // witness-program payload extracted from each scriptPubKey —
@@ -794,16 +775,11 @@ export async function signBtcMessageOnLedger(args: {
     const { app, transport, rawTransport } = await openLedger();
     try {
       const appVer = await getAppAndVersion(rawTransport);
-      if (
-        appVer.name !== "Bitcoin" &&
-        appVer.name !== "Bitcoin Test" &&
-        appVer.name !== "BTC"
-      ) {
-        throw new Error(
-          `Ledger reports the open app as "${appVer.name}" v${appVer.version}, but Bitcoin is required. ` +
-            `Open the Bitcoin app on your device and retry.`,
-        );
-      }
+      assertCanonicalLedgerApp({
+        reportedName: appVer.name,
+        reportedVersion: appVer.version,
+        expectedNames: ["Bitcoin"],
+      });
       const derived = await app.getWalletPublicKey(args.path, {
         format: args.addressFormat,
       });

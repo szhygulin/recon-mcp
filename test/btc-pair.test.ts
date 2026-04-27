@@ -319,7 +319,7 @@ describe("pairLedgerBitcoin (BIP44 gap-limit scan, issues #189 + #192)", () => {
   // Always passes in isolation. See PR introducing this annotation for the
   // tracking issue.
   it("walks gap-limit empty receive chains and skips change for a fresh wallet", { retry: 2 }, async () => {
-    getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.2.3" });
+    getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.4.6" });
     setupAccountFixtures(0);
 
     const { pairLedgerBitcoin } = await import(
@@ -330,7 +330,7 @@ describe("pairLedgerBitcoin (BIP44 gap-limit scan, issues #189 + #192)", () => {
 
     expect(out.accountIndex).toBe(0);
     expect(out.gapLimit).toBe(5);
-    expect(out.appVersion).toBe("2.2.3");
+    expect(out.appVersion).toBe("2.4.6");
     // 4 types × 1 chain (change skipped) × 5 gap-window = 20 addresses.
     expect(out.addresses).toHaveLength(20);
     // All on receive chain.
@@ -352,7 +352,7 @@ describe("pairLedgerBitcoin (BIP44 gap-limit scan, issues #189 + #192)", () => {
 
   // retry: 2 — same flake class as the prior `it`.
   it("walks both receive and change chains when receive has activity", { retry: 2 }, async () => {
-    getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.2.3" });
+    getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.4.6" });
     const { deriveLeaf } = setupAccountFixtures(0);
     // Mark the segwit /0/0 (receive index 0) as USED. Every other
     // address stays at txCount=0.
@@ -388,7 +388,7 @@ describe("pairLedgerBitcoin (BIP44 gap-limit scan, issues #189 + #192)", () => {
     // call entered and resolved. If chunks are parallel, all 5
     // entries in the first window enter together before any resolves;
     // if serial, each call resolves before the next enters.
-    getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.2.3" });
+    getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.4.6" });
     setupAccountFixtures(0);
     let inFlight = 0;
     let maxInFlight = 0;
@@ -418,7 +418,7 @@ describe("pairLedgerBitcoin (BIP44 gap-limit scan, issues #189 + #192)", () => {
   });
 
   it("rejects gapLimit out of [1, 100]", async () => {
-    getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.2.3" });
+    getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.4.6" });
     const { pairLedgerBitcoin } = await import(
       "../src/modules/execution/index.js"
     );
@@ -436,12 +436,12 @@ describe("pairLedgerBitcoin (BIP44 gap-limit scan, issues #189 + #192)", () => {
       "../src/modules/execution/index.js"
     );
     await expect(pairLedgerBitcoin({ accountIndex: 0, gapLimit: 5 })).rejects.toThrow(
-      /open app as "Ethereum".*Bitcoin is required/,
+      /open app as "Ethereum".*not a known Ledger app/,
     );
   });
 
   it("clears stale entries for an accountIndex before re-pairing", async () => {
-    getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.2.3" });
+    getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.4.6" });
     setupAccountFixtures(0);
     const { pairLedgerBitcoin } = await import(
       "../src/modules/execution/index.js"
@@ -471,7 +471,7 @@ describe("get_btc_account_balance (issue #189)", () => {
       address: SEGWIT_ADDR,
       publicKey: FAKE_PUBKEY,
       path: "84'/0'/0'/0/0",
-      appVersion: "2.2.3",
+      appVersion: "2.4.6",
       addressType: "segwit",
       accountIndex: 0,
       chain: 0,
@@ -482,7 +482,7 @@ describe("get_btc_account_balance (issue #189)", () => {
       address: TAPROOT_ADDR,
       publicKey: FAKE_PUBKEY,
       path: "86'/0'/0'/0/0",
-      appVersion: "2.2.3",
+      appVersion: "2.4.6",
       addressType: "taproot",
       accountIndex: 0,
       chain: 0,
@@ -494,7 +494,7 @@ describe("get_btc_account_balance (issue #189)", () => {
       address: FRESH_RECEIVE,
       publicKey: FAKE_PUBKEY,
       path: "84'/0'/0'/0/1",
-      appVersion: "2.2.3",
+      appVersion: "2.4.6",
       addressType: "segwit",
       accountIndex: 0,
       chain: 0,
@@ -563,7 +563,7 @@ describe("rescan_btc_account (issue #191)", () => {
       address: SEGWIT_ADDR,
       publicKey: FAKE_PUBKEY,
       path: "84'/0'/0'/0/2",
-      appVersion: "2.2.3",
+      appVersion: "2.4.6",
       addressType: "segwit",
       accountIndex: 0,
       chain: 0,
@@ -616,7 +616,7 @@ describe("rescan_btc_account (issue #191)", () => {
       address: "bc1qaaa1aaa1aaa1aaa1aaa1aaa1aaa1aaa1abcdef",
       publicKey: FAKE_PUBKEY,
       path: "84'/0'/0'/0/0",
-      appVersion: "2.2.3",
+      appVersion: "2.4.6",
       addressType: "segwit",
       accountIndex: 0,
       chain: 0,
@@ -627,7 +627,7 @@ describe("rescan_btc_account (issue #191)", () => {
       address: "bc1qbbb1bbb1bbb1bbb1bbb1bbb1bbb1bbb1abcdef",
       publicKey: FAKE_PUBKEY,
       path: "84'/0'/0'/0/1",
-      appVersion: "2.2.3",
+      appVersion: "2.4.6",
       addressType: "segwit",
       accountIndex: 0,
       chain: 0,
@@ -639,7 +639,7 @@ describe("rescan_btc_account (issue #191)", () => {
       address: TRAILING,
       publicKey: FAKE_PUBKEY,
       path: "84'/0'/0'/0/2",
-      appVersion: "2.2.3",
+      appVersion: "2.4.6",
       addressType: "segwit",
       accountIndex: 0,
       chain: 0,
@@ -675,7 +675,7 @@ describe("rescan_btc_account (issue #191)", () => {
       address: "bc1qaaa2aaa2aaa2aaa2aaa2aaa2aaa2aaa2abcdef",
       publicKey: FAKE_PUBKEY,
       path: "84'/0'/0'/0/0",
-      appVersion: "2.2.3",
+      appVersion: "2.4.6",
       addressType: "segwit",
       accountIndex: 0,
       chain: 0,
@@ -687,7 +687,7 @@ describe("rescan_btc_account (issue #191)", () => {
       address: INTERIOR,
       publicKey: FAKE_PUBKEY,
       path: "84'/0'/0'/0/1",
-      appVersion: "2.2.3",
+      appVersion: "2.4.6",
       addressType: "segwit",
       accountIndex: 0,
       chain: 0,
@@ -699,7 +699,7 @@ describe("rescan_btc_account (issue #191)", () => {
       address: TRAILING,
       publicKey: FAKE_PUBKEY,
       path: "84'/0'/0'/0/2",
-      appVersion: "2.2.3",
+      appVersion: "2.4.6",
       addressType: "segwit",
       accountIndex: 0,
       chain: 0,
@@ -740,7 +740,7 @@ describe("rescan_btc_account (issue #191)", () => {
       address: SEGWIT_ADDR,
       publicKey: FAKE_PUBKEY,
       path: "84'/0'/0'/0/0",
-      appVersion: "2.2.3",
+      appVersion: "2.4.6",
       addressType: "segwit",
       accountIndex: 0,
       chain: 0,
@@ -751,7 +751,7 @@ describe("rescan_btc_account (issue #191)", () => {
       address: TAPROOT_ADDR,
       publicKey: FAKE_PUBKEY,
       path: "86'/0'/0'/0/0",
-      appVersion: "2.2.3",
+      appVersion: "2.4.6",
       addressType: "taproot",
       accountIndex: 0,
       chain: 0,
@@ -788,7 +788,7 @@ describe("clearPairedBtcAccount", () => {
       address: SEGWIT_ADDR,
       publicKey: FAKE_PUBKEY,
       path: "84'/0'/0'/0/0",
-      appVersion: "2.2.3",
+      appVersion: "2.4.6",
       addressType: "segwit",
       accountIndex: 0,
       chain: 0,
@@ -798,7 +798,7 @@ describe("clearPairedBtcAccount", () => {
       address: TAPROOT_ADDR,
       publicKey: FAKE_PUBKEY,
       path: "86'/0'/1'/0/0",
-      appVersion: "2.2.3",
+      appVersion: "2.4.6",
       addressType: "taproot",
       accountIndex: 1,
       chain: 0,
@@ -850,7 +850,7 @@ describe("get_ledger_status — btc section", () => {
       resetBitcoinIndexer: () => {},
     }));
 
-    getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.2.3" });
+    getAppAndVersionMock.mockResolvedValue({ name: "Bitcoin", version: "2.4.6" });
     // Post-#192: scanner only calls getWalletPublicKey at account-level
     // paths. Build deterministic fixtures for all four BIP-44 purposes
     // and respond by path lookup. Leaves are derived host-side.

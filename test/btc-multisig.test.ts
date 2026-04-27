@@ -603,6 +603,6 @@ describe("signBitcoinMultisigPsbt", () => {
     const { signBitcoinMultisigPsbt } = await import("../src/modules/btc/multisig.js");
     await expect(
       signBitcoinMultisigPsbt({ walletName: "Vault", psbtBase64 }),
-    ).rejects.toThrow(/wrong Ledger app/);
+    ).rejects.toThrow(/not a known Ledger app/);
   });
 });

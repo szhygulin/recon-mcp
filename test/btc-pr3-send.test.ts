@@ -192,7 +192,7 @@ beforeEach(async () => {
     address: SEGWIT_ADDR,
     publicKey: SEGWIT_PUBKEY,
     path: "84'/0'/0'/0/0",
-    appVersion: "2.2.0",
+    appVersion: "2.4.6",
     addressType: "segwit",
     accountIndex: 0,
     chain: 0,
@@ -205,7 +205,7 @@ beforeEach(async () => {
     address: CHANGE_ADDR,
     publicKey: CHANGE_PUBKEY,
     path: CHANGE_PATH,
-    appVersion: "2.2.0",
+    appVersion: "2.4.6",
     addressType: "segwit",
     accountIndex: 0,
     chain: 1,
@@ -306,7 +306,7 @@ describe("buildBitcoinNativeSend", () => {
       address: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
       publicKey: SEGWIT_PUBKEY,
       path: "44'/0'/0'/0/0",
-      appVersion: "2.2.0",
+      appVersion: "2.4.6",
       addressType: "legacy",
       accountIndex: 0,
     });
@@ -352,7 +352,7 @@ describe("buildBitcoinNativeSend", () => {
       address: SEGWIT_ADDR,
       publicKey: SEGWIT_PUBKEY,
       path: "84'/0'/0'/0/0",
-      appVersion: "2.2.0",
+      appVersion: "2.4.6",
       addressType: "segwit",
       accountIndex: 0,
       chain: 0,
@@ -462,7 +462,7 @@ describe("sendBitcoinTransaction", () => {
     ]);
     getAppAndVersionMock.mockResolvedValueOnce({
       name: "Bitcoin",
-      version: "2.2.0",
+      version: "2.4.6",
     });
     // Mirror what Ledger BTC v2.4.6 actually returns: SEC1 uncompressed
     // (65 bytes, 0x04 || X || Y). Issue #211 — the signer must compress
@@ -557,7 +557,7 @@ describe("sendBitcoinTransaction", () => {
     ]);
     getAppAndVersionMock.mockResolvedValueOnce({
       name: "Bitcoin",
-      version: "2.2.0",
+      version: "2.4.6",
     });
     // Device returns a DIFFERENT address than the paired one — proof
     // that the seed/app changed under us. Refuse rather than blind-sign.

@@ -16,6 +16,7 @@ import type {
   PairedBitcoinMultisigCosigner,
   PairedBitcoinMultisigWallet,
 } from "../../types/index.js";
+import { assertCanonicalLedgerApp } from "../../signing/canonical-apps.js";
 
 /**
  * Bitcoin multi-sig co-signer flow. Phase 2 PR2 of the BTC Ledger
@@ -330,12 +331,11 @@ export async function registerBitcoinMultisigWallet(
   let result: RegisterBitcoinMultisigWalletResult;
   try {
     const appInfo = await app.getAppAndVersion();
-    if (appInfo.name !== "Bitcoin") {
-      throw new Error(
-        `The wrong Ledger app is open (got "${appInfo.name}"). Open the Bitcoin app ` +
-          `on the device and retry.`,
-      );
-    }
+    assertCanonicalLedgerApp({
+      reportedName: appInfo.name,
+      reportedVersion: appInfo.version,
+      expectedNames: ["Bitcoin"],
+    });
     const ourFingerprint = (await app.getMasterFingerprint()).toLowerCase();
     const candidates = validatedCosigners.filter(
       (c) => c.masterFingerprint === ourFingerprint,
@@ -550,12 +550,11 @@ export async function signBitcoinMultisigPsbt(
   let result: SignBitcoinMultisigPsbtResult;
   try {
     const appInfo = await app.getAppAndVersion();
-    if (appInfo.name !== "Bitcoin") {
-      throw new Error(
-        `The wrong Ledger app is open (got "${appInfo.name}"). Open the Bitcoin app ` +
-          `on the device and retry.`,
-      );
-    }
+    assertCanonicalLedgerApp({
+      reportedName: appInfo.name,
+      reportedVersion: appInfo.version,
+      expectedNames: ["Bitcoin"],
+    });
     const deviceFingerprint = (await app.getMasterFingerprint()).toLowerCase();
     const ourCosigner = wallet.cosigners.find((c) => c.isOurs);
     if (!ourCosigner) {

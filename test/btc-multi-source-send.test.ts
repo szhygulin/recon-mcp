@@ -163,7 +163,7 @@ beforeEach(async () => {
     address: SEGWIT_ADDR_A,
     publicKey: SEGWIT_PUBKEY,
     path: "84'/0'/0'/0/0",
-    appVersion: "2.2.0",
+    appVersion: "2.4.6",
     addressType: "segwit",
     accountIndex: 0,
     chain: 0,
@@ -173,7 +173,7 @@ beforeEach(async () => {
     address: SEGWIT_ADDR_B,
     publicKey: SEGWIT_PUBKEY,
     path: "84'/0'/0'/0/1",
-    appVersion: "2.2.0",
+    appVersion: "2.4.6",
     addressType: "segwit",
     accountIndex: 0,
     chain: 0,
@@ -184,7 +184,7 @@ beforeEach(async () => {
     address: CHANGE_ADDR,
     publicKey: SEGWIT_PUBKEY,
     path: CHANGE_PATH,
-    appVersion: "2.2.0",
+    appVersion: "2.4.6",
     addressType: "segwit",
     accountIndex: 0,
     chain: 1,
@@ -288,7 +288,7 @@ describe("buildBitcoinNativeSend — multi-source (issue #264)", () => {
       address: TAPROOT_ADDR_C,
       publicKey: SEGWIT_PUBKEY,
       path: "86'/0'/0'/0/0",
-      appVersion: "2.2.0",
+      appVersion: "2.4.6",
       addressType: "taproot",
       accountIndex: 0,
       chain: 0,
@@ -316,7 +316,7 @@ describe("buildBitcoinNativeSend — multi-source (issue #264)", () => {
       address: otherAccountAddr,
       publicKey: SEGWIT_PUBKEY,
       path: "84'/0'/1'/0/0",
-      appVersion: "2.2.0",
+      appVersion: "2.4.6",
       addressType: "segwit",
       accountIndex: 1,
       chain: 0,
@@ -406,7 +406,7 @@ describe("buildBitcoinNativeSend — multi-source (issue #264)", () => {
     ]);
     getAppAndVersionMock.mockResolvedValueOnce({
       name: "Bitcoin",
-      version: "2.2.0",
+      version: "2.4.6",
     });
     // The signer re-derives every source against the device — return
     // the matching address each call.

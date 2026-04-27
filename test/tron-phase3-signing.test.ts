@@ -49,7 +49,7 @@ const GOOD_SIG = "a".repeat(130);
 
 function makeTrxStub(overrides: Partial<TrxStub> = {}): TrxStub {
   return {
-    getAppConfiguration: vi.fn(async () => ({ version: "0.5.0" })),
+    getAppConfiguration: vi.fn(async () => ({ version: "0.7.4" })),
     getAddress: vi.fn(async () => ({ publicKey: "04abcd", address: DEVICE_ADDRESS })),
     signTransaction: vi.fn(async () => GOOD_SIG),
     ...overrides,
@@ -82,7 +82,7 @@ describe("tron-usb-signer", () => {
       address: DEVICE_ADDRESS,
       publicKey: "04abcd",
       path: "44'/195'/0'/0/0",
-      appVersion: "0.5.0",
+      appVersion: "0.7.4",
     });
     expect(openLedgerMock).toHaveBeenCalledOnce();
     expect(transportCloseMock).toHaveBeenCalledOnce();
@@ -345,7 +345,7 @@ describe("pair_ledger_tron + get_ledger_status", () => {
       {
         address: DEVICE_ADDRESS,
         path: "44'/195'/0'/0/0",
-        appVersion: "0.5.0",
+        appVersion: "0.7.4",
         accountIndex: 0,
       },
     ]);

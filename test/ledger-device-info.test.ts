@@ -53,11 +53,11 @@ describe("parseAppAndVersionResponse", () => {
 
   it("handles dashboard responses (BOLOS / OS)", () => {
     for (const appName of ["BOLOS", "OS"]) {
-      const resp = buildResponse(appName, "2.2.0");
+      const resp = buildResponse(appName, "2.4.6");
       const body = resp.slice(0, resp.length - 2);
       expect(parseAppAndVersionResponse(body)).toEqual({
         name: appName,
-        version: "2.2.0",
+        version: "2.4.6",
       });
     }
   });
@@ -112,7 +112,7 @@ describe("getLedgerDeviceInfo (integration with mocked transport)", () => {
 
   it("flags the dashboard state with a specific hint", async () => {
     openRawLedgerTransport.mockResolvedValue({
-      send: vi.fn().mockResolvedValue(buildResponse("BOLOS", "2.2.0")),
+      send: vi.fn().mockResolvedValue(buildResponse("BOLOS", "2.4.6")),
       close: vi.fn().mockResolvedValue(undefined),
     });
     const { getLedgerDeviceInfo } = await import(
@@ -225,7 +225,7 @@ describe("getDeviceStateHint (error-message enrichment)", () => {
 
   it("returns a 'dashboard' hint when the device is on the dashboard", async () => {
     openRawLedgerTransport.mockResolvedValue({
-      send: vi.fn().mockResolvedValue(buildResponse("BOLOS", "2.2.0")),
+      send: vi.fn().mockResolvedValue(buildResponse("BOLOS", "2.4.6")),
       close: vi.fn().mockResolvedValue(undefined),
     });
     const { getDeviceStateHint } = await import(

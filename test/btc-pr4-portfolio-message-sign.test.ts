@@ -70,7 +70,7 @@ beforeEach(async () => {
     address: SEGWIT_ADDR,
     publicKey: SEGWIT_PUBKEY,
     path: "84'/0'/0'/0/0",
-    appVersion: "2.2.0",
+    appVersion: "2.4.6",
     addressType: "segwit",
     accountIndex: 0,
   });
@@ -78,7 +78,7 @@ beforeEach(async () => {
     address: TAPROOT_ADDR,
     publicKey: SEGWIT_PUBKEY,
     path: "86'/0'/0'/0/0",
-    appVersion: "2.2.0",
+    appVersion: "2.4.6",
     addressType: "taproot",
     accountIndex: 0,
   });
@@ -86,7 +86,7 @@ beforeEach(async () => {
     address: LEGACY_ADDR,
     publicKey: SEGWIT_PUBKEY,
     path: "44'/0'/0'/0/0",
-    appVersion: "2.2.0",
+    appVersion: "2.4.6",
     addressType: "legacy",
     accountIndex: 0,
   });
@@ -332,7 +332,7 @@ describe("signBitcoinMessage", () => {
   beforeEach(() => {
     getAppAndVersionMock.mockResolvedValue({
       name: "Bitcoin",
-      version: "2.2.0",
+      version: "2.4.6",
     });
   });
 

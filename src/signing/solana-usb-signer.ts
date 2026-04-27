@@ -3,6 +3,7 @@ import { openLedger } from "./solana-usb-loader.js";
 import { existsSync } from "node:fs";
 import { getConfigPath, patchUserConfig, readUserConfig } from "../config/user-config.js";
 import type { PairedSolanaEntry } from "../types/index.js";
+import { assertCanonicalLedgerApp } from "./canonical-apps.js";
 
 export type { PairedSolanaEntry };
 
@@ -211,6 +212,20 @@ async function openSolanaApp() {
   } catch (e) {
     await transport.close().catch(() => {});
     throw mapLedgerError(e, "app-open check");
+  }
+  // Canonical-version pin (issue #325 P2). The Solana app-class APDUs
+  // already gate on the open app via CLA mismatch (wrong app → 0x6E00
+  // surfaced as an open-error above), so we pass "Solana" as the
+  // implicit name and let the helper assert the version floor.
+  try {
+    assertCanonicalLedgerApp({
+      reportedName: "Solana",
+      reportedVersion: appVersion,
+      expectedNames: ["Solana"],
+    });
+  } catch (e) {
+    await transport.close().catch(() => {});
+    throw e;
   }
   return { app, transport, appVersion };
 }

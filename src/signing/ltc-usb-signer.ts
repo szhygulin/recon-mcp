@@ -7,6 +7,7 @@ import {
   type LtcLedgerApp,
   type LtcLedgerTransport,
 } from "./ltc-usb-loader.js";
+import { assertCanonicalLedgerApp } from "./canonical-apps.js";
 import {
   accountNodeFromLedgerResponse,
   deriveAccountChildAddress,
@@ -237,16 +238,11 @@ export async function getLtcLedgerAddress(
     const { app, transport, rawTransport } = await openLedger();
     try {
       const appVer = await getAppAndVersion(rawTransport);
-      if (
-        appVer.name !== "Litecoin" &&
-        appVer.name !== "Litecoin Test" &&
-        appVer.name !== "LTC"
-      ) {
-        throw new Error(
-          `Ledger reports the open app as "${appVer.name}" v${appVer.version}, but Litecoin is required. ` +
-            `Open the Litecoin app on your device and retry.`,
-        );
-      }
+      assertCanonicalLedgerApp({
+        reportedName: appVer.name,
+        reportedVersion: appVer.version,
+        expectedNames: ["Litecoin"],
+      });
       const { format } = TYPE_META[addressType];
       const out = await app.getWalletPublicKey(path, { format });
       const parsed = parseLtcPath(path);
@@ -361,16 +357,11 @@ export async function scanLtcAccount(args: {
     const { app, transport, rawTransport } = await openLedger();
     try {
       const appVer = await getAppAndVersion(rawTransport);
-      if (
-        appVer.name !== "Litecoin" &&
-        appVer.name !== "Litecoin Test" &&
-        appVer.name !== "LTC"
-      ) {
-        throw new Error(
-          `Ledger reports the open app as "${appVer.name}" v${appVer.version}, but Litecoin is required. ` +
-            `Open the Litecoin app on your device and retry.`,
-        );
-      }
+      assertCanonicalLedgerApp({
+        reportedName: appVer.name,
+        reportedVersion: appVer.version,
+        expectedNames: ["Litecoin"],
+      });
 
       const all: Array<DerivedAddress & { txCount: number }> = [];
       const skipped: Array<{ addressType: LtcAddressType; reason: string }> = [];
@@ -545,16 +536,11 @@ export async function deriveLtcLedgerAccount(
     const { app, transport, rawTransport } = await openLedger();
     try {
       const appVer = await getAppAndVersion(rawTransport);
-      if (
-        appVer.name !== "Litecoin" &&
-        appVer.name !== "Litecoin Test" &&
-        appVer.name !== "LTC"
-      ) {
-        throw new Error(
-          `Ledger reports the open app as "${appVer.name}" v${appVer.version}, but Litecoin is required. ` +
-            `Open the Litecoin app on your device and retry.`,
-        );
-      }
+      assertCanonicalLedgerApp({
+        reportedName: appVer.name,
+        reportedVersion: appVer.version,
+        expectedNames: ["Litecoin"],
+      });
       const entries: DerivedAddress[] = [];
       for (const addressType of LTC_ADDRESS_TYPES) {
         const path = ltcPathForAccountIndex(accountIndex, addressType);
@@ -713,16 +699,11 @@ export async function signLtcPsbtOnLedger(args: {
     const { app, transport, rawTransport } = await openLedger();
     try {
       const appVer = await getAppAndVersion(rawTransport);
-      if (
-        appVer.name !== "Litecoin" &&
-        appVer.name !== "Litecoin Test" &&
-        appVer.name !== "LTC"
-      ) {
-        throw new Error(
-          `Ledger reports the open app as "${appVer.name}" v${appVer.version}, but Litecoin is required. ` +
-            `Open the Litecoin app on your device and retry.`,
-        );
-      }
+      assertCanonicalLedgerApp({
+        reportedName: appVer.name,
+        reportedVersion: appVer.version,
+        expectedNames: ["Litecoin"],
+      });
 
       // Build knownAddressDerivations — one entry per unique source
       // (issue #264 multi-source) plus an optional change entry
@@ -1012,16 +993,11 @@ export async function signLtcMessageOnLedger(args: {
     const { app, transport, rawTransport } = await openLedger();
     try {
       const appVer = await getAppAndVersion(rawTransport);
-      if (
-        appVer.name !== "Litecoin" &&
-        appVer.name !== "Litecoin Test" &&
-        appVer.name !== "LTC"
-      ) {
-        throw new Error(
-          `Ledger reports the open app as "${appVer.name}" v${appVer.version}, but Litecoin is required. ` +
-            `Open the Litecoin app on your device and retry.`,
-        );
-      }
+      assertCanonicalLedgerApp({
+        reportedName: appVer.name,
+        reportedVersion: appVer.version,
+        expectedNames: ["Litecoin"],
+      });
       const derived = await app.getWalletPublicKey(args.path, {
         format: args.addressFormat,
       });

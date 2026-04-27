@@ -262,7 +262,7 @@ describe("pair_ledger_ltc", () => {
       "../src/modules/execution/index.js"
     );
     await expect(pairLedgerLitecoin({ accountIndex: 0, gapLimit: 1 })).rejects.toThrow(
-      /Litecoin is required/,
+      /expected one of: Litecoin/,
     );
   });
 

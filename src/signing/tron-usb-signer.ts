@@ -3,6 +3,7 @@ import { openLedger } from "./tron-usb-loader.js";
 import { existsSync } from "node:fs";
 import { getConfigPath, patchUserConfig, readUserConfig } from "../config/user-config.js";
 import type { PairedTronEntry } from "../types/index.js";
+import { assertCanonicalLedgerApp } from "./canonical-apps.js";
 
 export type { PairedTronEntry };
 
@@ -182,6 +183,19 @@ async function openTronApp() {
   } catch (e) {
     await transport.close().catch(() => {});
     throw mapLedgerError(e, "app-open check");
+  }
+  // Canonical-version pin (issue #325 P2). The TRON app-class APDUs
+  // gate on the open app via CLA mismatch, so "Tron" as the implicit
+  // name is correct here.
+  try {
+    assertCanonicalLedgerApp({
+      reportedName: "Tron",
+      reportedVersion: appVersion,
+      expectedNames: ["Tron"],
+    });
+  } catch (e) {
+    await transport.close().catch(() => {});
+    throw e;
   }
   return { app, transport, appVersion };
 }
