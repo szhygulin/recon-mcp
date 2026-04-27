@@ -104,8 +104,19 @@ this to the client's MCP-server config (paths in
 }
 ```
 
-Then tell the user to **restart their MCP client** so the new tools
-become visible. **This is enough for read-only portfolio queries** —
+**Then the user MUST restart their MCP client.** MCP-server registration
+takes effect only on client restart — the running agent has no way to
+see the newly-registered `vaultpilot-mcp` tools until the client process
+respawns. This is purely a registration-visibility concern; it has
+**nothing to do with demo vs real mode** (demo mode is a runtime flag
+read by the server on boot, not a client-side state). Until the restart
+happens, every vaultpilot tool is invisible to the agent — including
+`set_demo_wallet`. Do not attempt to call vaultpilot tools, demo or
+otherwise, between step 2 and the restart; tell the user clearly that
+the restart is the gating action and is unrelated to which mode they
+end up in.
+
+After the restart, **read-only portfolio queries work immediately** —
 the server falls back to free public RPCs (PublicNode for EVM, public
 Solana mainnet) when no `~/.vaultpilot-mcp/config.json` is present, so
 first-contact `"show me my portfolio"` works out of the box. A one-time
@@ -187,8 +198,11 @@ Get explicit consent. Tell the user:
   runs if you want to add API keys for higher rate limits, or install
   the companion preflight skills."
 - "After step 2, **restart your MCP client** so the vaultpilot-mcp
-  tools become visible. That's enough for read-only portfolio queries
-  — the server defaults to public RPCs."
+  tools become visible to me. The restart is a one-time install step
+  that any new MCP server requires; it is unrelated to demo vs real
+  mode. After the restart, read-only portfolio queries work
+  immediately on public RPCs, and demo features (like `set_demo_wallet`)
+  become callable — but not before."
 - "Provider API keys (Helius / Infura / Alchemy / TronGrid / Etherscan)
   are optional and add-on-demand — re-run the wizard any time."
 
@@ -296,7 +310,22 @@ A brand-new install (no `~/.vaultpilot-mcp/config.json` yet, no
 read tool runs against real chain RPC, every signing-class tool
 refuses or is intercepted, and a curated set of demo personas
 (`defi-power-user`, `stable-saver`, `staking-maxi`, `whale`) is
-available via `set_demo_wallet`. The agent will see a one-shot
+available via `set_demo_wallet`.
+
+**This activates only after the post-install restart.** Auto-demo is
+a runtime flag the server evaluates when it boots; the server boots
+when the MCP client process spawns it; the client only spawns
+newly-registered servers after a restart. So the moment the doctor
+exits and `claude mcp add` finishes, **demo mode is not yet
+addressable** — the tools that would surface it (including
+`set_demo_wallet`) are still invisible to the agent. If a user reads
+"auto-demo active out of the box on a fresh install" and asks for a
+demo wallet between step 2 and the restart, push back: tell them the
+restart is what makes demo mode (and every other vaultpilot tool)
+addressable, and that this is true regardless of whether they want
+demo or real funds.
+
+After the restart, the agent sees a one-shot
 `VAULTPILOT NOTICE — Auto demo mode active` block on the first tool
 response — surface it to the user and offer the demo path before
 asking them to pair hardware.
