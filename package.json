@@ -22,7 +22,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "bundle": "pkg .",
-    "postinstall": "patch-package"
+    "prepare": "patch-package"
   },
   "pkg": {
     "scripts": [
