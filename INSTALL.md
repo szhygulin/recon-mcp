@@ -376,6 +376,30 @@ hardware wallet pairs once per chain.
 Read-only portfolio reads need **none** of this — they just need
 on-chain data, which the public RPC fallbacks provide.
 
+### Optional — second-LLM cross-check pinning
+
+`get_verification_artifact` returns a `pasteableBlock` you can drop
+into a second LLM (ideally a different provider) to double-check the
+bytes you're about to sign. Each block opens with a 5-line banner:
+
+```
+════════════════════════════════════════
+VAULTPILOT CROSS-CHECK v1 — pin SHA once, verify on every call
+SHA-256: <64-hex-digest>
+Spec:    https://github.com/szhygulin/vaultpilot-mcp/blob/v<version>/docs/cross-check-v1.md
+════════════════════════════════════════
+```
+
+The SHA-256 is computed at server start from your installed copy of
+`docs/cross-check-v1.md`. Pin it once: open the URL in the banner,
+run `sha256sum docs/cross-check-v1.md` against your local checkout
+(or a trusted third-party copy of the same release tag), and confirm
+the digests agree. From then on, every artifact you generate prints
+the same SHA — a mismatch means the spec doc shipped in your install
+no longer matches what you trusted, so the cross-check prompt itself
+may have been altered. Treat that as a compromise signal and reinstall
+from a known-clean source.
+
 ## 7. Update to a new version
 
 **Path A — bundled binary**

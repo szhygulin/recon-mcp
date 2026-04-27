@@ -72,25 +72,26 @@ describe("get_verification_artifact — second-agent copy-paste artifact", () =>
     expect(artifact.pasteableBlock.length).toBeGreaterThan(200);
     expect(artifact.pasteableBlock).toMatch(/COPY FROM THIS LINE/);
     expect(artifact.pasteableBlock).toMatch(/END — STOP COPYING HERE/);
-    // The "decode bytes independently, do NOT trust the description" rule
-    // is the core of this cross-check. Wording was tightened in the round
-    // that added payload.description as an explicit comparison target — the
-    // second LLM is told to decode bytes FIRST, then COMPARE to description
-    // (step 3), but never to lift the description verbatim as the decode.
+    // The "decode bytes independently, don't trust the description" rule
+    // is the core of this cross-check. The compact v2 instructions phrase
+    // this as "Don't trust payload.description / payload.decoded".
     expect(artifact.pasteableBlock).toMatch(
-      /DO NOT trust the description \/ decoded fields in the payload/,
+      /Don't trust\s+payload\.description \/ payload\.decoded/,
     );
     // Step 3 is the comparison gate — bytes-decode vs description outcomes.
-    expect(artifact.pasteableBlock).toMatch(/MATCH:|MISMATCH:|PARTIAL:/);
+    expect(artifact.pasteableBlock).toMatch(/MATCH/);
+    expect(artifact.pasteableBlock).toMatch(/MISMATCH/);
+    expect(artifact.pasteableBlock).toMatch(/PARTIAL/);
     expect(artifact.pasteableBlock).toMatch(/REJECT/);
     // The on-device reminder must honestly cover both Ledger modes — blind-
     // sign (hash-match against preSignHash) and clear-sign (verify decoded
     // fields). A flat "if the hash on-device differs → reject" instruction
     // is wrong for clear-sign sessions, which show decoded fields and no
-    // hash, and would push users to reject legitimate txs.
+    // hash, and would push users to reject legitimate txs. Compact v2
+    // expresses the clear-sign branch as "verify decoded fields match".
     expect(artifact.pasteableBlock).toMatch(/BLIND-SIGN/);
     expect(artifact.pasteableBlock).toMatch(/CLEAR-SIGN/);
-    expect(artifact.pasteableBlock).toMatch(/hash matching does NOT apply/i);
+    expect(artifact.pasteableBlock).toMatch(/verify decoded fields/i);
     // Payload JSON is embedded INSIDE the markers so the second agent sees
     // it as part of its single prompt — not a second artifact the user has
     // to paste separately.
@@ -209,8 +210,9 @@ describe("get_verification_artifact — second-agent copy-paste artifact", () =>
     expect(artifact.pasteableBlock).toContain(splPinned.messageBase64);
     expect(artifact.pasteableBlock).toContain(expectedLedgerHash);
     expect(artifact.pasteableBlock).toContain("solana");
-    // Second-agent guidance calls out SPL blind-sign specifically.
-    expect(artifact.pasteableBlock).toMatch(/ALL SPL token transfers on Solana/);
+    // Second-agent guidance calls out SPL blind-sign specifically — compact
+    // v2 phrases this as "BLIND-SIGN (all SPL transfers)".
+    expect(artifact.pasteableBlock).toMatch(/BLIND-SIGN \(all SPL transfers\)/);
 
     // Native SOL: clear-signs, so artifact must NOT carry a ledger hash.
     const nativeDraftTx = new Transaction().add(
