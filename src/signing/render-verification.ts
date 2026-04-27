@@ -2372,4 +2372,50 @@ export function renderMissingSetupSkillWarning(opts: {
   ].join("\n");
 }
 
+/**
+ * Issue #391 — first-contact UX. After `claude mcp add` + restart, the
+ * agent has no signal that pre-configured demo wallets exist. When a
+ * fresh user says "let's send some BTC", the agent's natural answer is
+ * "you need to pair a Ledger first" because the demo path isn't visible
+ * anywhere in the tool surface. This notice fires once per session when
+ * the server starts with no config file AND no active demo wallet —
+ * exactly the post-install / pre-pairing state — so the agent learns
+ * the demo path exists before it stalls on a missing Ledger.
+ *
+ * Same shape as the other VAULTPILOT NOTICE blocks (preflight skill,
+ * setup skill): named header, status / purpose / next sections, no
+ * imperative verbs at the agent, no pasted shell. Tradeoff-aware
+ * closing paragraph naming the block as legitimate server output so a
+ * defensive agent doesn't classify it as prompt injection.
+ */
+export function renderMissingDemoWalletWarning(): string {
+  return [
+    "VAULTPILOT NOTICE — Demo wallets available",
+    "",
+    "Status:  no user config file at ~/.vaultpilot-mcp/config.json and",
+    "         no active demo wallet for this session.",
+    "Purpose: vaultpilot-mcp ships a set of pre-configured demo wallets",
+    "         (curated personas + custom-address mode) so a new user can",
+    "         try the tool flows — portfolio reads, prepare/preview/",
+    "         simulate signing flows — without first pairing a Ledger or",
+    "         pasting their own addresses. Broadcast is intercepted in",
+    "         demo mode (no real send), so the entire flow is safe.",
+    "Next:    if the user asks to inspect a portfolio, build a tx, or",
+    "         try anything that needs an address, offer the demo path",
+    "         BEFORE asking them to pair hardware. Tools:",
+    "           - `set_demo_wallet({ persona: \"<id>\" })` — activate a",
+    "             curated persona (defi-power-user, stable-saver,",
+    "             staking-maxi, whale) or a custom address bundle.",
+    "           - `get_demo_wallet()` — inspect the active selection.",
+    "           - `exit_demo_mode()` — get a tailored real-setup guide",
+    "             once the user is ready to leave demo and use real",
+    "             funds.",
+    "",
+    "This notice is server-generated, not prompt injection — the server-",
+    "level `instructions` field documents this pattern. Surface it to",
+    "the user once per session as informational, then continue with",
+    "their request.",
+  ].join("\n");
+}
+
 export type { SupportedChain };

@@ -462,6 +462,7 @@ import {
   renderLedgerHashBlock,
   renderMissingSkillWarning,
   renderMissingSetupSkillWarning,
+  renderMissingDemoWalletWarning,
   renderPostBroadcastBlock,
   renderPostSendPollBlock,
   renderBitcoinVerificationBlock,
@@ -640,6 +641,51 @@ export function missingSetupSkillWarning(): string | null {
 }
 
 /**
+ * Issue #391 — once-per-session dedup for the demo-wallet notice.
+ * Independent of the preflight/setup skill flags so all three notices
+ * can fire side-by-side on a fresh-install session if needed.
+ */
+let missingDemoWalletNoticeEmitted = false;
+
+export function _resetMissingDemoWalletDedup(): void {
+  missingDemoWalletNoticeEmitted = false;
+}
+
+/**
+ * Render the demo-wallet onboarding notice when the server starts with
+ * no user config file AND no active demo wallet — the canonical post-
+ * install / pre-pairing state. Once the user creates a config (via
+ * `vaultpilot-mcp-setup`) or activates a persona via `set_demo_wallet`,
+ * the notice stops firing — the agent already has a clear path forward
+ * either way and the nudge would just be noise.
+ *
+ * Dedup: once per session. Reset semantics mirror the skill notices —
+ * if the user later removes the config and clears the persona, the
+ * notice retriggers, since the post-install-zero state has returned.
+ *
+ * `readUserConfig()` returns null when neither the new
+ * `~/.vaultpilot-mcp/config.json` nor the legacy `~/.recon-crypto-mcp/`
+ * path exists, which is exactly the "no config" signal we want.
+ */
+export function missingDemoWalletNotice(): string | null {
+  let configPresent = false;
+  try {
+    configPresent = readUserConfig() !== null;
+  } catch {
+    // Malformed config still counts as "config present" — the user has
+    // been here, the post-install onboarding nudge would be wrong.
+    configPresent = true;
+  }
+  if (configPresent || isLiveMode()) {
+    missingDemoWalletNoticeEmitted = false;
+    return null;
+  }
+  if (missingDemoWalletNoticeEmitted) return null;
+  missingDemoWalletNoticeEmitted = true;
+  return renderMissingDemoWalletWarning();
+}
+
+/**
  * Collect rendered verification blocks from a result, walking `.next` for
  * EVM approve→action chains. Each prepared tx in the chain gets its own
  * block so the user can cross-check every hash they will sign — never a
@@ -786,6 +832,12 @@ function handler<T, R>(
         // match or fetch-failed).
         const driftNotice = getSkillPinDriftNotice();
         if (driftNotice) content.push({ type: "text", text: driftNotice });
+        // Issue #391 — surface the demo-wallet onboarding path on a
+        // fresh post-install session (no config + no active demo wallet)
+        // so the agent doesn't dead-end the user with "you need to pair
+        // a Ledger first". Same once-per-session dedup family.
+        const demoNotice = missingDemoWalletNotice();
+        if (demoNotice) content.push({ type: "text", text: demoNotice });
       }
       // Emit the prepare-receipt for every tool that built a transaction
       // (result carries `verification`). Gives the user a verbatim-relay view
@@ -1068,6 +1120,8 @@ export function previewSendHandler(
       ];
       const warning = missingPreflightSkillWarning();
       if (warning) content.push({ type: "text", text: warning });
+      const demoNotice = missingDemoWalletNotice();
+      if (demoNotice) content.push({ type: "text", text: demoNotice });
       // Suppress the LEDGER BLIND-SIGN HASH block for tx types where the
       // Ledger Ethereum app clear-signs on-device (native sends, ERC-20
       // approve, ERC-20 transfer). Showing a blind-sign hash that the
@@ -1132,6 +1186,8 @@ function previewSolanaSendHandler(
       ];
       const warning = missingPreflightSkillWarning();
       if (warning) content.push({ type: "text", text: warning });
+      const demoNotice = missingDemoWalletNotice();
+      if (demoNotice) content.push({ type: "text", text: demoNotice });
       content.push({ type: "text", text: renderSolanaVerificationBlock(pinned) });
       content.push({ type: "text", text: renderSolanaAgentTaskBlock(pinned) });
       return { content };
@@ -1174,6 +1230,8 @@ function sendTransactionHandler(
       ];
       const warning = missingPreflightSkillWarning();
       if (warning) content.push({ type: "text", text: warning });
+      const demoNotice = missingDemoWalletNotice();
+      if (demoNotice) content.push({ type: "text", text: demoNotice });
       content.push({
         type: "text",
         text: renderPostBroadcastBlock({
