@@ -71,8 +71,22 @@ jobs:
       - name: Build dist/
         run: npm run build
 
+      - name: Prune devDependencies before pkg snapshot
+        # Mirror release-binaries.yml so the smoke test exercises the same
+        # node_modules shape the release binary will see. Catches the case
+        # where a runtime feature accidentally requires a devDep (would be
+        # invisible without prune; would only fail at release time).
+        run: npm prune --omit=dev --legacy-peer-deps
+
       - name: Bundle server binary
-        run: npx pkg . --target node22-linux-x64 --output release/vaultpilot-mcp-linux-x64-server
+        # `npx --package=@yao-pkg/pkg pkg` (NOT plain `npx pkg`): the prune
+        # step above removed the @yao-pkg/pkg devDep + its `pkg` bin link
+        # from node_modules, so plain `npx pkg` falls through to the npm
+        # registry and fetches the unrelated deprecated `pkg@5.8.1`, which
+        # doesn't support Node 22 (`Error! No available node version
+        # satisfies 'node22'`). The explicit --package flag tells npx
+        # which package to fetch when the bin isn't local.
+        run: npx --package=@yao-pkg/pkg pkg . --target node22-linux-x64 --output release/vaultpilot-mcp-linux-x64-server
         env:
           CI: "true"
 

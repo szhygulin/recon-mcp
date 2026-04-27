@@ -100,6 +100,19 @@ jobs:
       - name: Build dist/
         run: npm run build
 
+      - name: Prune devDependencies before pkg snapshot
+        # `npm ci` above installs deps + devDeps (we need typescript etc. for
+        # `npm run build`). Once dist/ is built, drop the devDeps so pkg
+        # doesn't snapshot them. vitest pulls in @rolldown (45MB binding) and
+        # lightningcss (~20MB) transitively — neither is reachable from the
+        # MCP server entry point at runtime, but pkg's static-require walker
+        # can't always prove that, so the snapshot grows. Empirically this
+        # shaves ~20MB off the binary on linux-x64. Lower output size = faster
+        # release-asset upload + less likely to trip GitHub's reverse-proxy
+        # idle-timeout on slow runners (root cause of the v0.9.4
+        # macos-arm64-server upload failure — issue #330 follow-up).
+        run: npm prune --omit=dev --legacy-peer-deps
+
       - name: Bundle server binary
         # `pkg .` (not `pkg dist/index.js`) so pkg picks up package.json
         # context including the `pkg.scripts` glob and the bin block.
@@ -108,7 +121,16 @@ jobs:
         # an ESM exports-map resolution bug for subpath imports like
         # `@modelcontextprotocol/sdk/server/mcp.js` — `pkg .` is the
         # supported path.
-        run: npx pkg . --target ${{ matrix.target }} --output release/${{ matrix.server_asset }}
+        #
+        # `npx --package=@yao-pkg/pkg pkg` (NOT plain `npx pkg`): the
+        # prune step above removed the @yao-pkg/pkg devDep + its `pkg`
+        # bin link from node_modules, so plain `npx pkg` falls through
+        # to the npm registry and fetches the unrelated deprecated
+        # `pkg@5.8.1`, which doesn't support Node 22 at all (`Error! No
+        # available node version satisfies 'node22'`). The explicit
+        # --package flag tells npx which package to fetch when the bin
+        # isn't local.
+        run: npx --package=@yao-pkg/pkg pkg . --target ${{ matrix.target }} --output release/${{ matrix.server_asset }}
         env:
           CI: "true"
 
@@ -116,7 +138,7 @@ jobs:
         # Direct entrypoint here is fine — setup.js doesn't import any
         # subpath exports from CJS-fallback packages, so the resolution
         # bug above doesn't apply.
-        run: npx pkg dist/setup.js --target ${{ matrix.target }} --output release/${{ matrix.setup_asset }}
+        run: npx --package=@yao-pkg/pkg pkg dist/setup.js --target ${{ matrix.target }} --output release/${{ matrix.setup_asset }}
         env:
           CI: "true"
 
