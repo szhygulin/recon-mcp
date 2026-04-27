@@ -133,24 +133,43 @@ jobs:
         # `scripts/smoke-test-binary.mjs` for the implementation.
         run: node scripts/smoke-test-binary.mjs ./release/${{ matrix.server_asset }}
 
-      - name: Upload assets to release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            release/${{ matrix.server_asset }}
-            release/${{ matrix.setup_asset }}
-          fail_on_unmatched_files: true
-
-      - name: Upload assets to existing release (manual dispatch)
-        if: github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag }}
-          files: |
-            release/${{ matrix.server_asset }}
-            release/${{ matrix.setup_asset }}
-          fail_on_unmatched_files: true
+      - name: Upload assets to release (with retry on transient 5xx)
+        # Replaces softprops/action-gh-release@v2 with `gh release upload`
+        # wrapped in a 3-attempt retry. Why: the v0.9.4 release lost
+        # vaultpilot-mcp-macos-arm64-server to a GitHub reverse-proxy
+        # 5xx ("Unicorn!" page) mid-upload — a transient error that
+        # softprops/action-gh-release@v2 surfaces as fatal. macOS runners
+        # push large assets at low Mbps; the upload sits near the proxy's
+        # idle-timeout edge, and a single retry usually clears it.
+        # `gh release upload --clobber` overwrites any stub asset left by
+        # a previous attempt so reruns are idempotent. Linear backoff
+        # (10s, 20s) is enough for transient API hiccups.
+        # `shell: bash` so Windows runners use Git Bash, not pwsh.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASSETS=(
+            "release/${{ matrix.server_asset }}"
+            "release/${{ matrix.setup_asset }}"
+          )
+          for asset in "${ASSETS[@]}"; do
+            for attempt in 1 2 3; do
+              if gh release upload "$TAG" "$asset" --clobber; then
+                echo "✅ uploaded $asset on attempt $attempt"
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "❌ failed to upload $asset after 3 attempts"
+                exit 1
+              fi
+              backoff=$((attempt * 10))
+              echo "↻ upload of $asset failed (attempt $attempt); sleeping ${backoff}s"
+              sleep "$backoff"
+            done
+          done
 
   # OS-agnostic install scripts — uploaded once per release, not per
   # matrix leg. Hosted at the well-known path
@@ -180,21 +199,28 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
 
-      - name: Upload to release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            scripts/install.sh
-            scripts/install.ps1
-          fail_on_unmatched_files: true
-
-      - name: Upload to existing release (manual dispatch)
-        if: github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag }}
-          files: |
-            scripts/install.sh
-            scripts/install.ps1
-          fail_on_unmatched_files: true
+      - name: Upload install scripts (with retry)
+        # Same retry-with-clobber approach as the binary upload job.
+        # Install scripts are small (~10 KB each) so 5xx is rare here,
+        # but consistency beats two divergent upload paths.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          ASSETS=(scripts/install.sh scripts/install.ps1)
+          for asset in "${ASSETS[@]}"; do
+            for attempt in 1 2 3; do
+              if gh release upload "$TAG" "$asset" --clobber; then
+                echo "✅ uploaded $asset on attempt $attempt"
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "❌ failed to upload $asset after 3 attempts"
+                exit 1
+              fi
+              backoff=$((attempt * 10))
+              echo "↻ upload of $asset failed (attempt $attempt); sleeping ${backoff}s"
+              sleep "$backoff"
+            done
+          done
