@@ -42,6 +42,16 @@ const BOUNTY_ALIASES: Record<string, string> = {
   "uniswap-v4": "uniswap",
 };
 
+// User-friendly protocol names that don't match DefiLlama's actual slug.
+// `aave` / `compound` happen to be valid DefiLlama slugs so they don't need
+// an entry. `curve` is NOT — DefiLlama returns 400 "Protocol not found";
+// the canonical slug is `curve-dex`. Without this alias, every Curve
+// position consumer that asks for "curve" gets `score: undefined` despite
+// real TVL + audits being available on DefiLlama under `curve-dex`.
+const LLAMA_SLUG_ALIASES: Record<string, string> = {
+  curve: "curve-dex",
+};
+
 /**
  * DefiLlama's `/protocol/<slug>` returns `tvl` as a time-series array of
  * `{ date, totalLiquidityUSD }` for current responses. Older / cached shapes
@@ -111,7 +121,8 @@ export async function getProtocolRiskScore(protocol: string): Promise<{
   };
 }> {
   const slug = protocol.toLowerCase();
-  const data = await fetchLlamaProtocol(slug);
+  const llamaSlug = LLAMA_SLUG_ALIASES[slug] ?? slug;
+  const data = await fetchLlamaProtocol(llamaSlug);
 
   const raw: {
     tvlUsd?: number;
