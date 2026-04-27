@@ -157,6 +157,35 @@ describe("getProtocolRiskScore — #309 regressions", () => {
     expect(result.breakdown.bounty.note).toBe("no Immunefi bounty registered");
   });
 
+  it("Llama-slug alias: 'curve' canonicalizes to 'curve-dex' so DefiLlama returns data instead of 400", async () => {
+    // DefiLlama 400s on `/protocol/curve` (verified via curl, 2026-04-27);
+    // the canonical slug is `curve-dex`. We assert the alias map redirects
+    // the input so Curve consumers don't silently get score: undefined.
+    fetchWithTimeoutMock.mockImplementationOnce(async (url: string) => {
+      // The function under test must call DefiLlama with the canonical
+      // slug, not the bare "curve". If this expectation fails, the alias
+      // map regressed.
+      expect(url).toContain("/protocol/curve-dex");
+      return fakeOk({
+        name: "Curve DEX",
+        tvl: tvlSeries(1_730_000_000, 60, 1_650_000_000),
+        listedAt: 1_600_000_000,
+        audit_links: ["https://x.com/audit1", "https://x.com/audit2"],
+      });
+    });
+
+    const result = await getProtocolRiskScore("curve");
+
+    expect(result.protocol).toBe("curve");
+    expect(result.score).toBeDefined();
+    expect(Number.isFinite(result.score)).toBe(true);
+    expect(result.raw.tvlUsd).toBe(1_730_000_000);
+    // Curve is NOT on Immunefi (verified 2026-04-27); bounty must remain
+    // honest about that rather than synthesizing a fake entry.
+    expect(result.raw.hasBugBounty).toBe(false);
+    expect(result.breakdown.bounty.note).toBe("no Immunefi bounty registered");
+  });
+
   it("End-to-end: compound-v3 with the realistic API shape produces a meaningful score (the issue repro)", async () => {
     fetchWithTimeoutMock.mockResolvedValueOnce(
       fakeOk({
