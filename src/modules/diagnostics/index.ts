@@ -27,6 +27,7 @@ import {
   getActiveHints,
   type SetupHint,
 } from "../../data/rate-limit-tracker.js";
+import { isDemoMode } from "../../demo/index.js";
 
 type EvmRpcSource =
   | "env-var"
@@ -135,6 +136,22 @@ interface VaultPilotConfigStatus {
    * remediation path the user wants to act on.
    */
   setupHints: SetupHint[];
+  /**
+   * Demo-mode discoverability surface (issue #371). The demo feature
+   * (`VAULTPILOT_DEMO=true`) lets a prospective user try the read-only
+   * UX with deterministic fixtures and no Ledger / RPC keys, but the
+   * env-var gate is invisible to an agent introspecting the server —
+   * this field makes it discoverable on the canonical "is my MCP set
+   * up?" tool. `active` reflects request-time env state; `howToEnable`
+   * carries the activation recipe so the agent can guide the user to
+   * the env-var + restart step (the agent itself can't toggle the var
+   * mid-session — the MCP process reads the env at boot).
+   */
+  demoMode: {
+    active: boolean;
+    envVar: "VAULTPILOT_DEMO";
+    howToEnable: string;
+  };
 }
 
 /**
@@ -229,5 +246,12 @@ export function getVaultPilotConfigStatus(_args: Record<string, never> = {}): Va
       installed: existsSync(skillPath),
     },
     setupHints,
+    demoMode: {
+      active: isDemoMode(),
+      envVar: "VAULTPILOT_DEMO",
+      howToEnable: isDemoMode()
+        ? "Demo mode is active — read tools return deterministic fixture data, signing tools refuse with a structured demo error. To exit, unset VAULTPILOT_DEMO and restart the MCP server."
+        : "Set VAULTPILOT_DEMO=true in the MCP server environment and restart. Add via `claude mcp add vaultpilot-mcp --env VAULTPILOT_DEMO=true -- npx -y vaultpilot-mcp` (or edit the existing MCP entry's env). In demo mode read tools return curated multi-chain portfolio fixtures and every signing tool refuses — no Ledger, RPC keys, or pairing required.",
+    },
   };
 }

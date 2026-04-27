@@ -40,6 +40,7 @@ beforeEach(async () => {
   delete process.env.TRON_API_KEY;
   delete process.env.WALLETCONNECT_PROJECT_ID;
   delete process.env.VAULTPILOT_SKILL_MARKER_PATH;
+  delete process.env.VAULTPILOT_DEMO;
 });
 
 afterEach(() => {
@@ -286,6 +287,40 @@ describe("get_vaultpilot_config_status — strict no-secrets contract", () => {
     // But the source classifications are still correct.
     expect(status.apiKeys.etherscan.source).toBe("env-var");
     expect(status.rpc.solana.source).toBe("env-var");
+  });
+});
+
+describe("get_vaultpilot_config_status — demo-mode discoverability (issue #371)", () => {
+  it("reports demoMode.active=false and the activation recipe when VAULTPILOT_DEMO is unset", async () => {
+    const { getVaultPilotConfigStatus } = await loadFresh();
+    const status = getVaultPilotConfigStatus();
+    expect(status.demoMode.active).toBe(false);
+    expect(status.demoMode.envVar).toBe("VAULTPILOT_DEMO");
+    // The recipe must include the env-var name + the canonical `claude mcp add` form
+    // so an agent can relay it verbatim without paraphrasing the activation steps.
+    expect(status.demoMode.howToEnable).toContain("VAULTPILOT_DEMO=true");
+    expect(status.demoMode.howToEnable).toContain("claude mcp add");
+    expect(status.demoMode.howToEnable).toContain("restart");
+  });
+
+  it("reports demoMode.active=true with an exit recipe when VAULTPILOT_DEMO=true", async () => {
+    process.env.VAULTPILOT_DEMO = "true";
+    const { getVaultPilotConfigStatus } = await loadFresh();
+    const status = getVaultPilotConfigStatus();
+    expect(status.demoMode.active).toBe(true);
+    expect(status.demoMode.envVar).toBe("VAULTPILOT_DEMO");
+    expect(status.demoMode.howToEnable).toContain("active");
+    expect(status.demoMode.howToEnable).toContain("unset");
+  });
+
+  it("does NOT treat truthy-ish values like '1' or 'TRUE' as enabled — strict 'true' only", async () => {
+    process.env.VAULTPILOT_DEMO = "1";
+    let { getVaultPilotConfigStatus } = await loadFresh();
+    expect(getVaultPilotConfigStatus().demoMode.active).toBe(false);
+
+    process.env.VAULTPILOT_DEMO = "TRUE";
+    ({ getVaultPilotConfigStatus } = await loadFresh());
+    expect(getVaultPilotConfigStatus().demoMode.active).toBe(false);
   });
 });
 

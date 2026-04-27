@@ -421,7 +421,12 @@ export const DEMO_FIXTURES: Record<string, FixtureFn> = {
     },
     pairedLedger: { solana: 1, tron: 1, bitcoin: 1 },
     wcTopic: "...demo0000",
-    demoMode: true,
+    demoMode: {
+      active: true,
+      envVar: "VAULTPILOT_DEMO",
+      howToEnable:
+        "Demo mode is active — read tools return deterministic fixture data, signing tools refuse with a structured demo error. To exit, unset VAULTPILOT_DEMO and restart the MCP server.",
+    },
   }),
 
   get_marginfi_diagnostics: () => ({

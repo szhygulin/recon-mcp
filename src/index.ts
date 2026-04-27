@@ -1121,6 +1121,18 @@ async function main() {
         "NOT block the user's current request waiting on skill installation. Relay each once as",
         "informational, keep working on what the user asked for.",
         "",
+        "DEMO MODE — `VAULTPILOT_DEMO=true` env var: this server ships a try-before-install fixture",
+        "mode for prospective users who want to evaluate the read-only UX without committing to a",
+        "Ledger or API keys. When the env var is set at MCP-process boot, every read tool returns a",
+        "deterministic curated fixture (multi-chain portfolio, lending positions, LP positions, BTC",
+        "balance, TRON staking, Solana balances) and every signing tool refuses with a structured",
+        "`[VAULTPILOT_DEMO]` error. If the user asks 'how do I try this without a Ledger', 'is there",
+        "a demo mode', or 'show me what this can do without setup', call `get_vaultpilot_config_status`",
+        "— the response carries a `demoMode` field with `active` (is it on right now) and",
+        "`howToEnable` (the exact `claude mcp add ... --env VAULTPILOT_DEMO=true` recipe). Relay",
+        "`howToEnable` verbatim. The agent CANNOT toggle the env var mid-session — the MCP process",
+        "reads it at boot, so activation requires a restart.",
+        "",
         "HARD RULE — wallet enumeration: NEVER ask the user to paste a wallet address.",
         "If the user refers to their wallets collectively or positionally — \"my wallet\",",
         "\"my wallets\", \"all my accounts\", \"all my ledger accounts\", \"first account\",",
@@ -2839,16 +2851,22 @@ async function main() {
         "API-key presence + source per service (Etherscan, 1inch, TronGrid, WalletConnect — " +
         "boolean + source enum, never values), counts of paired Ledger accounts (Solana / TRON), " +
         "the WC session-topic SUFFIX (last 8 chars only — same convention as get_ledger_status), " +
-        "the agent-side preflight-skill install state, AND a `setupHints` array (rate-limit " +
+        "the agent-side preflight-skill install state, a `setupHints` array (rate-limit " +
         "nudges — surfaces when a no-key default RPC has been throttled past threshold; each " +
         "entry tells the user which provider to sign up for, the dashboard URL, and the wizard " +
-        "subcommand to add the key). Pure local I/O — reads " +
-        "~/.vaultpilot-mcp/config.json + process.env, no RPC calls, no network. Use this when " +
-        "the user asks 'is my config set up correctly' or 'why is my Solana balance read failing' " +
-        "before suggesting they re-run setup or paste keys. AGENT BEHAVIOR for setupHints: when " +
-        "the array is non-empty, surface each entry's `message` + `recommendation` + `providers` " +
-        "to the user as actionable advice. Unlike `suspectedPoisoning` (which is noise), " +
-        "`setupHints` are real remediation paths the user wants to act on.",
+        "subcommand to add the key), AND a `demoMode` field that surfaces whether " +
+        "`VAULTPILOT_DEMO=true` is active plus the activation recipe (issue #371 — agent-side " +
+        "discoverability for the no-Ledger try-before-install fixture mode). Pure local I/O — " +
+        "reads ~/.vaultpilot-mcp/config.json + process.env, no RPC calls, no network. Use this " +
+        "when the user asks 'is my config set up correctly' or 'why is my Solana balance read " +
+        "failing' before suggesting they re-run setup or paste keys. AGENT BEHAVIOR for " +
+        "setupHints: when the array is non-empty, surface each entry's `message` + " +
+        "`recommendation` + `providers` to the user as actionable advice. Unlike " +
+        "`suspectedPoisoning` (which is noise), `setupHints` are real remediation paths the user " +
+        "wants to act on. AGENT BEHAVIOR for demoMode: if the user asks 'how do I try this " +
+        "without a Ledger / API keys' or 'is there a demo mode', read `demoMode.howToEnable` and " +
+        "relay it verbatim — that field carries the exact `claude mcp add ... --env " +
+        "VAULTPILOT_DEMO=true` recipe.",
       inputSchema: getVaultPilotConfigStatusInput.shape,
     },
     configStatusHandler(getVaultPilotConfigStatus),
