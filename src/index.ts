@@ -32,11 +32,15 @@ import { buildExitDemoGuide } from "./demo/exit-flow.js";
 import {
   setHeliusApiKey,
   getRuntimeSolanaRpcStatus,
-  consumePendingHeliusNudge,
+  setRuntimeOverride,
+  getRuntimeOverrideStatus,
+  consumeAllPendingNudges,
 } from "./data/runtime-rpc-overrides.js";
 import {
   setHeliusApiKeyInput,
+  setEtherscanApiKeyInput,
   type SetHeliusApiKeyArgs,
+  type SetEtherscanApiKeyArgs,
 } from "./data/runtime-rpc-overrides-schemas.js";
 
 import {
@@ -791,14 +795,14 @@ function handler<T, R>(
       for (const block of await collectVerificationBlocks(result)) {
         content.push({ type: "text", text: block });
       }
-      // Helius setup nudge — fires every 10th public-Solana-RPC error in
-      // demo mode. Pop-and-clear so it appears on exactly one response per
-      // threshold crossing. No-op outside demo mode (the error counter
-      // never increments without VAULTPILOT_DEMO since the nudge is
-      // demo-specific UX — but the consumer guard double-checks).
+      // Setup nudges (Helius / Etherscan) — fire on first public-fallback
+      // error of the session and every 10th thereafter. Pop-and-clear so
+      // each nudge appears on exactly one response per threshold crossing.
+      // No-op outside demo mode.
       if (isDemoMode()) {
-        const nudge = consumePendingHeliusNudge();
-        if (nudge) content.push({ type: "text", text: nudge });
+        for (const { nudge } of consumeAllPendingNudges()) {
+          content.push({ type: "text", text: nudge });
+        }
       }
       return { content };
     } catch (error) {
@@ -810,14 +814,14 @@ function handler<T, R>(
       const errorContent: { type: "text"; text: string }[] = [
         { type: "text" as const, text: `Error: ${safeErrorMessage(error)}` },
       ];
-      // Surface the Helius nudge on the failing call too — when the
-      // 10th public-Solana-RPC 429 trips the threshold, the same call
-      // is what's failing. Showing the nudge on the error response
-      // gives the user an immediate path forward rather than waiting
-      // for a successful next call to surface it.
+      // Surface setup nudges on the failing call too — when the
+      // threshold trips, the call that failed is the one the user
+      // wants help on. Showing the nudge here gives an immediate path
+      // forward rather than waiting for a successful next call.
       if (isDemoMode()) {
-        const nudge = consumePendingHeliusNudge();
-        if (nudge) errorContent.push({ type: "text", text: nudge });
+        for (const { nudge } of consumeAllPendingNudges()) {
+          errorContent.push({ type: "text", text: nudge });
+        }
       }
       return {
         content: errorContent,
@@ -4098,6 +4102,45 @@ async function main() {
           "Helius API key set. All subsequent Solana reads use the Helius mainnet endpoint " +
           "for the rest of this MCP-server process. The key is held in memory only — to " +
           "persist across restarts, run `vaultpilot-mcp-setup` and pick \"Solana RPC URL\".",
+      };
+    })
+  );
+
+  registerTool(server,
+    "set_etherscan_api_key",
+    {
+      description:
+        "Set an Etherscan V2 API key for EVM transaction-history / allowance-enumeration / " +
+        "tx-explanation reads at runtime — no restart required. Takes precedence over " +
+        "ETHERSCAN_API_KEY env var and userConfig. One key works across all 5 supported EVM " +
+        "chains (Ethereum / Arbitrum / Polygon / Base / Optimism) via Etherscan's V2 unified " +
+        "API. Designed for the demo-mode flow where users want to enable tx-history / " +
+        "allowance / explain_tx tools without restarting their MCP client, but works in any " +
+        "mode. " +
+        "INPUT: bare API key only (34-char alphanumeric, e.g. ZQTKPM98R5N4YT8GMTBI3XR2P4HFZNTAYG). " +
+        "Pasting a URL is rejected to prevent prompt-injection redirects. " +
+        "WHERE TO GET ONE: https://etherscan.io/myapikey — sign in, click \"Add\", copy the " +
+        "key. Free tier covers personal-volume use comfortably (5 calls/sec, 100K calls/day). " +
+        "PERSISTENCE: process memory only. To save across restarts, run `vaultpilot-mcp-setup` " +
+        "(after exiting demo mode if applicable) and paste the same key when prompted. " +
+        "AGENT BEHAVIOR: when the user pastes a key in chat ('here's my Etherscan key: <34 " +
+        "chars>'), call this tool immediately. NEVER echo the key back in any subsequent " +
+        "response — treat it as secret-shaped.",
+      inputSchema: setEtherscanApiKeyInput.shape,
+    },
+    handler((args: SetEtherscanApiKeyArgs) => {
+      const r = setRuntimeOverride("etherscan", args.apiKey);
+      const status = getRuntimeOverrideStatus("etherscan");
+      return {
+        ok: true,
+        source: "runtime-override",
+        apiKeySuffix: status.apiKeySuffix,
+        setAt: r.setAt,
+        message:
+          "Etherscan V2 API key set. All subsequent EVM tx-history / allowance / explain_tx " +
+          "calls use this key for the rest of this MCP-server process. The key is held in " +
+          "memory only — to persist across restarts, run `vaultpilot-mcp-setup` and paste " +
+          "the same key when prompted.",
       };
     })
   );

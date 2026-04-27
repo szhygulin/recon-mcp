@@ -2,6 +2,7 @@ import { CHAIN_IDS } from "../../types/index.js";
 import type { SupportedChain } from "../../types/index.js";
 import { resolveEtherscanApiKey, readUserConfig } from "../../config/user-config.js";
 import { fetchWithTimeout } from "../http.js";
+import { recordPublicError } from "../runtime-rpc-overrides.js";
 
 /**
  * Etherscan V2 unified client.
@@ -61,7 +62,14 @@ export async function etherscanV2Fetch<T>(
   params: Record<string, string>
 ): Promise<T[]> {
   const apiKey = resolveEtherscanApiKey(readUserConfig());
-  if (!apiKey) throw new EtherscanApiKeyMissingError();
+  if (!apiKey) {
+    // Demo-mode nudge counter (issue #371 follow-up). Increment BEFORE
+    // throwing so the nudge surfaces on the failing tool's response.
+    // No-op outside demo mode (the counter only matters when the user
+    // is in evaluation mode and has no key set).
+    recordPublicError("etherscan");
+    throw new EtherscanApiKeyMissingError();
+  }
 
   const qs = new URLSearchParams({
     chainid: String(CHAIN_IDS[chain]),
@@ -119,7 +127,10 @@ export async function getEtherscanProxyPendingNonce(
   address: `0x${string}`,
 ): Promise<number> {
   const apiKey = resolveEtherscanApiKey(readUserConfig());
-  if (!apiKey) throw new EtherscanApiKeyMissingError();
+  if (!apiKey) {
+    recordPublicError("etherscan");
+    throw new EtherscanApiKeyMissingError();
+  }
   const qs = new URLSearchParams({
     chainid: String(CHAIN_IDS[chain]),
     module: "proxy",
