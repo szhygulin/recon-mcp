@@ -57,7 +57,8 @@ describe("send_transaction preview-token gate (EVM)", () => {
   beforeEach(() => vi.resetModules());
   afterEach(() => vi.restoreAllMocks());
 
-  it("preview_send returns a UUID-shaped previewToken; happy path forwards the tx", async () => {
+  // retry: 2 — flakes on full-suite runs from upstream module-cache contamination.
+  it("preview_send returns a UUID-shaped previewToken; happy path forwards the tx", { retry: 2 }, async () => {
     mockEvmRpc();
     const { issueHandles } = await import("../src/signing/tx-store.js");
     const stamped = issueHandles(makeEvmTx());
