@@ -84,6 +84,33 @@ describe("Aave V3 prepare_* reserve-state pre-flight", () => {
     ).rejects.toThrow(/frozen/);
   });
 
+  it("frozen-supply error names the symbol/chain and lists alternatives", async () => {
+    // Issue #412: regression guard. The old error said
+    //   "reserve 0xA0b8…48 on ethereum is frozen"
+    // which gave the agent no symbol to surface and no fallback to suggest.
+    // The new error must (a) name the symbol+chain and (b) point at the
+    // concrete alternative tools (Aave-V3-on-L2 / Compound / Morpho).
+    vi.doMock("../src/data/rpc.js", () => ({
+      getClient: () => mockAaveClient({ frozen: true }),
+      resetClients: () => {},
+    }));
+    const { buildAaveSupply } = await import(
+      "../src/modules/positions/actions.js"
+    );
+    await expect(
+      buildAaveSupply({
+        chain: "ethereum",
+        wallet: WALLET,
+        asset: USDC,
+        amount: "100",
+        decimals: 6,
+        symbol: "USDC",
+      })
+    ).rejects.toThrow(
+      /Aave V3 ethereum USDC.*frozen.*Aave V3 on arbitrum\/base\/optimism\/polygon.*prepare_compound_supply.*prepare_morpho_supply/s
+    );
+  });
+
   it("refuses buildAaveBorrow when reserve.isFrozen=true", async () => {
     vi.doMock("../src/data/rpc.js", () => ({
       getClient: () => mockAaveClient({ frozen: true }),
