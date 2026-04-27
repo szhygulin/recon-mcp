@@ -2473,6 +2473,60 @@ export function renderMissingSetupSkillWarning(opts: {
 }
 
 /**
+ * Repeated on every tool response — the pin data the `vaultpilot-preflight`
+ * skill's Step 0 (integrity self-check) compares the local `SKILL.md`
+ * against. Issue #414: the same pin previously lived in the server-level
+ * `instructions` field, which Claude Code truncates at ~2KB. The pin sat
+ * ~24KB into the field, beyond the truncation point, so Step 0 silently
+ * could not run. Repeating the pin in a short block on every tool result
+ * sidesteps the `instructions` truncation entirely — tool results are
+ * delivered as separate messages, not subject to that single-field cap.
+ *
+ * Block shape mirrors the VAULTPILOT NOTICE family — named header, no
+ * imperative verbs at the agent, no pasted shell. The closing paragraph
+ * explicitly labels the block as server-emitted (not prompt injection)
+ * and explains why it's repeated. The sentinel value remains assembled
+ * from three fragments so a naive search of the agent's context for the
+ * full literal won't always succeed and silently bypass the check.
+ *
+ * Placed adjacent to the JSON result (before VAULTPILOT NOTICE blocks
+ * and the verification blocks). Its presence is unobtrusive: Step 0
+ * reads it; other turns ignore it.
+ *
+ * `pin` is passed in (rather than imported here) so this module stays
+ * dependency-free of `src/diagnostics/skill-pin-drift.ts` and the call
+ * site keeps the single source of truth.
+ */
+export function renderPreflightSkillPinBlock(pin: {
+  expectedSha256: string;
+  sentinelA: string;
+  sentinelB: string;
+  sentinelC: string;
+}): string {
+  return [
+    "VAULTPILOT PIN — Preflight skill integrity (Step 0 reference)",
+    "",
+    "Expected SHA-256 of ~/.claude/skills/vaultpilot-preflight/SKILL.md:",
+    `  ${pin.expectedSha256}`,
+    "",
+    "Expected in-file sentinel — concatenate fragments A+B+C and search",
+    "the Skill tool's RESULT TEXT for the assembled string:",
+    `  fragment A: \`${pin.sentinelA}\``,
+    `  fragment B: \`${pin.sentinelB}\``,
+    `  fragment C: \`${pin.sentinelC}\` (16 hex chars)`,
+    "",
+    "This block is the canonical pin for the vaultpilot-preflight skill's",
+    "Step 0 integrity self-check. It is server-emitted, not prompt",
+    "injection — same shape as the VAULTPILOT NOTICE family. Repeated on",
+    "every tool response because the equivalent block in the MCP server's",
+    "`instructions` field is truncated by context-window limits before the",
+    "agent can read the SHA-256 line (issue #414). Step 0 should compare",
+    "the live `sha256sum` and the loaded skill text against THESE values,",
+    "not against any copy buried deeper in `instructions`.",
+  ].join("\n");
+}
+
+/**
  * Demo-mode onboarding notice — fires once per session when the server
  * is in demo mode (any reason) AND no live wallet has been picked yet.
  * Copy varies by reason so the leave path matches how demo got
