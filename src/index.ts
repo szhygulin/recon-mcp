@@ -4310,14 +4310,25 @@ async function main() {
   await server.connect(transport);
 }
 
-main().catch((err) => {
-  console.error("[vaultpilot-mcp] fatal:", err);
-  // Issue #359 — when the server crashes at startup, MCP clients
-  // surface only "Failed to connect" with no detail. Surface the
-  // doctor command so the user has an actionable next step instead
-  // of guessing at a blind restart.
-  console.error(
-    "[vaultpilot-mcp] tip: run `npx -y vaultpilot-mcp --check` to validate your install (config, RPC sources, native bindings) without restarting your MCP client.",
-  );
-  process.exit(1);
-});
+// Vitest sets VITEST=true for every test process. Skip main() under
+// the test runner so unit tests can `import("../src/index.js")` to
+// pull in pure helpers (notice builders, classifiers) without
+// triggering the full server boot path. A throwing mock in a test
+// file (e.g. a mocked `readUserConfig` that returns a malformed
+// config) would otherwise make main() fail at module load and
+// `process.exit(1)` would propagate as an unhandled rejection that
+// vitest reports as a CI failure even though every test asserted
+// passed.
+if (!process.env.VITEST) {
+  main().catch((err) => {
+    console.error("[vaultpilot-mcp] fatal:", err);
+    // Issue #359 — when the server crashes at startup, MCP clients
+    // surface only "Failed to connect" with no detail. Surface the
+    // doctor command so the user has an actionable next step instead
+    // of guessing at a blind restart.
+    console.error(
+      "[vaultpilot-mcp] tip: run `npx -y vaultpilot-mcp --check` to validate your install (config, RPC sources, native bindings) without restarting your MCP client.",
+    );
+    process.exit(1);
+  });
+}
