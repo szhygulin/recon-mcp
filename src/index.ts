@@ -324,6 +324,12 @@ import {
 } from "./modules/tron/schemas.js";
 
 import { getCompoundPositions } from "./modules/compound/index.js";
+import { getCurvePositions } from "./modules/curve/positions.js";
+import { buildCurveAddLiquidity } from "./modules/curve/actions.js";
+import {
+  getCurvePositionsInput,
+  prepareCurveAddLiquidityInput,
+} from "./modules/curve/schemas.js";
 import { getCompoundMarketInfo } from "./modules/compound/market-info.js";
 import { getMarketIncidentStatus } from "./modules/incidents/index.js";
 import { getMarketIncidentStatusInput } from "./modules/incidents/schemas.js";
@@ -3270,6 +3276,27 @@ async function main() {
       inputSchema: prepareCompoundRepayInput.shape,
     },
     txHandler("prepare_compound_repay", buildCompoundRepay)
+  );
+
+  // ---- Module 8b: Curve Finance (v0.1 — Ethereum stable_ng plain pools) ----
+  registerTool(server,
+    "get_curve_positions",
+    {
+      description:
+        "READ-ONLY — Curve LP positions on Ethereum stable_ng plain pools. v0.1 scope (per `claude-work/plan-curve-v1.md`): Ethereum mainnet only, stable_ng factory only, plain pools only (meta pools rejected — different ABI, separate follow-up). Returns per-pool LP token balance + gauge-staked balance + pending claimable CRV. Pools where the wallet has zero of all three are filtered out. Future PRs add: legacy pre-factory pools (3pool, fraxusdc, etc.), stable factory v1, twocrypto/crypto/tricrypto factories, Arbitrum + Polygon. The tool surface stays additive — `get_curve_positions` will keep its name and shape across the expansion.",
+      inputSchema: getCurvePositionsInput.shape,
+    },
+    handler((a) => getCurvePositions(a.wallet as `0x${string}`))
+  );
+
+  registerTool(server,
+    "prepare_curve_add_liquidity",
+    {
+      description:
+        "Build an unsigned Curve `add_liquidity` transaction for a stable_ng plain pool on Ethereum. Bundles ERC-20 approvals (one per non-zero deposit slot) before the action call via `chainApproval`. Pass `amounts` as a decimal-string array matching the pool's `N_COINS` (use '0' for slots you're not depositing into — single-coin deposit). Slippage gate is REQUIRED: pass either `minLpOut` (explicit decimal-string uint256) OR `slippageBps` (server computes via `calc_token_amount * (1 - bps/10000)`). v0.1 scope: stable_ng plain pools only — meta pools rejected. Use `get_curve_positions` to discover valid pool addresses + their coin order before calling this.",
+      inputSchema: prepareCurveAddLiquidityInput.shape,
+    },
+    txHandler("prepare_curve_add_liquidity", buildCurveAddLiquidity)
   );
 
   // ---- Module 9: Morpho Blue ----

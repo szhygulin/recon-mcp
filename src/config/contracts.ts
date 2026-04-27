@@ -54,6 +54,28 @@ export const CONTRACTS = {
       /** Morpho Blue singleton on Ethereum. */
       blue: "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb",
     },
+    /**
+     * Curve Finance — v0.1 surface (Ethereum stable_ng plain pools only).
+     * All addresses verified against `@curvefi/api` v2.69.0
+     * `lib/constants/network_constants.js` `ALIASES_ETHEREUM` block; also
+     * cross-checked against `github.com/curvefi/metaregistry/main/scripts/utils/constants.py`.
+     * Per `claude-work/plan-curve-v1.md`'s rnd-verified gates table.
+     *
+     * Future PRs add: stable_factory (legacy), crypto_factory,
+     * twocrypto_factory, tricrypto_factory, plus per-chain entries on
+     * Arbitrum/Polygon. Base deferred until the SDK author's TODO
+     * comments on Base CRV/gauge_controller addresses resolve.
+     */
+    curve: {
+      /** StableNG factory — newest stable-pool generation. */
+      stableNgFactory: "0x6A8cbed756804B16E05E741eDaBd5cB544AE21bf",
+      /** CRV reward token. */
+      crv: "0xD533a949740bb3306d119CC777fa900bA034cd52",
+      /** GaugeController — emissions distribution; metadata only on L2s. */
+      gaugeController: "0x2F50D538606Fa9EDD2B11E2446BEb18C9D5846bB",
+      /** Universal AddressProvider (CREATE2-deterministic across chains). */
+      addressProvider: "0x0000000022D53366457F9d5E68Ec105046FC4383",
+    },
   },
   arbitrum: {
     aave: {

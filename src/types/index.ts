@@ -182,6 +182,39 @@ export interface UnpricedAsset {
   amount: string;
 }
 
+/**
+ * Curve LP position — v0.1 surface (issue stable_ng-only, plain pools only).
+ *
+ * Each entry is one (pool, wallet) combination where the wallet has either
+ * a direct LP balance or a gauge-staked balance (or both). Pools where the
+ * wallet has zero of both are filtered out at composer level so the
+ * response stays scannable for users with positions in 3+ pools.
+ */
+export interface CurvePosition {
+  protocol: "curve";
+  chain: SupportedChain;
+  poolAddress: `0x${string}`;
+  poolType: "stable-ng-plain";
+  /**
+   * The pool's coin addresses, in the order add_liquidity expects.
+   * For wrapped-native pools (e.g. WETH-paired), addresses point to the
+   * wrapper (no native ETH special-casing yet — v2 follow-up).
+   */
+  coins: `0x${string}`[];
+  /** User's direct LP balance (LP token == pool address on stable_ng). */
+  lpBalance: string;
+  /** User's gauge-staked LP balance. Zero when no gauge or not staked. */
+  gaugeStakedBalance: string;
+  /** Pending claimable CRV. Zero when no gauge or no rewards accrued. */
+  pendingCrv: string;
+  /**
+   * Gauge address for this pool, when one exists. Some stable_ng pools
+   * have no gauge deployed (factory.get_gauge returns zero address) —
+   * `null` in that case so callers don't render a "stake in gauge" CTA.
+   */
+  gaugeAddress: `0x${string}` | null;
+}
+
 export interface LendingPosition {
   protocol: "aave-v3";
   chain: SupportedChain;
