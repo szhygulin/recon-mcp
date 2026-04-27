@@ -1,0 +1,64 @@
+diff --git a/node_modules/@lifi/sdk/package.json b/node_modules/@lifi/sdk/package.json
+index 261ba2a..1b7e7df 100644
+--- a/node_modules/@lifi/sdk/package.json
++++ b/node_modules/@lifi/sdk/package.json
+@@ -6,8 +6,6 @@
+     "@bigmi/core": "^0.7.1",
+     "@bitcoinerlab/secp256k1": "^1.2.0",
+     "@lifi/types": "17.65.0",
+-    "@mysten/sui": "^1.45.2",
+-    "@mysten/wallet-standard": "^0.19.9",
+     "@noble/curves": "^1.9.7",
+     "@solana/wallet-adapter-base": "^0.9.27",
+     "@solana/web3.js": "^1.98.4",
+@@ -31,7 +29,10 @@
+     "!src/**/*.mock.ts",
+     "!src/**/*.spec.ts",
+     "!src/**/*.handlers.ts",
+-    "!src/**/*.tsbuildinfo"
++    "!src/**/*.tsbuildinfo",
++    "!src/_cjs/core/Sui",
++    "!src/_esm/core/Sui",
++    "!src/_types/core/Sui"
+   ],
+   "homepage": "https://github.com/lifinance/sdk",
+   "keywords": [
+diff --git a/node_modules/@lifi/sdk/src/_cjs/index.js b/node_modules/@lifi/sdk/src/_cjs/index.js
+index a6fa54a..a5c6c7d 100644
+--- a/node_modules/@lifi/sdk/src/_cjs/index.js
++++ b/node_modules/@lifi/sdk/src/_cjs/index.js
+@@ -63,10 +63,12 @@ var types_js_2 = require("./core/Solana/types.js");
+ Object.defineProperty(exports, "isSolana", { enumerable: true, get: function () { return types_js_2.isSolana; } });
+ var StatusManager_js_1 = require("./core/StatusManager.js");
+ Object.defineProperty(exports, "StatusManager", { enumerable: true, get: function () { return StatusManager_js_1.StatusManager; } });
+-var Sui_js_1 = require("./core/Sui/Sui.js");
+-Object.defineProperty(exports, "Sui", { enumerable: true, get: function () { return Sui_js_1.Sui; } });
+-var types_js_3 = require("./core/Sui/types.js");
+-Object.defineProperty(exports, "isSui", { enumerable: true, get: function () { return types_js_3.isSui; } });
++// vaultpilot patch: Sui re-exports removed to keep @mysten/sui out of the
++// pkg snapshot (~25 MB savings). Restored as a stubbed `Sui` object and
++// `isSui` predicate so consumers that import them still resolve, but the
++// real Sui codepath is unreachable. We don't use Sui in this codebase.
++exports.Sui = undefined;
++exports.isSui = function () { return false; };
+ var types_js_4 = require("./core/UTXO/types.js");
+ Object.defineProperty(exports, "isUTXO", { enumerable: true, get: function () { return types_js_4.isUTXO; } });
+ var UTXO_js_1 = require("./core/UTXO/UTXO.js");
+diff --git a/node_modules/@lifi/sdk/src/_esm/index.js b/node_modules/@lifi/sdk/src/_esm/index.js
+index 9c881a3..69d8266 100644
+--- a/node_modules/@lifi/sdk/src/_esm/index.js
++++ b/node_modules/@lifi/sdk/src/_esm/index.js
+@@ -18,8 +18,11 @@ export { KeypairWalletAdapter, KeypairWalletName, } from './core/Solana/KeypairW
+ export { Solana } from './core/Solana/Solana.js';
+ export { isSolana } from './core/Solana/types.js';
+ export { StatusManager } from './core/StatusManager.js';
+-export { Sui } from './core/Sui/Sui.js';
+-export { isSui } from './core/Sui/types.js';
++// vaultpilot patch: Sui re-exports removed to keep @mysten/sui out of the
++// pkg snapshot (~25 MB savings). Restored as stubs so consumers that
++// import them still resolve. We don't use Sui in this codebase.
++export const Sui = undefined;
++export const isSui = () => false;
+ export { isUTXO } from './core/UTXO/types.js';
+ export { UTXO } from './core/UTXO/UTXO.js';
+ export { createConfig } from './createConfig.js';
