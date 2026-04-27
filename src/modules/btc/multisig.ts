@@ -11,12 +11,20 @@ import {
   openLedgerMultisig,
   type BtcMultisigAppClient,
   type BtcMultisigPartialSignature,
+  type BtcMultisigWalletPolicy,
 } from "../../signing/btc-multisig-usb-loader.js";
 import type {
   PairedBitcoinMultisigCosigner,
   PairedBitcoinMultisigWallet,
 } from "../../types/index.js";
 import { assertCanonicalLedgerApp } from "../../signing/canonical-apps.js";
+import { BTC_DECIMALS, SATS_PER_BTC } from "../../config/btc.js";
+import { getBitcoinIndexer, type BitcoinUtxo } from "./indexer.js";
+import { deriveMultisigAddress } from "./multisig-derive.js";
+import {
+  getMultisigUtxos,
+  type MultisigUtxo,
+} from "./multisig-balance.js";
 
 /**
  * Bitcoin multi-sig co-signer flow. Phase 2 PR2 of the BTC Ledger
@@ -50,33 +58,53 @@ import { assertCanonicalLedgerApp } from "../../signing/canonical-apps.js";
 // --- bitcoinjs-lib loader (CommonJS-only) ---------------------------------
 
 const requireCjs = createRequire(import.meta.url);
+interface PsbtInputDataShape {
+  witnessScript?: Buffer;
+  bip32Derivation?: Array<{
+    masterFingerprint: Buffer;
+    pubkey: Buffer;
+    path: string;
+  }>;
+  partialSig?: Array<{ pubkey: Buffer; signature: Buffer }>;
+  witnessUtxo?: { script: Buffer; value: number };
+  nonWitnessUtxo?: Buffer;
+}
+
+interface PsbtInstance {
+  data: { inputs: PsbtInputDataShape[]; outputs: Array<unknown> };
+  txInputs: Array<{ hash: Buffer; index: number; sequence: number }>;
+  txOutputs: Array<{ address?: string; value: number }>;
+  addInput(input: {
+    hash: string | Buffer;
+    index: number;
+    sequence?: number;
+    witnessUtxo?: { script: Buffer; value: number };
+    witnessScript?: Buffer;
+    nonWitnessUtxo?: Buffer;
+    bip32Derivation?: Array<{
+      masterFingerprint: Buffer;
+      pubkey: Buffer;
+      path: string;
+    }>;
+  }): unknown;
+  addOutput(output: { address?: string; script?: Buffer; value: number }): unknown;
+  updateInput(
+    i: number,
+    update: { partialSig: Array<{ pubkey: Buffer; signature: Buffer }> },
+  ): unknown;
+  toBase64(): string;
+}
+
 const bitcoinjs = requireCjs("bitcoinjs-lib") as {
   Psbt: {
-    fromBase64(b64: string): {
-      data: {
-        inputs: Array<{
-          witnessScript?: Buffer;
-          bip32Derivation?: Array<{
-            masterFingerprint: Buffer;
-            pubkey: Buffer;
-            path: string;
-          }>;
-          partialSig?: Array<{ pubkey: Buffer; signature: Buffer }>;
-          witnessUtxo?: { script: Buffer; value: number };
-          nonWitnessUtxo?: Buffer;
-        }>;
-        outputs: Array<unknown>;
-      };
-      txInputs: Array<{ hash: Buffer; index: number; sequence: number }>;
-      txOutputs: Array<{ address?: string; value: number }>;
-      updateInput(
-        i: number,
-        update: { partialSig: Array<{ pubkey: Buffer; signature: Buffer }> },
-      ): unknown;
-      toBase64(): string;
-    };
+    new (opts?: { network?: unknown }): PsbtInstance;
+    fromBase64(b64: string): PsbtInstance;
   };
+  address: { toOutputScript(addr: string, network?: unknown): Buffer };
+  networks: { bitcoin: unknown };
 };
+
+const NETWORK = bitcoinjs.networks.bitcoin;
 
 // --- Constants ------------------------------------------------------------
 
@@ -596,4 +624,440 @@ export async function signBitcoinMultisigPsbt(
     await transport.close().catch(() => {});
   }
   return result;
+}
+
+// --- unregister_btc_multisig_wallet --------------------------------------
+
+export interface UnregisterBitcoinMultisigWalletArgs {
+  walletName: string;
+}
+
+export interface UnregisterBitcoinMultisigWalletResult {
+  removed: boolean;
+  walletName: string;
+}
+
+/**
+ * Drop a registered wallet from the local cache. The Ledger device
+ * retains the policy HMAC indefinitely (no on-device unregister API),
+ * so re-registering with the same descriptor + cosigners returns the
+ * same HMAC the device already has — `register_btc_multisig_wallet` is
+ * idempotent for the device but re-creates the local cache entry.
+ */
+export function unregisterBitcoinMultisigWallet(
+  args: UnregisterBitcoinMultisigWalletArgs,
+): UnregisterBitcoinMultisigWalletResult {
+  ensureMultisigHydrated();
+  const removed = multisigByName.delete(args.walletName);
+  if (removed) persistMultisig();
+  return { removed, walletName: args.walletName };
+}
+
+// --- prepare_btc_multisig_send (initiator flow) --------------------------
+
+/**
+ * Helpers borrowed from src/modules/btc/actions.ts. Duplicated here
+ * rather than re-exported to avoid creating a dependency on the
+ * single-sig action module.
+ */
+function satsToBtcString(sats: bigint): string {
+  const negative = sats < 0n;
+  const abs = negative ? -sats : sats;
+  const whole = abs / SATS_PER_BTC;
+  const frac = abs - whole * SATS_PER_BTC;
+  const fracStr = frac.toString().padStart(8, "0").replace(/0+$/, "") || "0";
+  const body = fracStr === "0" ? whole.toString() : `${whole.toString()}.${fracStr}`;
+  return negative ? `-${body}` : body;
+}
+
+function parseBtcAmountToSats(amount: string): bigint | null {
+  if (amount === "max") return null;
+  if (!/^\d+(\.\d{1,8})?$/.test(amount)) {
+    throw new Error(
+      `Invalid BTC amount "${amount}" — expected a decimal with up to 8 fractional ` +
+        `digits (e.g. "0.001", "0.5") or "max" for the full balance minus fees.`,
+    );
+  }
+  const [whole, frac = ""] = amount.split(".");
+  const padded = frac.padEnd(BTC_DECIMALS, "0");
+  return BigInt(whole) * SATS_PER_BTC + BigInt(padded);
+}
+
+/** Dust threshold (sats) — same constant as the RBF builder. */
+const DUST_THRESHOLD_SATS = 546;
+
+/**
+ * Per-input vbyte estimate for a P2WSH `sortedmulti(M, ..., N)` spend.
+ *
+ * Witness stack: empty (CHECKMULTISIG off-by-one) + M sigs (~73B each)
+ * + the witness script (3 + 34*N bytes for sortedmulti). Witness data
+ * counts at 1/4 weight; non-witness is the standard 41 bytes (outpoint
+ * + sequence + empty scriptSig).
+ *
+ * vsize ≈ ceil((4 * 41 + (1 + 1 + M*(73+1) + 1 + (3 + 34*N)) ) / 4)
+ *      ≈ 41 + ceil((6 + 74*M + 34*N) / 4)
+ *
+ * Conservative-tight: rounds slightly up so the fee-cap stays
+ * conservative even when actual sigs are 71-72 bytes (typical) instead
+ * of 73 (worst case).
+ */
+function p2wshMultisigInputVbytes(threshold: number, totalSigners: number): number {
+  return 41 + Math.ceil((6 + 74 * threshold + 34 * totalSigners) / 4);
+}
+
+/** P2WSH output vbytes: 8 value + 1 len + 34 script = 43 bytes. */
+const P2WSH_OUTPUT_VBYTES = 43;
+
+/** Mainnet recipient output: covers P2WPKH (31) / P2WSH (43) / P2TR (43). Conservative pick. */
+const STANDARD_OUTPUT_VBYTES = 43;
+
+/** Tx overhead: 4 version + 4 locktime + 1 input-count + 1 output-count + 2 segwit marker/flag (×0.25 weight). */
+const TX_OVERHEAD_VBYTES = 11;
+
+function estimateMultisigTxVbytes(
+  inputCount: number,
+  outputCount: number,
+  wallet: PairedBitcoinMultisigWallet,
+): number {
+  return (
+    TX_OVERHEAD_VBYTES +
+    inputCount * p2wshMultisigInputVbytes(wallet.threshold, wallet.totalSigners) +
+    outputCount * STANDARD_OUTPUT_VBYTES
+  );
+}
+
+/**
+ * Greedy largest-first coin selection over multi-sig UTXOs. Returns
+ * the selected inputs + computed fee + change value. Refuses with a
+ * clear "insufficient funds" error when no subset covers
+ * `amountSats + fee`.
+ *
+ * We do NOT use the `coinselect` library here because its vbyte
+ * estimator is hardcoded for P2WPKH (~68 vbytes per input) and
+ * underestimates multi-sig by 2-3×. A custom estimator is small enough
+ * that re-implementing accumulative selection is simpler than trying
+ * to convince `coinselect` of the right per-input weight.
+ */
+function selectMultisigInputs(
+  utxos: MultisigUtxo[],
+  wallet: PairedBitcoinMultisigWallet,
+  recipientAmountSats: bigint,
+  feeRateSatPerVb: number,
+  hasChange: boolean,
+): {
+  selected: MultisigUtxo[];
+  feeSats: bigint;
+  changeSats: bigint;
+  vsize: number;
+} {
+  // Largest-first to minimize input count.
+  const sorted = [...utxos].sort((a, b) => b.value - a.value);
+  let totalIn = 0n;
+  const selected: MultisigUtxo[] = [];
+  for (const u of sorted) {
+    selected.push(u);
+    totalIn += BigInt(u.value);
+    const outputCount = hasChange ? 2 : 1;
+    const vsize = estimateMultisigTxVbytes(
+      selected.length,
+      outputCount,
+      wallet,
+    );
+    const feeSats = BigInt(Math.ceil(feeRateSatPerVb * vsize));
+    const need = recipientAmountSats + feeSats;
+    if (totalIn >= need) {
+      const changeSats = totalIn - need;
+      // If we asked for change but it would be dust, retry without change
+      // (the dust value is then added to the fee).
+      if (hasChange && changeSats < BigInt(DUST_THRESHOLD_SATS)) {
+        const noChangeVsize = estimateMultisigTxVbytes(
+          selected.length,
+          1,
+          wallet,
+        );
+        const noChangeFee = BigInt(Math.ceil(feeRateSatPerVb * noChangeVsize));
+        if (totalIn >= recipientAmountSats + noChangeFee) {
+          return {
+            selected,
+            feeSats: totalIn - recipientAmountSats,
+            changeSats: 0n,
+            vsize: noChangeVsize,
+          };
+        }
+        // Couldn't even afford no-change layout — keep accumulating.
+        continue;
+      }
+      return {
+        selected,
+        feeSats,
+        changeSats: hasChange ? changeSats : 0n,
+        vsize,
+      };
+    }
+  }
+  throw new Error(
+    `Insufficient funds: total UTXO value across all walked addresses cannot cover ` +
+      `${recipientAmountSats} sats + estimated fee at ${feeRateSatPerVb} sat/vB. ` +
+      `Add funds to the wallet or wait for more confirmations.`,
+  );
+}
+
+/**
+ * Find the lowest chain=1 (change) addressIndex that has NO on-chain
+ * history. Used as the change destination for a new send. We re-derive
+ * locally and call `getBalance` for each — same gap-limit walk as the
+ * balance reader, just stopping at the first empty.
+ */
+async function findUnusedChangeIndex(
+  wallet: PairedBitcoinMultisigWallet,
+): Promise<{ address: string; addressIndex: number }> {
+  const indexer = getBitcoinIndexer();
+  // Hard cap: don't walk past 1000 indices. If you have 1000 used
+  // change addresses on a multi-sig wallet, something pathological is
+  // going on.
+  for (let i = 0; i < 1000; i++) {
+    const info = deriveMultisigAddress(wallet, 1, i);
+    const bal = await indexer.getBalance(info.address);
+    if (
+      bal.txCount === 0 &&
+      bal.confirmedSats === 0n &&
+      bal.mempoolSats === 0n
+    ) {
+      return { address: info.address, addressIndex: i };
+    }
+  }
+  throw new Error(
+    `Could not find an unused chain=1 (change) address within the first 1000 indices ` +
+      `of "${wallet.name}". The wallet's change-chain history is implausibly long.`,
+  );
+}
+
+export interface PrepareBitcoinMultisigSendArgs {
+  walletName: string;
+  to: string;
+  amount: string; // decimal-BTC string ("0.001") or "max"
+  feeRateSatPerVb?: number;
+  allowHighFee?: boolean;
+}
+
+export interface PrepareBitcoinMultisigSendResult {
+  /** PSBT carrying our Ledger signature on every input. Share with cosigners → combine → finalize. */
+  partialPsbtBase64: string;
+  /** Number of signatures we just added (typically `inputCount × 1`). */
+  signaturesAdded: number;
+  /** Min signatures present across inputs after our addition. */
+  signaturesPresent: number;
+  /** Threshold M from the policy. */
+  signaturesNeeded: number;
+  /** True iff our sig completed the threshold on every input. */
+  fullySigned: boolean;
+  walletName: string;
+  /** Resolved recipient address (post address-book / ENS). */
+  to: string;
+  /** Total recipient value, sats. */
+  recipientSats: string;
+  /** Total recipient value, decimal-BTC string for display. */
+  recipientBtc: string;
+  /** Computed absolute fee, sats. */
+  feeSats: string;
+  /** Same fee as decimal-BTC string. */
+  feeBtc: string;
+  /** Fee rate used (sat/vB). */
+  feeRateSatPerVb: number;
+  /** Estimated tx vsize (vbytes). */
+  vsize: number;
+  /** Change address selected (chain=1, unused). Undefined when there's no change output. */
+  changeAddress?: string;
+  /** Change value (sats). 0 when there's no change output (dust-absorbed by fee). */
+  changeSats: string;
+  /** Rendered description for the verification block. */
+  description: string;
+}
+
+export async function prepareBitcoinMultisigSend(
+  args: PrepareBitcoinMultisigSendArgs,
+): Promise<PrepareBitcoinMultisigSendResult> {
+  // 1. Look up registered wallet.
+  const wallet = getPairedMultisigByName(args.walletName);
+  if (!wallet) {
+    const available = Array.from(multisigByName.keys());
+    throw new Error(
+      `No multi-sig wallet registered under name "${args.walletName}". ` +
+        (available.length > 0
+          ? `Registered: ${available.join(", ")}.`
+          : `Call \`register_btc_multisig_wallet\` first.`),
+    );
+  }
+  if (wallet.scriptType !== "wsh") {
+    throw new Error(
+      `prepare_btc_multisig_send: scriptType "${wallet.scriptType}" not supported in this ` +
+        `release — taproot lands in a follow-up PR.`,
+    );
+  }
+
+  // 2. Resolve recipient (address-book + ENS shim).
+  const { resolveRecipient } = await import("../../contacts/resolver.js");
+  const resolved = await resolveRecipient(args.to, "bitcoin");
+  const resolvedTo = resolved.address;
+
+  // 3. Resolve fee rate (default to indexer's halfHourFee, ~3-block target).
+  const indexer = getBitcoinIndexer();
+  let feeRate: number;
+  if (args.feeRateSatPerVb !== undefined) {
+    feeRate = args.feeRateSatPerVb;
+  } else {
+    const fees = await indexer.getFeeEstimates();
+    feeRate = fees.halfHourFee;
+  }
+  if (!Number.isFinite(feeRate) || feeRate <= 0 || feeRate > 10_000) {
+    throw new Error(
+      `Resolved fee rate ${feeRate} sat/vB is invalid (expected positive ≤ 10000).`,
+    );
+  }
+
+  // 4. Fetch UTXOs across the multi-sig wallet's gap-limit window.
+  const { utxos } = await getMultisigUtxos({ walletName: args.walletName });
+  if (utxos.length === 0) {
+    throw new Error(
+      `No UTXOs found in "${args.walletName}". Verify with \`get_btc_multisig_balance\` ` +
+        `and confirm at least one tx has confirmed.`,
+    );
+  }
+
+  // 5. Resolve "max" → fee-aware amount, else parse decimal-BTC → sats.
+  let amountSats: bigint;
+  if (args.amount === "max") {
+    const totalUtxoValue = utxos.reduce((sum, u) => sum + BigInt(u.value), 0n);
+    const maxVsize = estimateMultisigTxVbytes(utxos.length, 1, wallet);
+    const maxFee = BigInt(Math.ceil(feeRate * maxVsize));
+    if (totalUtxoValue <= maxFee) {
+      throw new Error(
+        `Cannot "max": total UTXO value ${satsToBtcString(totalUtxoValue)} BTC is at or ` +
+          `below the estimated fee ${satsToBtcString(maxFee)} BTC at ${feeRate} sat/vB. ` +
+          `Lower the feeRate or wait for more confirmations.`,
+      );
+    }
+    amountSats = totalUtxoValue - maxFee;
+  } else {
+    const parsed = parseBtcAmountToSats(args.amount);
+    if (parsed === null) {
+      throw new Error(`Internal: parseBtcAmountToSats null for ${args.amount}`);
+    }
+    amountSats = parsed;
+  }
+  if (amountSats <= 0n) {
+    throw new Error(`Resolved amount ${amountSats} sats is not positive.`);
+  }
+
+  // 6. Resolve unused change address (chain=1).
+  const change = await findUnusedChangeIndex(wallet);
+
+  // 7. Coin-select.
+  const isMax = args.amount === "max";
+  const selection = selectMultisigInputs(
+    utxos,
+    wallet,
+    amountSats,
+    feeRate,
+    !isMax, // "max" sweeps everything → no change.
+  );
+
+  // 8. Fee-cap guard — same shape as `selectInputs`'s cap.
+  if (!args.allowHighFee) {
+    const vbyteCap = Math.ceil(feeRate * 10 * selection.vsize);
+    const percentCap = Math.ceil(Number(amountSats) * 0.02);
+    const cap = Math.max(vbyteCap, percentCap);
+    if (selection.feeSats > BigInt(cap)) {
+      throw new Error(
+        `Fee ${selection.feeSats} sats exceeds safety cap ${cap} sats ` +
+          `(max of 10× feeRate-based ${vbyteCap} and 2%-of-output ${percentCap}). ` +
+          `If intentional (priority send through congestion), retry with allowHighFee: true.`,
+      );
+    }
+  }
+
+  // 9. Fetch prev-tx hex for every UNIQUE input txid (Ledger app 2.x
+  //    requirement — issue #213).
+  const uniqueTxids = [...new Set(selection.selected.map((u) => u.txid))];
+  const prevTxHexEntries = await Promise.all(
+    uniqueTxids.map(async (txid) => [txid, await indexer.getTxHex(txid)] as const),
+  );
+  const prevTxHexByTxid = new Map(prevTxHexEntries);
+
+  // 10. Build PSBT. Each input carries witnessUtxo + nonWitnessUtxo +
+  //     witnessScript + bip32_derivation for ALL cosigners (so each
+  //     cosigner's wallet can find its own derivation path on signing).
+  const psbt = new bitcoinjs.Psbt({ network: NETWORK });
+  for (const utxo of selection.selected) {
+    const prevTxHex = prevTxHexByTxid.get(utxo.txid);
+    if (!prevTxHex) {
+      throw new Error(
+        `Internal: prev-tx hex missing for ${utxo.txid} after fan-out fetch.`,
+      );
+    }
+    const bip32Derivation = wallet.cosigners.map((c, idx) => ({
+      masterFingerprint: Buffer.from(c.masterFingerprint, "hex"),
+      pubkey: utxo.cosignerPubkeys[idx],
+      // Full path including the leaf — the Ledger app requires the
+      // leading `m/` and the per-cosigner derivationPath, then the
+      // /<chain>/<index> tail at this UTXO's leaf.
+      path: `m/${c.derivationPath}/${utxo.chain}/${utxo.addressIndex}`,
+    }));
+    psbt.addInput({
+      hash: utxo.txid,
+      index: utxo.vout,
+      sequence: 0xfffffffd, // RBF-eligible.
+      witnessUtxo: { script: utxo.scriptPubKey, value: utxo.value },
+      nonWitnessUtxo: Buffer.from(prevTxHex, "hex"),
+      witnessScript: utxo.witnessScript,
+      bip32Derivation,
+    });
+  }
+  // Recipient output.
+  psbt.addOutput({
+    script: bitcoinjs.address.toOutputScript(resolvedTo, NETWORK),
+    value: Number(amountSats),
+  });
+  // Change output (when present).
+  if (selection.changeSats > 0n) {
+    psbt.addOutput({
+      script: bitcoinjs.address.toOutputScript(change.address, NETWORK),
+      value: Number(selection.changeSats),
+    });
+  }
+  const psbtBase64 = psbt.toBase64();
+
+  // 11. Sign with our Ledger via the existing co-signer flow. This
+  //     does the device touch + splice in one place.
+  const signed = await signBitcoinMultisigPsbt({
+    walletName: args.walletName,
+    psbtBase64,
+  });
+
+  const recipientDisplay = resolved.label
+    ? `${resolved.label} (${resolvedTo})`
+    : resolvedTo;
+  const description =
+    `Multi-sig send from "${args.walletName}" (${wallet.threshold}-of-${wallet.totalSigners} ` +
+    `${wallet.scriptType}): ${satsToBtcString(amountSats)} BTC → ${recipientDisplay}. ` +
+    `Our signature added: ${signed.signaturesPresent}/${signed.signaturesNeeded} present.`;
+
+  return {
+    partialPsbtBase64: signed.partialPsbtBase64,
+    signaturesAdded: signed.signaturesAdded,
+    signaturesPresent: signed.signaturesPresent,
+    signaturesNeeded: signed.signaturesNeeded,
+    fullySigned: signed.fullySigned,
+    walletName: args.walletName,
+    to: resolvedTo,
+    recipientSats: amountSats.toString(),
+    recipientBtc: satsToBtcString(amountSats),
+    feeSats: selection.feeSats.toString(),
+    feeBtc: satsToBtcString(selection.feeSats),
+    feeRateSatPerVb: feeRate,
+    vsize: selection.vsize,
+    ...(selection.changeSats > 0n ? { changeAddress: change.address } : {}),
+    changeSats: selection.changeSats.toString(),
+    description,
+  };
 }

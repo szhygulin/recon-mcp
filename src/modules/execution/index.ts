@@ -178,6 +178,8 @@ import type {
   FinalizeBitcoinPsbtArgs,
   GetBitcoinMultisigBalanceArgs,
   GetBitcoinMultisigUtxosArgs,
+  PrepareBitcoinMultisigSendArgs,
+  UnregisterBitcoinMultisigWalletArgs,
   SignBtcMessageArgs,
   PairLedgerLitecoinArgs,
   GetLitecoinBalanceArgs,
@@ -1298,6 +1300,32 @@ export async function getBtcMultisigUtxos(args: GetBitcoinMultisigUtxosArgs) {
     walletName: args.walletName,
     ...(args.gapLimit !== undefined ? { gapLimit: args.gapLimit } : {}),
   });
+}
+
+export async function prepareBtcMultisigSend(
+  args: PrepareBitcoinMultisigSendArgs,
+) {
+  const { prepareBitcoinMultisigSend } = await import("../btc/multisig.js");
+  return prepareBitcoinMultisigSend({
+    walletName: args.walletName,
+    to: args.to,
+    amount: args.amount,
+    ...(args.feeRateSatPerVb !== undefined
+      ? { feeRateSatPerVb: args.feeRateSatPerVb }
+      : {}),
+    ...(args.allowHighFee !== undefined
+      ? { allowHighFee: args.allowHighFee }
+      : {}),
+  });
+}
+
+export async function unregisterBtcMultisigWallet(
+  args: UnregisterBitcoinMultisigWalletArgs,
+) {
+  const { unregisterBitcoinMultisigWallet } = await import(
+    "../btc/multisig.js"
+  );
+  return unregisterBitcoinMultisigWallet({ walletName: args.walletName });
 }
 
 /**

@@ -155,9 +155,11 @@ import {
   prepareBitcoinNativeSend,
   prepareBitcoinRbfBump,
   registerBtcMultisigWallet,
+  unregisterBtcMultisigWallet,
   signBtcMultisigPsbt,
   combineBtcPsbts,
   finalizeBtcPsbt,
+  prepareBtcMultisigSend,
   getBtcMultisigBalance,
   getBtcMultisigUtxos,
   signBtcMessage,
@@ -244,9 +246,11 @@ import {
   prepareBitcoinNativeSendInput,
   prepareBitcoinRbfBumpInput,
   registerBitcoinMultisigWalletInput,
+  unregisterBitcoinMultisigWalletInput,
   signBitcoinMultisigPsbtInput,
   combineBitcoinPsbtsInput,
   finalizeBitcoinPsbtInput,
+  prepareBitcoinMultisigSendInput,
   getBitcoinMultisigBalanceInput,
   getBitcoinMultisigUtxosInput,
   signBtcMessageInput,
@@ -2589,6 +2593,51 @@ async function main() {
       inputSchema: getBitcoinMultisigUtxosInput.shape,
     },
     handler(getBtcMultisigUtxos, { toolName: "get_btc_multisig_utxos" })
+  );
+
+  registerTool(server,
+    "prepare_btc_multisig_send",
+    {
+      description:
+        "Initiator flow — build a tx FROM a registered multi-sig wallet, sign it " +
+        "with our Ledger key in the same call, return the partial PSBT for " +
+        "cosigners to sign. Pipeline: " +
+        "(1) fetch UTXOs across the wallet's gap-limit window, " +
+        "(2) coin-select with a multi-sig-aware vbyte estimator (P2WSH " +
+        "`sortedmulti(M,...,N)` inputs are ~2-4× P2WPKH), " +
+        "(3) resolve a fresh chain=1 change address (lowest unused index), " +
+        "(4) build PSBT v0 with witnessUtxo + nonWitnessUtxo (Ledger app 2.x " +
+        "requirement) + witnessScript + bip32_derivation for ALL cosigners, " +
+        "(5) sign with our Ledger via the existing co-signer flow (the device " +
+        "walks every output address + amount on-screen), " +
+        "(6) splice our signature into the PSBT, return the partial PSBT. " +
+        "We do NOT finalize or broadcast — the caller gathers remaining " +
+        "signatures externally, then runs `combine_btc_psbts` + " +
+        "`finalize_btc_psbt`. The fee-cap guard scales to multi-sig sizes " +
+        "automatically. Phase 3 supports `wsh` (P2WSH) wallets only; taproot " +
+        "lands in a follow-up PR.",
+      inputSchema: prepareBitcoinMultisigSendInput.shape,
+    },
+    handler(prepareBtcMultisigSend, { toolName: "prepare_btc_multisig_send" })
+  );
+
+  registerTool(server,
+    "unregister_btc_multisig_wallet",
+    {
+      description:
+        "Drop a registered multi-sig wallet from the local cache. The Ledger " +
+        "device retains the policy HMAC indefinitely (no on-device unregister " +
+        "API), so re-registering with the SAME descriptor + cosigners returns " +
+        "the same HMAC the device already has. This tool only forgets the " +
+        "local-disk entry — call it before re-registering with different " +
+        "cosigners under the same name, or to clean up wallets you no longer " +
+        "use. Idempotent: returns `removed: false` when the name isn't " +
+        "registered. No device touch.",
+      inputSchema: unregisterBitcoinMultisigWalletInput.shape,
+    },
+    handler(unregisterBtcMultisigWallet, {
+      toolName: "unregister_btc_multisig_wallet",
+    })
   );
 
   registerTool(server,

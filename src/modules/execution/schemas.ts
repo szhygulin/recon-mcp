@@ -1454,6 +1454,60 @@ export const finalizeBitcoinPsbtInput = z.object({
     ),
 });
 
+export const prepareBitcoinMultisigSendInput = z.object({
+  walletName: z
+    .string()
+    .min(1)
+    .max(16)
+    .describe(
+      "Name of a registered multi-sig wallet (matches `register_btc_multisig_wallet`)."
+    ),
+  to: bitcoinAddressSchema.describe(
+    "Recipient address. Any of the four mainnet types is accepted as a destination."
+  ),
+  amount: z
+    .string()
+    .max(50)
+    .regex(/^(max|\d+(\.\d{1,8})?)$/)
+    .describe(
+      'Decimal BTC string (up to 8 fractional digits, e.g. "0.001") or "max" to ' +
+        "sweep every UTXO across the wallet's gap-limit window. \"max\" picks the " +
+        "fee-aware amount after coin-selection so the user doesn't have to subtract " +
+        "fees by hand."
+    ),
+  feeRateSatPerVb: z
+    .number()
+    .positive()
+    .max(10000)
+    .optional()
+    .describe(
+      "Fee rate in sat/vB. Optional — defaults to mempool.space's `halfHourFee` " +
+        "(~3-block target). Multi-sig txs are inherently larger than P2WPKH, so the " +
+        "absolute fee at the same sat/vB will be ~2-4× a single-sig send."
+    ),
+  allowHighFee: z
+    .boolean()
+    .optional()
+    .describe(
+      "Override the fee-cap guard. The cap is `max(10 × feeRate × vbytes, 2% of " +
+        "recipient value)` and uses the multi-sig vsize estimator."
+    ),
+});
+
+export const unregisterBitcoinMultisigWalletInput = z.object({
+  walletName: z
+    .string()
+    .min(1)
+    .max(16)
+    .describe(
+      "Name of the wallet to drop from the local cache. Idempotent — succeeds with " +
+        "`removed: false` when the name isn't registered. The Ledger device retains " +
+        "the policy HMAC indefinitely (no on-device unregister API), so re-registering " +
+        "the same descriptor returns the same HMAC; this tool only forgets the local " +
+        "entry."
+    ),
+});
+
 export const getBitcoinMultisigBalanceInput = z.object({
   walletName: z
     .string()
@@ -1551,6 +1605,10 @@ export type CombineBitcoinPsbtsArgs = z.infer<typeof combineBitcoinPsbtsInput>;
 export type FinalizeBitcoinPsbtArgs = z.infer<typeof finalizeBitcoinPsbtInput>;
 export type GetBitcoinMultisigBalanceArgs = z.infer<typeof getBitcoinMultisigBalanceInput>;
 export type GetBitcoinMultisigUtxosArgs = z.infer<typeof getBitcoinMultisigUtxosInput>;
+export type PrepareBitcoinMultisigSendArgs = z.infer<typeof prepareBitcoinMultisigSendInput>;
+export type UnregisterBitcoinMultisigWalletArgs = z.infer<
+  typeof unregisterBitcoinMultisigWalletInput
+>;
 export type PrepareBitcoinRbfBumpArgs = z.infer<typeof prepareBitcoinRbfBumpInput>;
 export type SignBtcMessageArgs = z.infer<typeof signBtcMessageInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
