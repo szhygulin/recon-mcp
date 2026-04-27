@@ -31,6 +31,7 @@ import {
   clearLiveWallet,
   type LiveWalletState,
 } from "./live-mode.js";
+import { PERSONAS, type Persona } from "./personas.js";
 
 /**
  * True when `VAULTPILOT_DEMO=true` is set in the environment. Read at
@@ -39,6 +40,122 @@ import {
  */
 export function isDemoMode(): boolean {
   return process.env.VAULTPILOT_DEMO === "true";
+}
+
+/**
+ * Three-state classifier for the VAULTPILOT_DEMO env var (issue #392).
+ *
+ * The strict literal `=== "true"` gate is intentional — boot-time env
+ * vars are the only safe place to flip demo mode (an in-session prompt
+ * injection can't mutate them), and a sloppy truthy parse would expand
+ * the surface for accidentally-on demo. The cost of strictness is that
+ * `VAULTPILOT_DEMO=1` silently behaves as "unset", which sent users
+ * down the wrong debugging path: they'd re-edit the MCP client config
+ * to ADD the var when it was already present with a wrong value.
+ *
+ * Splitting "unset" from "invalid" lets `get_demo_wallet`'s message
+ * tell the user which mistake they made.
+ */
+export type DemoModeEnvState = "enabled" | "invalid" | "unset";
+
+export function getDemoModeEnvState(): DemoModeEnvState {
+  const value = process.env.VAULTPILOT_DEMO;
+  if (value === undefined) return "unset";
+  if (value === "true") return "enabled";
+  return "invalid";
+}
+
+/**
+ * Sanitize the env-var value for echo-back in the `get_demo_wallet`
+ * response. Caps at 32 chars and replaces ASCII control characters
+ * with `?`. The env var is arbitrary user-supplied input — an attacker
+ * who can set the environment can already do worse, but the JSON
+ * response shouldn't relay control bytes downstream where some logger
+ * or chat renderer might mis-interpret them.
+ */
+export function redactInvalidDemoEnvValue(raw: string): string {
+  // eslint-disable-next-line no-control-regex
+  const stripped = raw.replace(/[\x00-\x1F\x7F]/g, "?");
+  if (stripped.length <= 32) return stripped;
+  return stripped.slice(0, 29) + "...";
+}
+
+interface PersonaSummary {
+  id: Persona["id"];
+  description: Persona["description"];
+  addresses: Persona["addresses"];
+}
+
+/**
+ * Build the `get_demo_wallet` response. Pure function (no I/O beyond
+ * reading env + the in-process live-wallet state) so it's directly
+ * unit-testable and the registered handler in `src/index.ts` stays a
+ * one-liner.
+ *
+ * Issue #392 contract: personas are ALWAYS returned (regardless of
+ * env state) so an agent can offer the user a choice without first
+ * asking them to set an env var blind. When demo isn't active, the
+ * message tells the user which mistake they made (env unset vs. set
+ * to something other than the literal `"true"`).
+ */
+export type GetDemoWalletResponse =
+  | {
+      demoActive: true;
+      mode: "default" | "live";
+      envState: "enabled";
+      active: LiveWalletState | null;
+      personas: PersonaSummary[];
+    }
+  | {
+      demoActive: false;
+      mode: null;
+      envState: "unset" | "invalid";
+      message: string;
+      personas: PersonaSummary[];
+    };
+
+export function buildGetDemoWalletResponse(): GetDemoWalletResponse {
+  const personas: PersonaSummary[] = Object.values(PERSONAS).map((p) => ({
+    id: p.id,
+    description: p.description,
+    addresses: p.addresses,
+  }));
+  const envState = getDemoModeEnvState();
+  if (envState === "enabled") {
+    const live = getLiveWallet();
+    return {
+      demoActive: true,
+      mode: live === null ? "default" : "live",
+      envState,
+      active: live,
+      personas,
+    };
+  }
+  let message: string;
+  if (envState === "unset") {
+    message =
+      "VAULTPILOT_DEMO is unset — server is in normal mode. The personas " +
+      "below are listed for discovery so you can offer the user a choice. " +
+      "To activate demo mode, set `VAULTPILOT_DEMO=true` (exact literal, " +
+      "lowercase) in the MCP client config (e.g. `.claude.json`'s `env` " +
+      "block for this server) and restart Claude Code.";
+  } else {
+    const raw = process.env.VAULTPILOT_DEMO ?? "";
+    const safe = redactInvalidDemoEnvValue(raw);
+    message =
+      `VAULTPILOT_DEMO is set to '${safe}' but the server expects the ` +
+      `exact literal 'true' — server is in normal mode. The personas ` +
+      `below are listed for discovery. Common confusion: '1', 'yes', ` +
+      `'on', 'TRUE' are all rejected; only lowercase 'true' enables ` +
+      `demo. Fix the value in the MCP client config and restart.`;
+  }
+  return {
+    demoActive: false,
+    mode: null,
+    envState,
+    message,
+    personas,
+  };
 }
 
 /**

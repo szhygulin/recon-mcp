@@ -324,3 +324,162 @@ describe("assertNotDemoForSetup — refuses to write real config in demo mode", 
     expect(() => assertNotDemoForSetup()).not.toThrow();
   });
 });
+
+describe("issue #392 — getDemoModeEnvState distinguishes unset / invalid / enabled", () => {
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env[ENV_KEY];
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = saved;
+  });
+
+  it("returns 'unset' when the env var is absent", async () => {
+    const { getDemoModeEnvState } = await import("../src/demo/index.js");
+    delete process.env[ENV_KEY];
+    expect(getDemoModeEnvState()).toBe("unset");
+  });
+
+  it("returns 'enabled' only on the exact literal 'true'", async () => {
+    const { getDemoModeEnvState } = await import("../src/demo/index.js");
+    process.env[ENV_KEY] = "true";
+    expect(getDemoModeEnvState()).toBe("enabled");
+  });
+
+  it("returns 'invalid' for any other value (including common truthy mistakes)", async () => {
+    const { getDemoModeEnvState } = await import("../src/demo/index.js");
+    for (const v of ["1", "yes", "on", "TRUE", "True", "false", " true", "true "]) {
+      process.env[ENV_KEY] = v;
+      expect(getDemoModeEnvState(), `value ${JSON.stringify(v)}`).toBe("invalid");
+    }
+  });
+
+  it("returns 'invalid' for the empty string (set, but empty)", async () => {
+    const { getDemoModeEnvState } = await import("../src/demo/index.js");
+    process.env[ENV_KEY] = "";
+    expect(getDemoModeEnvState()).toBe("invalid");
+  });
+});
+
+describe("issue #392 — redactInvalidDemoEnvValue caps length and strips control chars", () => {
+  it("passes short, printable values through unchanged", async () => {
+    const { redactInvalidDemoEnvValue } = await import("../src/demo/index.js");
+    expect(redactInvalidDemoEnvValue("1")).toBe("1");
+    expect(redactInvalidDemoEnvValue("yes")).toBe("yes");
+    expect(redactInvalidDemoEnvValue("TRUE")).toBe("TRUE");
+  });
+
+  it("truncates values longer than 32 chars with an ellipsis", async () => {
+    const { redactInvalidDemoEnvValue } = await import("../src/demo/index.js");
+    const long = "a".repeat(100);
+    const out = redactInvalidDemoEnvValue(long);
+    expect(out.length).toBe(32);
+    expect(out.endsWith("...")).toBe(true);
+  });
+
+  it("replaces ASCII control characters with '?'", async () => {
+    const { redactInvalidDemoEnvValue } = await import("../src/demo/index.js");
+    expect(redactInvalidDemoEnvValue("a\x00b\x1fc\x7fd")).toBe("a?b?c?d");
+    // Newline + tab also replaced (they would corrupt the JSON-string layout
+    // when relayed to a chat renderer).
+    expect(redactInvalidDemoEnvValue("a\nb\tc")).toBe("a?b?c");
+  });
+});
+
+describe("issue #392 — buildGetDemoWalletResponse always lists personas", () => {
+  let saved: string | undefined;
+  beforeEach(async () => {
+    saved = process.env[ENV_KEY];
+    const { _resetLiveWalletForTests } = await import("../src/demo/live-mode.js");
+    _resetLiveWalletForTests();
+  });
+  afterEach(async () => {
+    if (saved === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = saved;
+    const { _resetLiveWalletForTests } = await import("../src/demo/live-mode.js");
+    _resetLiveWalletForTests();
+  });
+
+  it("returns the four personas regardless of env state (the core #392 fix)", async () => {
+    const { buildGetDemoWalletResponse } = await import("../src/demo/index.js");
+    for (const v of [undefined, "1", "true", "yes"]) {
+      if (v === undefined) delete process.env[ENV_KEY];
+      else process.env[ENV_KEY] = v;
+      const r = buildGetDemoWalletResponse();
+      const ids = r.personas.map((p) => p.id).sort();
+      expect(ids, `personas with VAULTPILOT_DEMO=${JSON.stringify(v)}`).toEqual(
+        ["defi-power-user", "stable-saver", "staking-maxi", "whale"].sort(),
+      );
+    }
+  });
+
+  it("when env is unset: demoActive=false, envState='unset', message names the literal", async () => {
+    const { buildGetDemoWalletResponse } = await import("../src/demo/index.js");
+    delete process.env[ENV_KEY];
+    const r = buildGetDemoWalletResponse();
+    expect(r.demoActive).toBe(false);
+    expect(r.envState).toBe("unset");
+    expect(r.mode).toBeNull();
+    if (!r.demoActive) {
+      expect(r.message).toContain("VAULTPILOT_DEMO is unset");
+      expect(r.message).toContain("VAULTPILOT_DEMO=true");
+    }
+  });
+
+  it("when env is invalid: message echoes the (sanitized) value and explains the strict literal", async () => {
+    const { buildGetDemoWalletResponse } = await import("../src/demo/index.js");
+    process.env[ENV_KEY] = "1";
+    const r = buildGetDemoWalletResponse();
+    expect(r.demoActive).toBe(false);
+    expect(r.envState).toBe("invalid");
+    if (!r.demoActive) {
+      expect(r.message).toContain("set to '1'");
+      expect(r.message).toContain("expects the exact literal 'true'");
+      // The most common mistakes are called out so the user (and agent)
+      // doesn't burn a debugging cycle on truthy-parse assumptions.
+      expect(r.message).toMatch(/'1'.*'yes'.*'on'.*'TRUE'|'TRUE'.*'on'.*'yes'.*'1'/);
+    }
+  });
+
+  it("redacts an attacker-shaped invalid value before echoing it back", async () => {
+    const { buildGetDemoWalletResponse } = await import("../src/demo/index.js");
+    process.env[ENV_KEY] = "x".repeat(200) + "\n\x00";
+    const r = buildGetDemoWalletResponse();
+    expect(r.demoActive).toBe(false);
+    if (!r.demoActive) {
+      // No raw newline / NUL leaks into the response.
+      expect(r.message).not.toMatch(/[\n\x00]/);
+      // The displayed value is bounded.
+      const m = r.message.match(/set to '([^']*)'/);
+      expect(m).not.toBeNull();
+      expect(m![1].length).toBeLessThanOrEqual(32);
+    }
+  });
+
+  it("when env is enabled and no live wallet: demoActive=true, mode='default', active=null", async () => {
+    const { buildGetDemoWalletResponse } = await import("../src/demo/index.js");
+    process.env[ENV_KEY] = "true";
+    const r = buildGetDemoWalletResponse();
+    expect(r.demoActive).toBe(true);
+    expect(r.envState).toBe("enabled");
+    if (r.demoActive) {
+      expect(r.mode).toBe("default");
+      expect(r.active).toBeNull();
+    }
+  });
+
+  it("when env is enabled and a persona is active: demoActive=true, mode='live', active populated", async () => {
+    const { buildGetDemoWalletResponse, setLivePersona } = await import(
+      "../src/demo/index.js"
+    );
+    process.env[ENV_KEY] = "true";
+    setLivePersona("defi-power-user");
+    const r = buildGetDemoWalletResponse();
+    expect(r.demoActive).toBe(true);
+    if (r.demoActive) {
+      expect(r.mode).toBe("live");
+      expect(r.active?.personaId).toBe("defi-power-user");
+    }
+  });
+});

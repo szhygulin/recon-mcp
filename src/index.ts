@@ -14,6 +14,7 @@ import {
   alwaysGatedRefusalMessage,
   defaultModeRefusalMessage,
   buildSimulationEnvelope,
+  buildGetDemoWalletResponse,
   isLiveMode,
   getLiveWallet,
   setLivePersona,
@@ -4051,34 +4052,19 @@ async function main() {
     "get_demo_wallet",
     {
       description:
-        "DEMO MODE ONLY — report the active demo wallet (live mode) or confirm default mode " +
-        "(no wallet set). Also enumerates the available personas + their addresses + " +
-        "descriptions, so the agent can offer the user a choice without hardcoding the list. " +
-        "When VAULTPILOT_DEMO is unset, returns `{ demoActive: false }` — the tool stays " +
-        "registered so agents can always discover the surface.",
+        "Report the active demo wallet (live mode), confirm default demo mode (no wallet " +
+        "set), or report why demo mode isn't active when the env var is missing or " +
+        "misconfigured. ALWAYS enumerates the available personas + their addresses + " +
+        "descriptions regardless of VAULTPILOT_DEMO state, so the agent can offer the " +
+        "user a choice without hardcoding the list (issue #392). " +
+        "RESPONSE: `{ demoActive, mode, envState: 'enabled' | 'unset' | 'invalid', " +
+        "personas, [active], [message] }`. When envState is 'unset' or 'invalid' the " +
+        "`message` field tells the user how to fix it (set `VAULTPILOT_DEMO=true` exact " +
+        "literal, lowercase). When envState is 'enabled', `active` carries the current " +
+        "live wallet (or null in default demo mode).",
       inputSchema: getDemoWalletInput.shape,
     },
-    handler(() => {
-      if (!isDemoMode()) {
-        return {
-          demoActive: false,
-          mode: null,
-          message: "VAULTPILOT_DEMO is unset — the server is in normal mode.",
-          personas: [],
-        };
-      }
-      const live = getLiveWallet();
-      return {
-        demoActive: true,
-        mode: live === null ? "default" : "live",
-        active: live,
-        personas: Object.values(PERSONAS).map((p) => ({
-          id: p.id,
-          description: p.description,
-          addresses: p.addresses,
-        })),
-      };
-    })
+    handler(() => buildGetDemoWalletResponse())
   );
 
   // ---- Module 9c: Runtime Solana RPC override (Helius nudge — issue #371 follow-up) ----
