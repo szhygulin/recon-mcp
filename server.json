@@ -3,7 +3,7 @@
   "name": "io.github.szhygulin/vaultpilot-mcp",
   "title": "VaultPilot MCP",
   "description": "Self-custodial crypto + DeFi MCP for AI agents. Ledger-signed. EVM, TRON, Solana, BTC, LTC.",
-  "version": "0.9.5",
+  "version": "0.10.0",
   "websiteUrl": "https://github.com/szhygulin/vaultpilot-mcp",
   "repository": {
     "url": "https://github.com/szhygulin/vaultpilot-mcp",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "vaultpilot-mcp",
-      "version": "0.9.5",
+      "version": "0.10.0",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {
@@ -70,6 +70,12 @@
           "description": "WalletConnect Cloud project ID. Required for Ledger Live signing via WalletConnect.",
           "isRequired": false,
           "isSecret": true
+        },
+        {
+          "name": "VAULTPILOT_DEMO",
+          "description": "Set to 'true' to enable demo mode — no Ledger required, real chain RPC reads, signing-class tools either refuse or return simulated-broadcast envelopes. See `set_demo_wallet` and `exit_demo_mode` tools for the full demo flow.",
+          "isRequired": false,
+          "isSecret": false
         }
       ]
     }
