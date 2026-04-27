@@ -15,6 +15,7 @@ import {
   probeForLateBroadcast,
   consumedUnmatchedMessage,
   noBroadcastConfirmedMessage,
+  ambiguousNonceDisagreementMessage,
 } from "../src/signing/walletconnect.js";
 
 const FROM = "0x1111111111111111111111111111111111111111" as const;
@@ -229,8 +230,125 @@ describe("probeForLateBroadcast", () => {
   });
 });
 
-describe("noBroadcastConfirmedMessage — issue #232 wording lock", () => {
-  it("tells the agent it's safe to retry the same handle", async () => {
+describe("probeForLateBroadcast — issue #326 multi-source nonce cross-check", () => {
+  it("when local says no_broadcast AND etherscan agrees → no_broadcast (with cross-check value surfaced)", async () => {
+    const client = {
+      getTransactionCount: async () => SAMPLE_TX_FIELDS.nonce,
+      getBlockNumber: async () => {
+        throw new Error("must not be called when pending=pinned");
+      },
+      getBlock: async () => {
+        throw new Error("must not be called when pending=pinned");
+      },
+    };
+    const result = await probeForLateBroadcast({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      client: client as any,
+      from: FROM,
+      pinnedNonce: SAMPLE_TX_FIELDS.nonce,
+      expectedPreSignHash: preSignHashOf(SAMPLE_TX_FIELDS),
+      chainId: CHAIN_ID,
+      etherscanPendingNonceProbe: async () => SAMPLE_TX_FIELDS.nonce,
+    });
+    expect(result.status).toBe("no_broadcast");
+    if (result.status === "no_broadcast") {
+      expect(result.pendingNonce).toBe(SAMPLE_TX_FIELDS.nonce);
+      expect(result.etherscanPendingNonce).toBe(SAMPLE_TX_FIELDS.nonce);
+    }
+  });
+
+  it("when local says no_broadcast BUT etherscan reports pending > pinned → ambiguous_nonce_disagreement", async () => {
+    // Canonical issue #326 scenario: Ledger Live broadcast through its
+    // own RPC, Etherscan's mempool indexer saw it, our local node
+    // hasn't caught up yet. Retrying queues the duplicate-prompt.
+    const client = {
+      getTransactionCount: async () => SAMPLE_TX_FIELDS.nonce,
+      getBlockNumber: async () => {
+        throw new Error("must not be called on disagreement (no walk needed)");
+      },
+      getBlock: async () => {
+        throw new Error("must not be called on disagreement");
+      },
+    };
+    const result = await probeForLateBroadcast({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      client: client as any,
+      from: FROM,
+      pinnedNonce: SAMPLE_TX_FIELDS.nonce,
+      expectedPreSignHash: preSignHashOf(SAMPLE_TX_FIELDS),
+      chainId: CHAIN_ID,
+      etherscanPendingNonceProbe: async () => SAMPLE_TX_FIELDS.nonce + 1,
+    });
+    expect(result.status).toBe("ambiguous_nonce_disagreement");
+    if (result.status === "ambiguous_nonce_disagreement") {
+      expect(result.localPendingNonce).toBe(SAMPLE_TX_FIELDS.nonce);
+      expect(result.etherscanPendingNonce).toBe(SAMPLE_TX_FIELDS.nonce + 1);
+    }
+  });
+
+  it("when local says no_broadcast and etherscan probe THROWS → falls back to no_broadcast (no regression for users without API key)", async () => {
+    // Defense in depth — a failed cross-check (no API key, rate limit,
+    // network blip) must not turn a benign no_broadcast into a scary
+    // ambiguous error. Users without an Etherscan key get the
+    // pre-issue-326 single-source behavior unchanged.
+    const client = {
+      getTransactionCount: async () => SAMPLE_TX_FIELDS.nonce,
+      getBlockNumber: async () => {
+        throw new Error("must not be called");
+      },
+      getBlock: async () => {
+        throw new Error("must not be called");
+      },
+    };
+    const result = await probeForLateBroadcast({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      client: client as any,
+      from: FROM,
+      pinnedNonce: SAMPLE_TX_FIELDS.nonce,
+      expectedPreSignHash: preSignHashOf(SAMPLE_TX_FIELDS),
+      chainId: CHAIN_ID,
+      etherscanPendingNonceProbe: async () => {
+        throw new Error("ETHERSCAN_API_KEY is not set");
+      },
+    });
+    expect(result.status).toBe("no_broadcast");
+    if (result.status === "no_broadcast") {
+      expect(result.pendingNonce).toBe(SAMPLE_TX_FIELDS.nonce);
+      expect(result.etherscanPendingNonce).toBeUndefined();
+    }
+  });
+
+  it("when local says pending > pinned, the etherscan probe is NOT called (slot already consumed locally)", async () => {
+    // Optimization regression guard: when the local RPC already saw
+    // the slot consumed, the cross-check has no value — we proceed
+    // straight to the matched/consumed_unmatched walk.
+    const expectedHash = ("0xcee2a965b8e35a85dbce7b7389bc5ea2ffb1846c8abdaea676ee709d9d0f0165" as const);
+    const tx = eip1559TxOnBlock(SAMPLE_TX_FIELDS, { hash: expectedHash });
+    let etherscanCalls = 0;
+    const client = {
+      getTransactionCount: async () => SAMPLE_TX_FIELDS.nonce + 1,
+      getBlockNumber: async () => 24_961_480n,
+      getBlock: async () => ({ number: 24_961_480n, transactions: [tx] }),
+    };
+    const result = await probeForLateBroadcast({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      client: client as any,
+      from: FROM,
+      pinnedNonce: SAMPLE_TX_FIELDS.nonce,
+      expectedPreSignHash: preSignHashOf(SAMPLE_TX_FIELDS),
+      chainId: CHAIN_ID,
+      etherscanPendingNonceProbe: async () => {
+        etherscanCalls++;
+        return SAMPLE_TX_FIELDS.nonce + 1;
+      },
+    });
+    expect(result.status).toBe("matched");
+    expect(etherscanCalls).toBe(0);
+  });
+});
+
+describe("noBroadcastConfirmedMessage — wording lock", () => {
+  it("tells the agent it's safe to retry the same handle (issue #232 baseline)", async () => {
     const msg = noBroadcastConfirmedMessage({
       from: FROM,
       pinnedNonce: 273,
@@ -242,7 +360,60 @@ describe("noBroadcastConfirmedMessage — issue #232 wording lock", () => {
     expect(msg).toContain("SAME handle");
     expect(msg).toContain(FROM);
     expect(msg).toContain("273");
-    expect(msg).toContain("Issue #232");
+    expect(msg).toContain("Issue");
+  });
+
+  it("issue #326: includes the duplicate-prompt warning the agent must relay to the user on retry", async () => {
+    // Even when retry IS safe (per the cross-check), the user should
+    // know that if the WC subapp had silently completed signing in
+    // the background, retrying CAN still queue a duplicate prompt.
+    // Reject the duplicate; original tx lands normally.
+    const msg = noBroadcastConfirmedMessage({
+      from: FROM,
+      pinnedNonce: 273,
+      chainId: 1,
+      timeoutSeconds: 120,
+    });
+    expect(msg).toMatch(/REJECT the duplicate prompt/i);
+    expect(msg).toMatch(/original tx will land normally/i);
+    expect(msg).toContain("#326");
+  });
+
+  it("when etherscan cross-check ran and agreed, surfaces the second-source value", async () => {
+    const msg = noBroadcastConfirmedMessage({
+      from: FROM,
+      pinnedNonce: 273,
+      chainId: 1,
+      timeoutSeconds: 120,
+      etherscanPendingNonce: 273,
+    });
+    expect(msg).toMatch(/Etherscan/);
+    expect(msg).toMatch(/two sources agree/i);
+  });
+});
+
+describe("ambiguousNonceDisagreementMessage — issue #326 wording lock", () => {
+  it("tells the agent NOT to retry and explains the duplicate-prompt risk", async () => {
+    const msg = ambiguousNonceDisagreementMessage({
+      from: FROM,
+      pinnedNonce: 278,
+      localPendingNonce: 278,
+      etherscanPendingNonce: 279,
+      chainId: 1,
+      timeoutSeconds: 120,
+    });
+    expect(msg).toMatch(/DO NOT retry/i);
+    expect(msg).toMatch(/duplicate signing prompt/i);
+    expect(msg).toMatch(/key-leak attack pattern/i);
+    expect(msg).toContain("278");
+    expect(msg).toContain("279");
+    expect(msg).toContain(FROM);
+    expect(msg).toContain("#326");
+    // The recovery guidance — block-explorer check + "if no tx with the
+    // pinned nonce, it's safe to re-prepare from scratch" — gives the
+    // user a concrete way out instead of leaving them stuck.
+    expect(msg).toMatch(/block explorer/i);
+    expect(msg).toMatch(/re-prepare/i);
   });
 });
 

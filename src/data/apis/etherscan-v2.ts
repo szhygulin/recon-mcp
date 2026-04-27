@@ -96,6 +96,69 @@ export async function etherscanV2Fetch<T>(
 }
 
 /**
+ * Pending-nonce read via Etherscan V2's `module=proxy&action=eth_getTransactionCount`.
+ * Used as a SECOND nonce source by the WalletConnect late-broadcast probe:
+ * if the local RPC reports `pending <= pinned` (suggesting the tx never
+ * left Ledger Live's side) but Etherscan's mempool view disagrees, we
+ * have an ambiguous outcome and must NOT retry — exactly the failure
+ * mode that caused issue #326.
+ *
+ * Returns the nonce as a number. Throws `EtherscanApiKeyMissingError`
+ * when no API key is configured (callers swallow this and fall back to
+ * single-source behavior — having Etherscan is a defense-in-depth nice-
+ * to-have, not a hard requirement).
+ *
+ * The `proxy` module returns a JSON-RPC envelope `{ jsonrpc, id, result }`
+ * where `result` is a hex-encoded number; the V1 envelope shape that
+ * `etherscanV2Fetch` checks for (`status: "1"` etc.) does not apply, so
+ * we go through `fetchWithTimeout` directly rather than reusing the
+ * other helpers.
+ */
+export async function getEtherscanProxyPendingNonce(
+  chain: SupportedChain,
+  address: `0x${string}`,
+): Promise<number> {
+  const apiKey = resolveEtherscanApiKey(readUserConfig());
+  if (!apiKey) throw new EtherscanApiKeyMissingError();
+  const qs = new URLSearchParams({
+    chainid: String(CHAIN_IDS[chain]),
+    module: "proxy",
+    action: "eth_getTransactionCount",
+    address,
+    tag: "pending",
+    apikey: apiKey,
+  });
+  const res = await fetchWithTimeout(`${V2_BASE}?${qs.toString()}`);
+  if (!res.ok) {
+    throw new Error(
+      `Etherscan V2 ${chain} eth_getTransactionCount returned ${res.status}`,
+    );
+  }
+  const text = await res.text();
+  if (text.length > MAX_RESPONSE_BYTES) {
+    throw new Error(
+      `Etherscan V2 ${chain} eth_getTransactionCount response exceeds ${MAX_RESPONSE_BYTES} bytes`,
+    );
+  }
+  const body = JSON.parse(text) as { result?: string; error?: { message?: string } };
+  if (body.error?.message) {
+    throw new Error(`Etherscan V2 ${chain} eth_getTransactionCount: ${body.error.message}`);
+  }
+  if (typeof body.result !== "string" || !/^0x[0-9a-fA-F]+$/.test(body.result)) {
+    throw new Error(
+      `Etherscan V2 ${chain} eth_getTransactionCount: unexpected result shape`,
+    );
+  }
+  const n = Number.parseInt(body.result, 16);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(
+      `Etherscan V2 ${chain} eth_getTransactionCount: non-finite nonce ${body.result}`,
+    );
+  }
+  return n;
+}
+
+/**
  * Lower-level variant for endpoints that return a single object, not an
  * array (e.g. some contract-level queries). Same error semantics.
  */

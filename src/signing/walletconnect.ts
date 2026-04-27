@@ -13,6 +13,7 @@ import {
   getConfigDir,
 } from "../config/user-config.js";
 import { getClient } from "../data/rpc.js";
+import { getEtherscanProxyPendingNonce } from "../data/apis/etherscan-v2.js";
 import { eip1559PreSignHash } from "./verification.js";
 
 /**
@@ -568,14 +569,66 @@ export function noBroadcastConfirmedMessage(args: {
   pinnedNonce: number;
   chainId: number | string;
   timeoutSeconds: number;
+  /**
+   * When the cross-check ran and agreed, surface the second-source
+   * value too — it's the strongest "safe to retry" signal we can give.
+   * Issue #326.
+   */
+  etherscanPendingNonce?: number;
 }): string {
+  const xchk =
+    args.etherscanPendingNonce !== undefined
+      ? `Etherscan's mempool view independently confirms pending=\`${args.etherscanPendingNonce}\`, so the two sources agree. `
+      : "";
   return (
     `WalletConnect signing request did not complete within ${args.timeoutSeconds}s — and an automatic ` +
     `on-chain probe confirmed that the pending nonce for \`${args.from}\` on chain id \`${args.chainId}\` ` +
-    `is still \`${args.pinnedNonce}\` (pinned), so no late broadcast is in flight. ` +
+    `is still \`${args.pinnedNonce}\` (pinned), so no late broadcast is in flight. ${xchk}` +
     `Safe to retry: call \`send_transaction\` on the SAME handle within its 15-min TTL. ` +
     `The user is most likely still reviewing the tx on the Ledger device — closing the WalletConnect ` +
-    `subapp on Ledger Live and reopening it before the retry can help if the device prompt got stale. Issue #232.`
+    `subapp on Ledger Live and reopening it before the retry can help if the device prompt got stale. ` +
+    `When relaying this to the user, include a one-line nudge that the previous attempt's outcome was ` +
+    `uncertain enough to time out — if the WC subapp HAD silently completed signing in the background, ` +
+    `the retry can queue a duplicate prompt to their Ledger; in that case the right action is to ` +
+    `**REJECT the duplicate prompt** (the original tx will land normally) rather than approve it. ` +
+    `Issues #232, #326.`
+  );
+}
+
+/**
+ * Surfaced when the local RPC reports the pinned nonce is still pending
+ * (which would historically have green-lit a retry as `no_broadcast`)
+ * but the Etherscan mempool view reports the wallet has advanced past
+ * it. Issue #326 — a divergence here is the canonical signal that the
+ * tx broadcast through Ledger Live's RPC and our local node hasn't
+ * caught up yet. Retrying in this state is exactly what queued the
+ * phantom duplicate prompt that triggered the live incident.
+ */
+export function ambiguousNonceDisagreementMessage(args: {
+  from: `0x${string}` | string;
+  pinnedNonce: number;
+  localPendingNonce: number;
+  etherscanPendingNonce: number;
+  chainId: number | string;
+  timeoutSeconds: number;
+}): string {
+  return (
+    `WalletConnect signing request did not complete within ${args.timeoutSeconds}s. ` +
+    `The on-chain probe found AMBIGUOUS state for \`${args.from}\` on chain id \`${args.chainId}\`: ` +
+    `the configured RPC says pending nonce is \`${args.localPendingNonce}\` (= pinned ${args.pinnedNonce}, ` +
+    `would mean nothing broadcast), but Etherscan's mempool view reports the wallet's pending nonce is ` +
+    `already \`${args.etherscanPendingNonce}\` (> pinned, would mean SOMETHING broadcast). ` +
+    `Most likely cause: Ledger Live finished signing + relayed the tx through its own RPC after our ` +
+    `${args.timeoutSeconds}s timer fired, and Etherscan's mempool indexer has seen it but our local node ` +
+    `hasn't caught up yet. ` +
+    `**DO NOT retry \`send_transaction\` on this handle** — if the tx did broadcast, retrying queues a ` +
+    `duplicate signing prompt to Ledger Live that looks exactly like a key-leak attack pattern (issue ` +
+    `#326). Tell the user to: ` +
+    `(1) check their wallet on a block explorer (etherscan.io / Ledger Live's tx history) for a recently ` +
+    `broadcast tx with nonce ${args.pinnedNonce} — if found, the original send succeeded; ` +
+    `(2) if no tx with nonce ${args.pinnedNonce} appears within ~5 minutes, the slot is genuinely free ` +
+    `and they can re-prepare from scratch (NEW handle, fresh nonce/gas pin) and try again. ` +
+    `Issue #326.`
   );
 }
 
@@ -593,23 +646,37 @@ export function noBroadcastConfirmedMessage(args: {
 const LATE_BROADCAST_PROBE_BLOCKS = 16;
 
 /**
- * Outcome of `probeForLateBroadcast`. Three branches:
+ * Outcome of `probeForLateBroadcast`. Four branches:
  *   - `matched` → found an on-chain tx whose pre-sign hash equals the
  *     server's pinned hash; the WC timeout was a false alarm and we can
  *     return the tx hash to the caller.
  *   - `no_broadcast` → the pending nonce on chain is still ≤ the pinned
- *     nonce; the tx never left Ledger Live's side. Safe to retry.
+ *     nonce on BOTH the configured RPC and (when available) Etherscan's
+ *     mempool view. The tx never left Ledger Live's side. Safe to retry.
  *   - `consumed_unmatched` → the pinned nonce was consumed but no tx in
  *     the recent block window had a matching pre-sign hash. Could be a
  *     different tx (RBF replacement, parallel tooling) using the same
  *     slot, or our tx mined further back than the probe window. Don't
  *     retry; surface the pending nonce so the agent can guide the user
  *     to a block explorer.
+ *   - `ambiguous_nonce_disagreement` → the configured RPC reports the
+ *     pinned nonce is still pending (would be `no_broadcast`) but the
+ *     Etherscan mempool view reports the wallet has already advanced
+ *     past it. Indicates a propagation/visibility gap between the two
+ *     sources — the tx may have broadcast through Ledger Live's RPC
+ *     and not yet reached ours. DO NOT retry: the canonical issue #326
+ *     scenario is that retry queues a duplicate signing prompt that
+ *     looks exactly like a key-leak attack to the user.
  */
 export type LateBroadcastProbeResult =
   | { status: "matched"; txHash: `0x${string}` }
-  | { status: "no_broadcast"; pendingNonce: number }
-  | { status: "consumed_unmatched"; pendingNonce: number };
+  | { status: "no_broadcast"; pendingNonce: number; etherscanPendingNonce?: number }
+  | { status: "consumed_unmatched"; pendingNonce: number }
+  | {
+      status: "ambiguous_nonce_disagreement";
+      localPendingNonce: number;
+      etherscanPendingNonce: number;
+    };
 
 /**
  * After a WC `eth_sendTransaction` times out, find out whether the tx
@@ -643,12 +710,44 @@ export async function probeForLateBroadcast(args: {
   chainId: number;
   /** Override the default block window (for tests). */
   blockWindow?: number;
+  /**
+   * Issue #326 — second nonce source. When provided AND the local RPC
+   * reports `pending <= pinned` (would otherwise be `no_broadcast`), this
+   * is queried as a defense-in-depth cross-check. If it returns
+   * `> pinned`, the two sources disagree and we surface
+   * `ambiguous_nonce_disagreement` so the caller refuses to retry —
+   * preventing the duplicate-prompt scenario from issue #326.
+   *
+   * Errors thrown by this probe are swallowed (no API key, rate limit,
+   * network failure): the caller falls back to the legacy single-source
+   * `no_broadcast` outcome. Etherscan is a defense-in-depth nice-to-have,
+   * not a hard dependency — users without an `ETHERSCAN_API_KEY` get
+   * the pre-issue-326 behavior without regression.
+   */
+  etherscanPendingNonceProbe?: () => Promise<number>;
 }): Promise<LateBroadcastProbeResult> {
   const pendingNonce = await args.client.getTransactionCount({
     address: args.from,
     blockTag: "pending",
   });
   if (pendingNonce <= args.pinnedNonce) {
+    if (args.etherscanPendingNonceProbe) {
+      let etherscanPendingNonce: number | undefined;
+      try {
+        etherscanPendingNonce = await args.etherscanPendingNonceProbe();
+      } catch {
+        // Fall back to local-only result; cross-check unavailable.
+        return { status: "no_broadcast", pendingNonce };
+      }
+      if (etherscanPendingNonce > args.pinnedNonce) {
+        return {
+          status: "ambiguous_nonce_disagreement",
+          localPendingNonce: pendingNonce,
+          etherscanPendingNonce,
+        };
+      }
+      return { status: "no_broadcast", pendingNonce, etherscanPendingNonce };
+    }
     return { status: "no_broadcast", pendingNonce };
   }
   const head = await args.client.getBlockNumber();
@@ -835,6 +934,14 @@ export async function requestSendTransaction(
         pinnedNonce: pinned.nonce,
         expectedPreSignHash,
         chainId,
+        // Issue #326 — Etherscan-side cross-check on the pending nonce.
+        // Errors are swallowed inside the probe (no API key, rate
+        // limit, network failure) so users without ETHERSCAN_API_KEY
+        // get the pre-issue-326 single-source behavior; only when the
+        // probe runs AND the two sources DISAGREE do we surface the
+        // ambiguous-state error.
+        etherscanPendingNonceProbe: async () =>
+          getEtherscanProxyPendingNonce(tx.chain, from as `0x${string}`),
       });
     } catch {
       // Probe-internal failure (RPC down, decoder threw) → fall back
@@ -859,6 +966,22 @@ export async function requestSendTransaction(
         }),
       );
     }
+    if (probe.status === "ambiguous_nonce_disagreement") {
+      // Issue #326 — local RPC and Etherscan disagree on whether the
+      // pinned nonce was consumed. The tx may have broadcast through
+      // Ledger Live's RPC and not yet reached our local node. Refuse
+      // to retry; tell the user to verify via block explorer.
+      throw new WalletConnectRequestTimeoutError(
+        ambiguousNonceDisagreementMessage({
+          from,
+          pinnedNonce: pinned.nonce,
+          localPendingNonce: probe.localPendingNonce,
+          etherscanPendingNonce: probe.etherscanPendingNonce,
+          chainId,
+          timeoutSeconds: WC_SEND_REQUEST_TIMEOUT_MS / 1000,
+        }),
+      );
+    }
     // probe.status === "no_broadcast" → safe to retry, surface the
     // confirmed-no-broadcast variant so the agent doesn't fall back to
     // the conservative original message.
@@ -868,6 +991,7 @@ export async function requestSendTransaction(
         pinnedNonce: pinned.nonce,
         chainId,
         timeoutSeconds: WC_SEND_REQUEST_TIMEOUT_MS / 1000,
+        etherscanPendingNonce: probe.etherscanPendingNonce,
       }),
     );
   });

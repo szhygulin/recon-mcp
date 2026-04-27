@@ -420,6 +420,7 @@ import type {
 import type { SendTransactionArgs } from "./modules/execution/schemas.js";
 
 import { readUserConfig } from "./config/user-config.js";
+import { safeErrorMessage } from "./shared/error-message.js";
 
 /**
  * URL of the agent-side preflight skill's git repo. Single source of truth
@@ -734,9 +735,13 @@ function handler<T, R>(
       }
       return { content };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      // Issue #326: the legacy `error instanceof Error ? error.message :
+      // String(error)` pattern produced `Error: [object Object]` when the
+      // underlying SDK (WalletConnect, viem) threw an Error whose .message
+      // was itself a structured object. Use the hardened helper instead so
+      // the agent (and the user) sees the actual failure cause.
       return {
-        content: [{ type: "text" as const, text: `Error: ${message}` }],
+        content: [{ type: "text" as const, text: `Error: ${safeErrorMessage(error)}` }],
         isError: true,
       };
     }
