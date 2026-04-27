@@ -74,6 +74,3 @@ export function saveSnapshots(store: MintSnapshotStore): void {
   renameSync(tmp, path);
 }
 
-export function getSnapshotPathForTests(): string {
-  return getSnapshotPath();
-}

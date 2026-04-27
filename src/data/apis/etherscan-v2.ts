@@ -158,38 +158,3 @@ export async function getEtherscanProxyPendingNonce(
   return n;
 }
 
-/**
- * Lower-level variant for endpoints that return a single object, not an
- * array (e.g. some contract-level queries). Same error semantics.
- */
-export async function etherscanV2FetchRaw<T>(
-  chain: SupportedChain,
-  params: Record<string, string>
-): Promise<T> {
-  const apiKey = resolveEtherscanApiKey(readUserConfig());
-  if (!apiKey) throw new EtherscanApiKeyMissingError();
-
-  const qs = new URLSearchParams({
-    chainid: String(CHAIN_IDS[chain]),
-    ...params,
-    apikey: apiKey,
-  });
-
-  const res = await fetchWithTimeout(`${V2_BASE}?${qs.toString()}`);
-  if (!res.ok) {
-    throw new Error(`Etherscan V2 ${chain} ${params.action} returned ${res.status}`);
-  }
-  const text = await res.text();
-  if (text.length > MAX_RESPONSE_BYTES) {
-    throw new Error(
-      `Etherscan V2 ${chain} ${params.action} response exceeds ${MAX_RESPONSE_BYTES} bytes (got ${text.length})`
-    );
-  }
-  const body = JSON.parse(text) as EtherscanEnvelope<T>;
-  if (body.status !== "1") {
-    const resultStr = typeof body.result === "string" ? body.result : "";
-    const detail = resultStr || body.message || "unknown";
-    throw new Error(`Etherscan V2 ${chain} ${params.action}: ${detail}`);
-  }
-  return body.result as T;
-}

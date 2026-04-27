@@ -104,57 +104,10 @@ export interface BlockStats {
   total_size?: number;
 }
 
-export interface GetBlockVerbose {
-  hash: string;
-  /** Number of confirmations of this block on the canonical chain.
-   * `-1` indicates the block is on a side chain (not in active chain). */
-  confirmations: number;
-  height: number;
-  version: number;
-  versionHex: string;
-  merkleroot: string;
-  /** Block timestamp (Unix seconds). */
-  time: number;
-  /** Median time past — chains-of-11 median, used for soft-fork timing. */
-  mediantime: number;
-  nonce: number;
-  bits: string;
-  /** Difficulty as a number (1e14+ for current Bitcoin mainnet). */
-  difficulty: number;
-  /** Hash of the previous block; absent for genesis. */
-  previousblockhash?: string;
-  /** Hash of the next block; absent for tip. */
-  nextblockhash?: string;
-  /** Total tx count in block. */
-  nTx: number;
-  /** Block size in bytes. */
-  size: number;
-  /** Block weight (BIP-141 weight units). */
-  weight: number;
-  /** With verbosity 1 this is an array of txids; with verbosity 2 it's
-   * full tx objects. We use verbosity 1 by default. */
-  tx?: string[];
-}
-
 export async function getBestBlockHash(
   config: JsonRpcClientConfig,
 ): Promise<string> {
   return jsonRpcCall<string>(config, "getbestblockhash");
-}
-
-export async function getBlockHash(
-  config: JsonRpcClientConfig,
-  height: number,
-): Promise<string> {
-  return jsonRpcCall<string>(config, "getblockhash", [height]);
-}
-
-export async function getBlockVerbose(
-  config: JsonRpcClientConfig,
-  blockhash: string,
-  verbosity: 1 | 2 = 1,
-): Promise<GetBlockVerbose> {
-  return jsonRpcCall<GetBlockVerbose>(config, "getblock", [blockhash, verbosity]);
 }
 
 export async function getChainTips(
@@ -185,14 +138,3 @@ export async function getBlockStats(
   return jsonRpcCall<BlockStats>(config, "getblockstats", params);
 }
 
-/**
- * `getrawmempool(verbose=false)` — txid array form. Used as a sanity
- * check for `getmempoolinfo.size` (they should match) and as input to
- * mempool-anomaly baseline trends. Verbose mode (per-tx info) is much
- * larger and not currently used.
- */
-export async function getRawMempool(
-  config: JsonRpcClientConfig,
-): Promise<string[]> {
-  return jsonRpcCall<string[]>(config, "getrawmempool", [false]);
-}

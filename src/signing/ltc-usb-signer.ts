@@ -16,6 +16,11 @@ import {
 import { getConfigPath, patchUserConfig, readUserConfig } from "../config/user-config.js";
 import { isLitecoinAddress } from "../modules/litecoin/address.js";
 import type { PairedLitecoinEntry } from "../types/index.js";
+import {
+  UTXO_ADDRESS_TYPES,
+  type UtxoAddressType,
+  makeUtxoPathHelpers,
+} from "./utxo-bip44.js";
 
 const requireCjs = createRequire(import.meta.url);
 const bitcoinjs = requireCjs("bitcoinjs-lib") as {
@@ -72,44 +77,31 @@ export type { PairedLitecoinEntry };
  * receive address directly so the user sees a concrete `ltc1p…` value
  * during pairing rather than an xpub.
  */
-const MAX_LTC_ACCOUNT_INDEX = 100;
+export const LTC_ADDRESS_TYPES = UTXO_ADDRESS_TYPES;
 
-export const LTC_ADDRESS_TYPES = [
-  "legacy",
-  "p2sh-segwit",
-  "segwit",
-  "taproot",
-] as const;
+export type LtcAddressType = UtxoAddressType;
 
-export type LtcAddressType = (typeof LTC_ADDRESS_TYPES)[number];
-
-/**
- * Map our address-type label → Ledger Litecoin app's `format` enum + the
- * BIP-44 purpose number. Single source of truth so paths and formats
- * never drift.
- */
-const TYPE_META: Record<
-  LtcAddressType,
-  { purpose: number; format: LtcAddressFormat }
-> = {
-  legacy: { purpose: 44, format: "legacy" },
-  "p2sh-segwit": { purpose: 49, format: "p2sh" },
-  segwit: { purpose: 84, format: "bech32" },
-  taproot: { purpose: 86, format: "bech32m" },
+/** Per-type Ledger Litecoin app `format` enum. Path purpose lives in `utxo-bip44.ts`. */
+const FORMAT_BY_TYPE: Record<LtcAddressType, LtcAddressFormat> = {
+  legacy: "legacy",
+  "p2sh-segwit": "p2sh",
+  segwit: "bech32",
+  taproot: "bech32m",
 };
+
+const ltcPaths = makeUtxoPathHelpers({
+  chainName: "Litecoin",
+  coinType: 2,
+  maxAccountIndex: 100,
+});
 
 export function ltcPathForAccountIndex(
   accountIndex: number,
   addressType: LtcAddressType,
 ): string {
-  return ltcLeafPath(accountIndex, addressType, 0, 0);
+  return ltcPaths.leafPath(accountIndex, addressType, 0, 0);
 }
 
-/**
- * Build a full BIP-32 leaf path for a specific (account, type, chain,
- * index) tuple. Used by gap-limit scanning to walk both the receive
- * chain (chain=0) and change chain (chain=1) at non-zero indices.
- */
 /**
  * Build the BIP-44 account-level path (3 hardened segments — purpose,
  * coin_type, account). This is the deepest path the Ledger Litecoin app
@@ -117,51 +109,14 @@ export function ltcPathForAccountIndex(
  * (`/0/i`, `/1/i`) is non-hardened and computable host-side from the
  * returned (publicKey, chainCode) pair. Issue #192.
  */
-export function ltcAccountLevelPath(
-  accountIndex: number,
-  addressType: LtcAddressType,
-): string {
-  if (
-    !Number.isInteger(accountIndex) ||
-    accountIndex < 0 ||
-    accountIndex > MAX_LTC_ACCOUNT_INDEX
-  ) {
-    throw new Error(
-      `Invalid Litecoin accountIndex ${accountIndex} — must be an integer in [0, ${MAX_LTC_ACCOUNT_INDEX}].`,
-    );
-  }
-  const { purpose } = TYPE_META[addressType];
-  return `${purpose}'/2'/${accountIndex}'`;
-}
+export const ltcAccountLevelPath = ltcPaths.accountLevelPath;
 
-export function ltcLeafPath(
-  accountIndex: number,
-  addressType: LtcAddressType,
-  chain: 0 | 1,
-  addressIndex: number,
-): string {
-  if (
-    !Number.isInteger(accountIndex) ||
-    accountIndex < 0 ||
-    accountIndex > MAX_LTC_ACCOUNT_INDEX
-  ) {
-    throw new Error(
-      `Invalid Litecoin accountIndex ${accountIndex} — must be an integer in [0, ${MAX_LTC_ACCOUNT_INDEX}].`,
-    );
-  }
-  if (chain !== 0 && chain !== 1) {
-    throw new Error(`Invalid BIP-32 chain ${chain} — must be 0 (receive) or 1 (change).`);
-  }
-  if (!Number.isInteger(addressIndex) || addressIndex < 0) {
-    throw new Error(
-      `Invalid BIP-32 addressIndex ${addressIndex} — must be a non-negative integer.`,
-    );
-  }
-  const { purpose } = TYPE_META[addressType];
-  return `${purpose}'/2'/${accountIndex}'/${chain}/${addressIndex}`;
-}
-
-const LTC_PATH_RE = /^(44|49|84|86)'\/2'\/(\d+)'\/(0|1)\/(\d+)$/;
+/**
+ * Build a full BIP-32 leaf path for a specific (account, type, chain,
+ * index) tuple. Used by gap-limit scanning to walk both the receive
+ * chain (chain=0) and change chain (chain=1) at non-zero indices.
+ */
+export const ltcLeafPath = ltcPaths.leafPath;
 
 /**
  * Parse the address type, account index, BIP-32 chain (0 = receive,
@@ -169,29 +124,7 @@ const LTC_PATH_RE = /^(44|49|84|86)'\/2'\/(\d+)'\/(0|1)\/(\d+)$/;
  * null when the path doesn't match the standard 5-segment shape —
  * custom paths get cached but can't be indexed.
  */
-export function parseLtcPath(
-  path: string,
-): {
-  addressType: LtcAddressType;
-  accountIndex: number;
-  chain: 0 | 1;
-  addressIndex: number;
-} | null {
-  const m = LTC_PATH_RE.exec(path);
-  if (!m) return null;
-  const purpose = Number(m[1]);
-  const accountIndex = Number(m[2]);
-  const chain = Number(m[3]) as 0 | 1;
-  const addressIndex = Number(m[4]);
-  if (!Number.isInteger(accountIndex)) return null;
-  if (!Number.isInteger(addressIndex)) return null;
-  for (const t of LTC_ADDRESS_TYPES) {
-    if (TYPE_META[t].purpose === purpose) {
-      return { addressType: t, accountIndex, chain, addressIndex };
-    }
-  }
-  return null;
-}
+export const parseLtcPath = ltcPaths.parsePath;
 
 /**
  * Module-local serialization for HID transport calls. USB-HID is
@@ -243,7 +176,7 @@ export async function getLtcLedgerAddress(
         reportedVersion: appVer.version,
         expectedNames: ["Litecoin"],
       });
-      const { format } = TYPE_META[addressType];
+      const format = FORMAT_BY_TYPE[addressType];
       const out = await app.getWalletPublicKey(path, { format });
       const parsed = parseLtcPath(path);
       return {
@@ -380,7 +313,7 @@ export async function scanLtcAccount(args: {
           // chainCode). Everything below this in the BIP-44 tree is
           // non-hardened and host-derivable.
           const accountPath = ltcAccountLevelPath(accountIndex, addressType);
-          const { format } = TYPE_META[addressType];
+          const format = FORMAT_BY_TYPE[addressType];
           const accountResp = await app.getWalletPublicKey(accountPath, {
             format,
           });
@@ -544,7 +477,7 @@ export async function deriveLtcLedgerAccount(
       const entries: DerivedAddress[] = [];
       for (const addressType of LTC_ADDRESS_TYPES) {
         const path = ltcPathForAccountIndex(accountIndex, addressType);
-        const { format } = TYPE_META[addressType];
+        const format = FORMAT_BY_TYPE[addressType];
         const out = await app.getWalletPublicKey(path, { format });
         entries.push({
           address: out.bitcoinAddress,
@@ -614,36 +547,9 @@ function extractWitnessProgramHex(scriptPubKey: Buffer): string {
   );
 }
 
-/**
- * Compress a SEC1 public key to its 33-byte form. Ledger's
- * `getWalletPublicKey` returns the uncompressed encoding (`0x04 || X
- * || Y`, 65 bytes), but PSBT consumers downstream of
- * `signPsbtBuffer.knownAddressDerivations` expect the compressed
- * encoding (`0x02 || X` if Y is even, `0x03 || X` if odd, 33 bytes) —
- * the SDK then strips the prefix byte for taproot's x-only key. Issue
- * #211: a 65-byte buffer threaded straight through threw "Invalid
- * pubkey length: 65" before any device prompt. Idempotent on inputs
- * already in compressed form.
- */
-export function compressPubkey(pubkey: Buffer): Buffer {
-  if (
-    pubkey.length === 33 &&
-    (pubkey[0] === 0x02 || pubkey[0] === 0x03)
-  ) {
-    return pubkey;
-  }
-  if (pubkey.length !== 65 || pubkey[0] !== 0x04) {
-    throw new Error(
-      `Unexpected SEC1 pubkey shape (length=${pubkey.length}, ` +
-        `prefix=0x${pubkey[0]?.toString(16) ?? "??"}). Expected 65-byte ` +
-        `uncompressed (0x04 || X || Y) or 33-byte compressed (0x02/0x03 || X).`,
-    );
-  }
-  const x = pubkey.subarray(1, 33);
-  const yLast = pubkey[64];
-  const prefix = (yLast & 1) === 0 ? 0x02 : 0x03;
-  return Buffer.concat([Buffer.from([prefix]), x]);
-}
+// Re-export the shared SEC1 pubkey compression helper. See `./sec1-pubkey.ts`.
+import { compressPubkey } from "./sec1-pubkey.js";
+export { compressPubkey };
 
 /**
  * Sign a base64-encoded PSBT v0 on the Ledger Litecoin app. The device walks

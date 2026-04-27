@@ -144,27 +144,6 @@ export async function countLoaderTargetsInProposal(
 }
 
 /**
- * Pure-function helper: given an already-decoded VaultTransaction message,
- * count how many compiled instructions resolve to the BPF Loader
- * Upgradeable program. Exposed for testing the conservative-default flag
- * logic without standing up a Connection. The runtime path uses
- * `countLoaderTargetsInProposal` which fetches the VaultTransaction first.
- */
-export function countLoaderTargetsInMessage(message: {
-  accountKeys: PublicKey[];
-  instructions: ReadonlyArray<{ programIdIndex: number }>;
-}): number {
-  let count = 0;
-  for (const ix of message.instructions) {
-    const programKey = message.accountKeys[ix.programIdIndex];
-    if (programKey && programKey.equals(BPF_LOADER_UPGRADEABLE_PUBKEY)) {
-      count++;
-    }
-  }
-  return count;
-}
-
-/**
  * Top-level scan: iterate the curated `programId → multisigPda` list and
  * surface every pending vault tx that targets the BPF Loader Upgradeable
  * program. When the curated list is empty, returns `scannedMultisigs: 0`

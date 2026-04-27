@@ -1,5 +1,5 @@
 import { parseUnits, formatUnits, encodeFunctionData, getAddress } from "viem";
-import { fetchQuote, fetchStatus } from "./lifi.js";
+import { fetchQuote } from "./lifi.js";
 import { fetchOneInchQuote } from "./oneinch.js";
 import type { GetSwapQuoteArgs, PrepareSwapArgs } from "./schemas.js";
 import { getClient } from "../../data/rpc.js";
@@ -750,8 +750,4 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
   }
 
   return swapTx;
-}
-
-export async function getSwapStatus(args: { txHash: string; fromChain: SupportedChain; toChain: SupportedChain }) {
-  return fetchStatus(args.txHash, args.fromChain, args.toChain);
 }

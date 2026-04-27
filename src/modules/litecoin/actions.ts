@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { assertLitecoinAddress, type LitecoinAddressType } from "./address.js";
 import { getLitecoinIndexer } from "./indexer.js";
-import { selectInputs, type CoinSelectInput } from "./coin-select.js";
+import { selectInputs, type CoinSelectInput } from "../shared/utxo-coin-select.js";
 import { issueLitecoinHandle } from "../../signing/ltc-tx-store.js";
 import {
   getPairedLtcByAddress,

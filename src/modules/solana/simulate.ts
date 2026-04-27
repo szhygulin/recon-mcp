@@ -124,9 +124,6 @@ function extractAnchorError(
   return undefined;
 }
 
-/** Test-only export so unit tests can cover the log-scraping independently. */
-export const __extractAnchorErrorForTest = extractAnchorError;
-
 /**
  * Detect whether a Switchboard `NotEnoughSamples` (Anchor 6030 / 0x178e)
  * failure is due to an active oracle-set rotation on the feed. The

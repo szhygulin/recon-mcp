@@ -71,18 +71,6 @@ export function pickBtcAnchor(): BtcAnchor | null {
   return null;
 }
 
-/** Reports whether ANY BTC pairing exists at all (incl. taproot). */
-export function hasBtcPairing(): boolean {
-  return getPairedBtcAddresses().length > 0;
-}
-
-/** Reports whether non-taproot BTC pairings are absent (only taproot). */
-export function onlyTaprootPaired(): boolean {
-  const all = getPairedBtcAddresses();
-  if (all.length === 0) return false;
-  return all.every((e) => e.addressType === "taproot");
-}
-
 /**
  * Sign the contacts blob preimage on the BTC anchor. The `preimage`
  * arg is the canonicalized JSON string from `canonicalize.ts`; we
@@ -104,6 +92,13 @@ export async function signContactsBlobBtc(args: {
     addressType: args.anchor.addressType,
   });
   return { signature: out.signature };
+}
+
+/** Reports whether non-taproot BTC pairings are absent (only taproot). */
+function onlyTaprootPaired(): boolean {
+  const all = getPairedBtcAddresses();
+  if (all.length === 0) return false;
+  return all.every((e) => e.addressType === "taproot");
 }
 
 /** Throws a structured error mapping the missing-pair case. */

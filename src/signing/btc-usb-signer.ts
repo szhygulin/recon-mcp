@@ -15,6 +15,11 @@ import {
 } from "./btc-bip32-derive.js";
 import { getConfigPath, patchUserConfig, readUserConfig } from "../config/user-config.js";
 import type { PairedBitcoinEntry } from "../types/index.js";
+import {
+  UTXO_ADDRESS_TYPES,
+  type UtxoAddressType,
+  makeUtxoPathHelpers,
+} from "./utxo-bip44.js";
 
 const requireCjs = createRequire(import.meta.url);
 const bitcoinjs = requireCjs("bitcoinjs-lib") as {
@@ -44,44 +49,31 @@ export type { PairedBitcoinEntry };
  * receive address directly so the user sees a concrete `bc1p…` value
  * during pairing rather than an xpub.
  */
-const MAX_BTC_ACCOUNT_INDEX = 100;
+export const BTC_ADDRESS_TYPES = UTXO_ADDRESS_TYPES;
 
-export const BTC_ADDRESS_TYPES = [
-  "legacy",
-  "p2sh-segwit",
-  "segwit",
-  "taproot",
-] as const;
+export type BtcAddressType = UtxoAddressType;
 
-export type BtcAddressType = (typeof BTC_ADDRESS_TYPES)[number];
-
-/**
- * Map our address-type label → Ledger BTC app's `format` enum + the
- * BIP-44 purpose number. Single source of truth so paths and formats
- * never drift.
- */
-const TYPE_META: Record<
-  BtcAddressType,
-  { purpose: number; format: BtcAddressFormat }
-> = {
-  legacy: { purpose: 44, format: "legacy" },
-  "p2sh-segwit": { purpose: 49, format: "p2sh" },
-  segwit: { purpose: 84, format: "bech32" },
-  taproot: { purpose: 86, format: "bech32m" },
+/** Per-type Ledger BTC app `format` enum. Path purpose lives in `utxo-bip44.ts`. */
+const FORMAT_BY_TYPE: Record<BtcAddressType, BtcAddressFormat> = {
+  legacy: "legacy",
+  "p2sh-segwit": "p2sh",
+  segwit: "bech32",
+  taproot: "bech32m",
 };
+
+const btcPaths = makeUtxoPathHelpers({
+  chainName: "Bitcoin",
+  coinType: 0,
+  maxAccountIndex: 100,
+});
 
 export function btcPathForAccountIndex(
   accountIndex: number,
   addressType: BtcAddressType,
 ): string {
-  return btcLeafPath(accountIndex, addressType, 0, 0);
+  return btcPaths.leafPath(accountIndex, addressType, 0, 0);
 }
 
-/**
- * Build a full BIP-32 leaf path for a specific (account, type, chain,
- * index) tuple. Used by gap-limit scanning to walk both the receive
- * chain (chain=0) and change chain (chain=1) at non-zero indices.
- */
 /**
  * Build the BIP-44 account-level path (3 hardened segments — purpose,
  * coin_type, account). This is the deepest path the Ledger BTC app
@@ -89,51 +81,14 @@ export function btcPathForAccountIndex(
  * (`/0/i`, `/1/i`) is non-hardened and computable host-side from the
  * returned (publicKey, chainCode) pair. Issue #192.
  */
-export function btcAccountLevelPath(
-  accountIndex: number,
-  addressType: BtcAddressType,
-): string {
-  if (
-    !Number.isInteger(accountIndex) ||
-    accountIndex < 0 ||
-    accountIndex > MAX_BTC_ACCOUNT_INDEX
-  ) {
-    throw new Error(
-      `Invalid Bitcoin accountIndex ${accountIndex} — must be an integer in [0, ${MAX_BTC_ACCOUNT_INDEX}].`,
-    );
-  }
-  const { purpose } = TYPE_META[addressType];
-  return `${purpose}'/0'/${accountIndex}'`;
-}
+export const btcAccountLevelPath = btcPaths.accountLevelPath;
 
-export function btcLeafPath(
-  accountIndex: number,
-  addressType: BtcAddressType,
-  chain: 0 | 1,
-  addressIndex: number,
-): string {
-  if (
-    !Number.isInteger(accountIndex) ||
-    accountIndex < 0 ||
-    accountIndex > MAX_BTC_ACCOUNT_INDEX
-  ) {
-    throw new Error(
-      `Invalid Bitcoin accountIndex ${accountIndex} — must be an integer in [0, ${MAX_BTC_ACCOUNT_INDEX}].`,
-    );
-  }
-  if (chain !== 0 && chain !== 1) {
-    throw new Error(`Invalid BIP-32 chain ${chain} — must be 0 (receive) or 1 (change).`);
-  }
-  if (!Number.isInteger(addressIndex) || addressIndex < 0) {
-    throw new Error(
-      `Invalid BIP-32 addressIndex ${addressIndex} — must be a non-negative integer.`,
-    );
-  }
-  const { purpose } = TYPE_META[addressType];
-  return `${purpose}'/0'/${accountIndex}'/${chain}/${addressIndex}`;
-}
-
-const BTC_PATH_RE = /^(44|49|84|86)'\/0'\/(\d+)'\/(0|1)\/(\d+)$/;
+/**
+ * Build a full BIP-32 leaf path for a specific (account, type, chain,
+ * index) tuple. Used by gap-limit scanning to walk both the receive
+ * chain (chain=0) and change chain (chain=1) at non-zero indices.
+ */
+export const btcLeafPath = btcPaths.leafPath;
 
 /**
  * Parse the address type, account index, BIP-32 chain (0 = receive,
@@ -141,29 +96,7 @@ const BTC_PATH_RE = /^(44|49|84|86)'\/0'\/(\d+)'\/(0|1)\/(\d+)$/;
  * null when the path doesn't match the standard 5-segment shape —
  * custom paths get cached but can't be indexed.
  */
-export function parseBtcPath(
-  path: string,
-): {
-  addressType: BtcAddressType;
-  accountIndex: number;
-  chain: 0 | 1;
-  addressIndex: number;
-} | null {
-  const m = BTC_PATH_RE.exec(path);
-  if (!m) return null;
-  const purpose = Number(m[1]);
-  const accountIndex = Number(m[2]);
-  const chain = Number(m[3]) as 0 | 1;
-  const addressIndex = Number(m[4]);
-  if (!Number.isInteger(accountIndex)) return null;
-  if (!Number.isInteger(addressIndex)) return null;
-  for (const t of BTC_ADDRESS_TYPES) {
-    if (TYPE_META[t].purpose === purpose) {
-      return { addressType: t, accountIndex, chain, addressIndex };
-    }
-  }
-  return null;
-}
+export const parseBtcPath = btcPaths.parsePath;
 
 /**
  * Module-local serialization for HID transport calls. USB-HID is
@@ -215,7 +148,7 @@ export async function getBtcLedgerAddress(
         reportedVersion: appVer.version,
         expectedNames: ["Bitcoin"],
       });
-      const { format } = TYPE_META[addressType];
+      const format = FORMAT_BY_TYPE[addressType];
       const out = await app.getWalletPublicKey(path, { format });
       const parsed = parseBtcPath(path);
       return {
@@ -340,7 +273,7 @@ export async function scanBtcAccount(args: {
         // chainCode). Everything below this in the BIP-44 tree is
         // non-hardened and host-derivable.
         const accountPath = btcAccountLevelPath(accountIndex, addressType);
-        const { format } = TYPE_META[addressType];
+        const format = FORMAT_BY_TYPE[addressType];
         const accountResp = await app.getWalletPublicKey(accountPath, {
           format,
         });
@@ -500,7 +433,7 @@ export async function deriveBtcLedgerAccount(
       const entries: DerivedAddress[] = [];
       for (const addressType of BTC_ADDRESS_TYPES) {
         const path = btcPathForAccountIndex(accountIndex, addressType);
-        const { format } = TYPE_META[addressType];
+        const format = FORMAT_BY_TYPE[addressType];
         const out = await app.getWalletPublicKey(path, { format });
         entries.push({
           address: out.bitcoinAddress,
@@ -570,36 +503,9 @@ function extractWitnessProgramHex(scriptPubKey: Buffer): string {
   );
 }
 
-/**
- * Compress a SEC1 public key to its 33-byte form. Ledger's
- * `getWalletPublicKey` returns the uncompressed encoding (`0x04 || X
- * || Y`, 65 bytes), but PSBT consumers downstream of
- * `signPsbtBuffer.knownAddressDerivations` expect the compressed
- * encoding (`0x02 || X` if Y is even, `0x03 || X` if odd, 33 bytes) —
- * the SDK then strips the prefix byte for taproot's x-only key. Issue
- * #211: a 65-byte buffer threaded straight through threw "Invalid
- * pubkey length: 65" before any device prompt. Idempotent on inputs
- * already in compressed form.
- */
-export function compressPubkey(pubkey: Buffer): Buffer {
-  if (
-    pubkey.length === 33 &&
-    (pubkey[0] === 0x02 || pubkey[0] === 0x03)
-  ) {
-    return pubkey;
-  }
-  if (pubkey.length !== 65 || pubkey[0] !== 0x04) {
-    throw new Error(
-      `Unexpected SEC1 pubkey shape (length=${pubkey.length}, ` +
-        `prefix=0x${pubkey[0]?.toString(16) ?? "??"}). Expected 65-byte ` +
-        `uncompressed (0x04 || X || Y) or 33-byte compressed (0x02/0x03 || X).`,
-    );
-  }
-  const x = pubkey.subarray(1, 33);
-  const yLast = pubkey[64];
-  const prefix = (yLast & 1) === 0 ? 0x02 : 0x03;
-  return Buffer.concat([Buffer.from([prefix]), x]);
-}
+// Re-export the shared SEC1 pubkey compression helper. See `./sec1-pubkey.ts`.
+import { compressPubkey } from "./sec1-pubkey.js";
+export { compressPubkey };
 
 /**
  * Sign a base64-encoded PSBT v0 on the Ledger BTC app. The device walks

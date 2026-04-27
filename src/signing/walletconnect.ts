@@ -122,34 +122,18 @@ let currentSession: SessionTypes.Struct | null = null;
 let peerUnreachable = false;
 
 /**
- * Latest result from the Ledger Live peer pin (issue #325 P5). Set
- * each time a session is restored OR newly approved; null when no
- * session exists. Read by `getLedgerLivePinStatus()` so diagnostic
- * tools (`get_ledger_status`) can surface mismatch warnings to the
- * user without re-checking on every read.
- */
-let lastPeerPinResult: PeerPinResult | null = null;
-
-/**
- * Run the Ledger Live peer pin against `session` and stash the
- * result. Logs a loud warning on mismatch — non-blocking, so a
- * legitimate-but-unusual peer (dev build, self-built Ledger Live)
- * doesn't brick signing. The user retains the on-device approval as
- * the trust root.
+ * Run the Ledger Live peer pin against `session`. Logs a loud warning
+ * on mismatch — non-blocking, so a legitimate-but-unusual peer (dev
+ * build, self-built Ledger Live) doesn't brick signing. The user
+ * retains the on-device approval as the trust root.
  */
 function applyPeerPin(session: SessionTypes.Struct): PeerPinResult {
   const result = pinLedgerLivePeer(session);
-  lastPeerPinResult = result;
   if (result.verdict !== "match") {
     // eslint-disable-next-line no-console
     console.warn(`[vaultpilot wc-peer-pin] ${result.message}`);
   }
   return result;
-}
-
-/** Latest peer-pin verdict, or null when no session is being tracked. */
-export function getLedgerLivePinStatus(): PeerPinResult | null {
-  return lastPeerPinResult;
 }
 
 /**
@@ -272,7 +256,6 @@ function handleSessionEndedByPeer(): void {
   stopKeepalive();
   currentSession = null;
   peerUnreachable = false;
-  lastPeerPinResult = null;
   patchUserConfig({
     walletConnect: { sessionTopic: undefined, pairingTopic: undefined },
   });
@@ -302,11 +285,6 @@ function stopKeepalive(): void {
     clearInterval(keepaliveTimer);
     keepaliveTimer = null;
   }
-}
-
-/** Test-only hook: stop the keepalive timer between tests. */
-export function _stopKeepaliveForTests(): void {
-  stopKeepalive();
 }
 
 /**

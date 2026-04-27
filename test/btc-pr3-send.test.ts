@@ -799,7 +799,7 @@ describe("Bitcoin post-send blocks", () => {
 describe("coin-select", () => {
   it("rejects invalid feeRate", async () => {
     const { selectInputs } = await import(
-      "../src/modules/btc/coin-select.js"
+      "../src/modules/shared/utxo-coin-select.js"
     );
     expect(() =>
       selectInputs({
@@ -821,7 +821,7 @@ describe("coin-select", () => {
 
   it("rejects empty UTXO sets and zero-value outputs", async () => {
     const { selectInputs } = await import(
-      "../src/modules/btc/coin-select.js"
+      "../src/modules/shared/utxo-coin-select.js"
     );
     expect(() =>
       selectInputs({
@@ -843,7 +843,7 @@ describe("coin-select", () => {
 
   it("returns a feasible selection for a typical tx", async () => {
     const { selectInputs } = await import(
-      "../src/modules/btc/coin-select.js"
+      "../src/modules/shared/utxo-coin-select.js"
     );
     const r = selectInputs({
       utxos: [{ txid: FAKE_TXID, vout: 0, value: 1_000_000 }],

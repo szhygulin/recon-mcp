@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { assertBitcoinAddress, type BitcoinAddressType } from "./address.js";
 import { getBitcoinIndexer } from "./indexer.js";
-import { selectInputs, type CoinSelectInput } from "./coin-select.js";
+import { selectInputs, type CoinSelectInput } from "../shared/utxo-coin-select.js";
 import { issueBitcoinHandle } from "../../signing/btc-tx-store.js";
 import {
   getPairedBtcByAddress,

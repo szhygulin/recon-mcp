@@ -119,8 +119,7 @@ export function resolveSafeApiKey(): string | undefined {
 /**
  * Per-chain `SafeApiKit` cache. The kit holds the chainId + apiKey and a
  * resolved txServiceUrl; instantiating one is cheap, but reusing avoids the
- * URL-resolution work on every call. Cleared by tests via
- * `clearSafeApiKitCacheForTesting`.
+ * URL-resolution work on every call.
  */
 const apiKitCache = new Map<SupportedChain, SafeApiKitInstance>();
 
@@ -135,9 +134,4 @@ export function getSafeApiKit(chain: SupportedChain): SafeApiKitInstance {
   });
   apiKitCache.set(chain, kit);
   return kit;
-}
-
-/** Test-only: drop the cached kits so a re-read of SAFE_API_KEY takes effect. */
-export function clearSafeApiKitCacheForTesting(): void {
-  apiKitCache.clear();
 }

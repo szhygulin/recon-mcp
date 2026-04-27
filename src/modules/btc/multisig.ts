@@ -136,13 +136,6 @@ function persistMultisig(): void {
   });
 }
 
-export function getPairedMultisigWallets(): PairedBitcoinMultisigWallet[] {
-  ensureMultisigHydrated();
-  return Array.from(multisigByName.values()).sort((a, b) =>
-    a.name.localeCompare(b.name),
-  );
-}
-
 export function getPairedMultisigByName(
   name: string,
 ): PairedBitcoinMultisigWallet | null {

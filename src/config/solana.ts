@@ -70,10 +70,3 @@ export function isSolanaAddress(s: string): boolean {
   return typeof s === "string" && SOLANA_ADDRESS.test(s);
 }
 
-/**
- * Default Solana mainnet RPC. Public endpoint — rate-limited and unreliable
- * for production use. Tools that do real work MUST call `resolveSolanaRpcUrl`
- * in config/chains.ts which honors user config (Helius recommended) and the
- * `SOLANA_RPC_URL` env var before falling back here.
- */
-export const SOLANA_PUBLIC_RPC_URL = "https://api.mainnet-beta.solana.com";
