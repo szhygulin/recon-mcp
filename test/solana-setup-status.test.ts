@@ -59,8 +59,7 @@ function nonOwnedAccountInfo(lamports: number) {
 }
 
 describe("getSolanaSetupStatus", () => {
-  // retry: 2 — flakes on full-suite runs from upstream module-cache contamination.
-  it("reports nonce:false and marginfi:[] for an empty wallet", { retry: 2 }, async () => {
+  it("reports nonce:false and marginfi:[] for an empty wallet", async () => {
     connectionStub.getAccountInfo.mockResolvedValue(null);
     const { getSolanaSetupStatus } = await import(
       "../src/modules/execution/index.js"
@@ -73,8 +72,7 @@ describe("getSolanaSetupStatus", () => {
     expect(res.marginfi.accounts).toEqual([]);
   });
 
-  // retry: 2 — same flake class.
-  it("reports nonce details when a nonce account exists", { retry: 2 }, async () => {
+  it("reports nonce details when a nonce account exists", async () => {
     // First lookup is the nonce PDA → exists. Subsequent MarginFi PDAs
     // return null for a minimal "just the nonce" setup.
     const nonceLamports = 1_447_680;

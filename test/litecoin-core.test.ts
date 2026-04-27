@@ -191,8 +191,7 @@ afterEach(() => {
 });
 
 describe("pair_ledger_ltc", () => {
-  // retry: 2 — flakes on full-suite runs from upstream module-cache contamination.
-  it("derives all four address types for accountIndex 0 and stamps coin_type 2", { retry: 2 }, async () => {
+  it("derives all four address types for accountIndex 0 and stamps coin_type 2", async () => {
     // Account-level call returns the (publicKey, chainCode) for the
     // requested purpose — host-side derivation walks under it.
     const fixturesByPurpose = new Map<number, ReturnType<typeof makeAccountFixture>>();
