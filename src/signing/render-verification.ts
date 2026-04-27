@@ -1183,9 +1183,19 @@ export function renderTronAgentTaskBlock(
 export function renderBitcoinVerificationBlock(tx: UnsignedBitcoinTx): string {
   const lines: string[] = [];
   const isMultiSource = tx.decoded.sources.length > 1;
-  lines.push(
-    `VERIFY BEFORE SIGNING (Bitcoin — ${isMultiSource ? "multi-source consolidation" : "native send"})`,
-  );
+  const isRbfBump = tx.action === "rbf_bump";
+  const flowLabel = isRbfBump
+    ? "RBF fee bump"
+    : isMultiSource
+    ? "multi-source consolidation"
+    : "native send";
+  lines.push(`VERIFY BEFORE SIGNING (Bitcoin — ${flowLabel})`);
+  if (isRbfBump && tx.replaces) {
+    lines.push(
+      `Replacing mempool tx ${tx.replaces.txid} ` +
+        `(old fee ${tx.replaces.oldFeeSats} sats @ ~${tx.replaces.oldFeeRateSatPerVb} sat/vB).`,
+    );
+  }
   lines.push(
     "The Ledger Bitcoin app clear-signs every output. Confirm on-device:",
   );

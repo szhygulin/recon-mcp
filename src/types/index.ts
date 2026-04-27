@@ -1259,8 +1259,27 @@ export interface PairedSolanaEntry {
  */
 export interface UnsignedBitcoinTx {
   chain: "bitcoin";
-  /** Discriminator for the action — only native_send in Phase 1. */
-  action: "native_send";
+  /**
+   * Discriminator for the action.
+   *  - `native_send` — Phase 1 single-output send (also used by issue
+   *    #264 multi-source consolidation).
+   *  - `rbf_bump` — BIP-125 fee replacement of a stuck mempool tx.
+   *    Same input set as the original, recipients preserved verbatim,
+   *    the bump is absorbed by the change output.
+   */
+  action: "native_send" | "rbf_bump";
+  /**
+   * RBF replacement context — populated only on `action === "rbf_bump"`.
+   * Lets the verification block surface "replacing TX <txid>" and the
+   * old → new fee/fee-rate delta so the user reviews the bump itself,
+   * not just the new tx in isolation. The original tx is identified by
+   * `txid`; `oldFeeSats` + `oldFeeRateSatPerVb` come from the indexer.
+   */
+  replaces?: {
+    txid: string;
+    oldFeeSats: string;
+    oldFeeRateSatPerVb: number;
+  };
   /**
    * Primary source address (the first entry in `sources` for multi-source
    * sends, or the only source for single-source sends). Kept for

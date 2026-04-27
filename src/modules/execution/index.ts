@@ -151,6 +151,7 @@ import type {
   RescanBitcoinAccountArgs,
   GetBitcoinTxHistoryArgs,
   PrepareBitcoinNativeSendArgs,
+  PrepareBitcoinRbfBumpArgs,
   SignBtcMessageArgs,
   PairLedgerLitecoinArgs,
   GetLitecoinBalanceArgs,
@@ -1205,6 +1206,16 @@ export async function prepareBitcoinNativeSend(
       ? { feeRateSatPerVb: args.feeRateSatPerVb }
       : {}),
     ...(args.rbf !== undefined ? { rbf: args.rbf } : {}),
+    ...(args.allowHighFee !== undefined ? { allowHighFee: args.allowHighFee } : {}),
+  });
+}
+
+export async function prepareBitcoinRbfBump(args: PrepareBitcoinRbfBumpArgs) {
+  const { buildBitcoinRbfBump } = await import("../btc/actions.js");
+  return buildBitcoinRbfBump({
+    wallet: args.wallet,
+    txid: args.txid,
+    newFeeRate: args.newFeeRate,
     ...(args.allowHighFee !== undefined ? { allowHighFee: args.allowHighFee } : {}),
   });
 }

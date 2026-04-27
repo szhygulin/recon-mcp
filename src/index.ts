@@ -152,6 +152,7 @@ import {
   rescanBitcoinAccount,
   getBitcoinTxHistory,
   prepareBitcoinNativeSend,
+  prepareBitcoinRbfBump,
   signBtcMessage,
   pairLedgerLitecoin,
   getLitecoinBalance,
@@ -228,6 +229,7 @@ import {
   rescanBitcoinAccountInput,
   getBitcoinTxHistoryInput,
   prepareBitcoinNativeSendInput,
+  prepareBitcoinRbfBumpInput,
   signBtcMessageInput,
   pairLedgerLitecoinInput,
   getLitecoinBalanceInput,
@@ -2420,7 +2422,31 @@ async function main() {
     handler(prepareBitcoinNativeSend, { toolName: "prepare_btc_send" })
   );
 
-  registerTool(server, 
+  registerTool(server,
+    "prepare_btc_rbf_bump",
+    {
+      description:
+        "Build a BIP-125 Replace-By-Fee replacement for a stuck mempool BTC tx. " +
+        "Reuses the original tx's exact input set, preserves every recipient " +
+        "verbatim, and shrinks the change output to absorb the fee bump. Sequence " +
+        "stays at 0xFFFFFFFD so the replacement is itself RBF-eligible (the user " +
+        "can bump again if the new rate is still too low). Returns a 15-min handle " +
+        "the agent forwards to send_transaction; the Ledger BTC app clear-signs " +
+        "every output + new fee on-screen, so there is NO blind-sign hash to " +
+        "pre-match in chat. Refusal cases: original tx already confirmed; no " +
+        "input is BIP-125-eligible; any input belongs to a wallet other than " +
+        "`wallet` (multi-source RBF out of scope); no change output (no " +
+        "headroom to absorb the bump — CPFP territory); BIP-125 rule 4 violation " +
+        "(new fee must be >= old fee + 1 sat/vB × new vsize); bumped change " +
+        "below the 546-sat dust threshold; fee exceeds the safety cap (override " +
+        "with `allowHighFee: true`). Phase 1 source-side scope: native segwit + " +
+        "taproot only.",
+      inputSchema: prepareBitcoinRbfBumpInput.shape,
+    },
+    handler(prepareBitcoinRbfBump, { toolName: "prepare_btc_rbf_bump" })
+  );
+
+  registerTool(server,
     "sign_message_btc",
     {
       description:

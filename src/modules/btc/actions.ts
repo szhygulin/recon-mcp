@@ -528,6 +528,352 @@ export async function buildBitcoinNativeSend(
   return issueBitcoinHandle(tx);
 }
 
+/**
+ * Dust threshold (sats) below which an output is non-standard and won't
+ * relay. The Bitcoin Core default is `3 × output-size × min-relay-fee`,
+ * which evaluates to 294 for P2WPKH and 330 for P2TR at 1 sat/vB. We
+ * use 546 — Bitcoin Core's hardcoded floor for P2PKH and the
+ * conservative cross-type baseline every modern wallet treats as
+ * "definitely not dust." Below this the change output would either be
+ * rejected at relay time or eat the entire fee bump.
+ */
+const DUST_THRESHOLD_SATS = 546;
+
+/**
+ * Min-relay fee rate (sat/vB) used by the BIP-125 rule-4 check. Bitcoin
+ * Core's default `minRelayTxFee` is 1000 sat/kvB → 1 sat/vB; mempools
+ * with non-default `incrementalRelayFee` may require more, but 1 is the
+ * canonical floor every relay node accepts.
+ */
+const MIN_RELAY_FEE_RATE = 1;
+
+export interface BuildBitcoinRbfBumpArgs {
+  /** Paired BTC source address that signed the original tx. Segwit/taproot only (Phase 1). */
+  wallet: string;
+  /** 64-hex original tx hash. Must currently be in mempool (not yet confirmed). */
+  txid: string;
+  /** New fee rate in sat/vB. Must be high enough to satisfy BIP-125 rule 4. */
+  newFeeRate: number;
+  /** Override the fee-cap guard. Default false. */
+  allowHighFee?: boolean;
+}
+
+/**
+ * Build an RBF (BIP-125) replacement for a stuck mempool tx.
+ *
+ * The replacement reuses the original tx's exact input set and
+ * preserves every non-change output verbatim — only the change output
+ * shrinks to absorb the fee bump. Sequence is set to 0xFFFFFFFD on
+ * every input so the replacement is itself RBF-eligible (the user can
+ * bump again if the new rate is still too low).
+ *
+ * Refusal cases (every check is a hard refusal — no silent fallback):
+ *  1. `wallet` not paired or not segwit/taproot.
+ *  2. Original tx already confirmed (can't replace — `confirmed: true`).
+ *  3. No input is BIP-125-eligible (every `sequence >= 0xFFFFFFFE`).
+ *  4. Any input's prevout address differs from `wallet` (multi-source
+ *     RBF is out of scope — partial-RBF where we'd need keys we don't
+ *     have).
+ *  5. Original tx has no change output paired to the user (sweep tx
+ *     with no headroom to absorb the bump — would require adding a
+ *     fresh input, which is CPFP territory).
+ *  6. New fee fails BIP-125 rule 4: new abs fee < old abs fee +
+ *     `MIN_RELAY_FEE_RATE × new vsize`.
+ *  7. Bumped change drops below `DUST_THRESHOLD_SATS` — the bump would
+ *     consume the entire change output (relay would reject the
+ *     resulting dust output).
+ *  8. Fee exceeds the safety cap (same shape as `selectInputs`'s cap)
+ *     unless `allowHighFee: true`.
+ */
+export async function buildBitcoinRbfBump(
+  args: BuildBitcoinRbfBumpArgs,
+): Promise<UnsignedBitcoinTx> {
+  if (!/^[0-9a-fA-F]{64}$/.test(args.txid)) {
+    throw new Error(
+      `\`txid\` must be 64 hex characters, got ${args.txid.length} chars.`,
+    );
+  }
+  if (
+    !Number.isFinite(args.newFeeRate) ||
+    args.newFeeRate <= 0 ||
+    args.newFeeRate > 10_000
+  ) {
+    throw new Error(
+      `Invalid newFeeRate ${args.newFeeRate} sat/vB — expected a positive finite number ≤ 10000.`,
+    );
+  }
+
+  // 1. Validate wallet is paired and segwit/taproot.
+  assertBitcoinAddress(args.wallet);
+  const paired = getPairedBtcByAddress(args.wallet);
+  if (!paired) {
+    throw new Error(
+      `Bitcoin address ${args.wallet} is not paired. Run \`pair_ledger_btc\` first.`,
+    );
+  }
+  if (paired.addressType !== "segwit" && paired.addressType !== "taproot") {
+    throw new Error(
+      `RBF bump from ${paired.addressType} (${paired.path}) addresses is not supported ` +
+        `in Phase 1 — only native segwit (bc1q...) and taproot (bc1p...).`,
+    );
+  }
+
+  // 2. Fetch original tx.
+  const indexer = getBitcoinIndexer();
+  const orig = await indexer.getTx(args.txid);
+
+  // 3. Refuse if already confirmed.
+  if (orig.status?.confirmed === true) {
+    const blockHeight = orig.status.block_height;
+    throw new Error(
+      `Tx ${args.txid} is already confirmed${
+        blockHeight !== undefined ? ` at block ${blockHeight}` : ""
+      } — RBF only works for unconfirmed mempool txs. Nothing to bump.`,
+    );
+  }
+
+  // 4. Walk inputs: collect (txid, vout, value), check RBF eligibility,
+  //    refuse foreign inputs.
+  if (orig.vin.length === 0) {
+    throw new Error(`Tx ${args.txid} has no inputs — indexer returned malformed shape.`);
+  }
+  let anyRbfEligible = false;
+  const inputsForBuild: Array<{ txid: string; vout: number; value: number }> = [];
+  for (const v of orig.vin) {
+    const seq = typeof v.sequence === "number" ? v.sequence : 0xffffffff;
+    if (seq < 0xfffffffe) anyRbfEligible = true;
+    if (v.prevout?.scriptpubkey_address !== args.wallet) {
+      throw new Error(
+        `Tx ${args.txid} has an input from ${v.prevout?.scriptpubkey_address ?? "<unknown>"} ` +
+          `which is not the bumped wallet ${args.wallet}. Multi-source RBF is out of scope ` +
+          `for this tool — every input must belong to the address being passed as \`wallet\`.`,
+      );
+    }
+    if (typeof v.prevout.value !== "number") {
+      throw new Error(
+        `Tx ${args.txid} input ${v.txid}:${v.vout} is missing prevout.value from the indexer.`,
+      );
+    }
+    inputsForBuild.push({ txid: v.txid, vout: v.vout, value: v.prevout.value });
+  }
+  if (!anyRbfEligible) {
+    throw new Error(
+      `Tx ${args.txid} is not BIP-125 RBF-eligible (every input has sequence >= 0xFFFFFFFE). ` +
+        `The original was broadcast as final. Wait for confirmation or ask a miner-accelerator ` +
+        `service; this tool cannot replace it.`,
+    );
+  }
+
+  // 5. Walk outputs: collect, identify change.
+  if (orig.vout.length === 0) {
+    throw new Error(`Tx ${args.txid} has no outputs — indexer returned malformed shape.`);
+  }
+  // Change candidates: any output whose address is paired under the
+  // SAME (accountIndex, addressType) as `wallet`. Covers both the
+  // chain=1 default (Phase-1 native_send) and a chain=0 self-send case.
+  const allPaired = getPairedBtcAddresses();
+  const ourAddrs = new Set(
+    allPaired
+      .filter(
+        (e) =>
+          e.accountIndex === paired.accountIndex &&
+          e.addressType === paired.addressType,
+      )
+      .map((e) => e.address),
+  );
+  type OrigOutput = { address: string; value: number; isChange: boolean };
+  const origOutputs: OrigOutput[] = [];
+  for (const v of orig.vout) {
+    if (typeof v.scriptpubkey_address !== "string" || typeof v.value !== "number") {
+      throw new Error(
+        `Tx ${args.txid} has an output with missing address/value — indexer returned malformed shape.`,
+      );
+    }
+    origOutputs.push({
+      address: v.scriptpubkey_address,
+      value: v.value,
+      isChange: ourAddrs.has(v.scriptpubkey_address),
+    });
+  }
+  const changeOutputs = origOutputs.filter((o) => o.isChange);
+  if (changeOutputs.length === 0) {
+    throw new Error(
+      `Tx ${args.txid} has no change output paying back to ${args.wallet}'s account ` +
+        `(${paired.addressType}, accountIndex=${paired.accountIndex}). With no change ` +
+        `there is no headroom to absorb a fee bump — this is CPFP territory, not RBF.`,
+    );
+  }
+  if (changeOutputs.length > 1) {
+    throw new Error(
+      `Tx ${args.txid} has ${changeOutputs.length} outputs paying to this account — ` +
+        `ambiguous which is the change. Self-sends and split-change patterns are out of ` +
+        `scope for this tool.`,
+    );
+  }
+  const changeAddress = changeOutputs[0].address;
+  const changeEntryFromPairings = allPaired.find((e) => e.address === changeAddress);
+  if (!changeEntryFromPairings) {
+    throw new Error(
+      `Internal error: change address ${changeAddress} matched the paired set but ` +
+        `disappeared on lookup.`,
+    );
+  }
+
+  // 6. Recompute fee + change at the new fee rate.
+  const newVbytes = roughVbytes(inputsForBuild.length, origOutputs.length);
+  const newFee = Math.ceil(args.newFeeRate * newVbytes);
+  const totalInputValue = inputsForBuild.reduce((s, i) => s + i.value, 0);
+  const externalOutputTotal = origOutputs
+    .filter((o) => !o.isChange)
+    .reduce((s, o) => s + o.value, 0);
+  const newChangeValue = totalInputValue - externalOutputTotal - newFee;
+
+  // 7. BIP-125 rule 4: new abs fee >= old abs fee + min-relay × new vsize.
+  const oldFee = orig.fee ?? totalInputValue - origOutputs.reduce((s, o) => s + o.value, 0);
+  const minBumpAbs = oldFee + MIN_RELAY_FEE_RATE * newVbytes;
+  if (newFee < minBumpAbs) {
+    const requiredRate = Math.ceil(minBumpAbs / newVbytes);
+    throw new Error(
+      `New fee ${newFee} sats fails BIP-125 rule 4 — must be at least ${minBumpAbs} sats ` +
+        `(old fee ${oldFee} + min-relay 1 sat/vB × new vsize ${newVbytes}). ` +
+        `Retry with newFeeRate >= ${requiredRate} sat/vB.`,
+    );
+  }
+
+  // 8. Refuse if change drops below dust.
+  if (newChangeValue < DUST_THRESHOLD_SATS) {
+    throw new Error(
+      `Bumped change output would be ${newChangeValue} sats — below the ${DUST_THRESHOLD_SATS}-sat ` +
+        `dust threshold. The fee bump would consume the entire change output (or worse, ` +
+        `produce negative change). Lower newFeeRate, or use CPFP / add inputs (out of scope).`,
+    );
+  }
+
+  // 9. Fee-cap guard (mirror of `selectInputs`'s cap).
+  if (!args.allowHighFee) {
+    const vbyteCap = Math.ceil(args.newFeeRate * 10 * newVbytes);
+    const percentCap = Math.ceil(externalOutputTotal * 0.02);
+    const cap = Math.max(vbyteCap, percentCap);
+    if (newFee > cap) {
+      throw new Error(
+        `Fee ${newFee} sats exceeds safety cap ${cap} sats ` +
+          `(max of 10× feeRate-based ${vbyteCap} and 2%-of-output ${percentCap}). ` +
+          `If this is intentional (priority bump through congestion), retry with ` +
+          `\`allowHighFee: true\` after confirming with the user.`,
+      );
+    }
+  }
+
+  // 10. Fetch prev-tx hex for every UNIQUE input txid (issue #213).
+  const uniqueTxids = [...new Set(inputsForBuild.map((i) => i.txid))];
+  const prevTxHexEntries = await Promise.all(
+    uniqueTxids.map(async (txid) => [txid, await indexer.getTxHex(txid)] as const),
+  );
+  const prevTxHexByTxid = new Map(prevTxHexEntries);
+
+  // 11. Build PSBT — same shape as buildBitcoinNativeSend but with the
+  //     fixed input set and the recomputed change value spliced in.
+  const sourceScript = bitcoinjs.address.toOutputScript(args.wallet, NETWORK);
+  const psbt = new bitcoinjs.Psbt({ network: NETWORK });
+  for (const input of inputsForBuild) {
+    const prevTxHex = prevTxHexByTxid.get(input.txid);
+    if (!prevTxHex) {
+      throw new Error(
+        `Internal error: prev-tx hex missing for ${input.txid} after fan-out fetch.`,
+      );
+    }
+    psbt.addInput({
+      hash: input.txid,
+      index: input.vout,
+      sequence: 0xfffffffd,
+      witnessUtxo: { script: sourceScript, value: input.value },
+      nonWitnessUtxo: Buffer.from(prevTxHex, "hex"),
+    });
+  }
+  // Output ordering preserved from the original — same indices, just
+  // change updated. Wallet fingerprinting heuristics (BIP-69, etc.) the
+  // original tx adopted carry over by construction.
+  const newOutputs = origOutputs.map((o) =>
+    o.isChange ? { ...o, value: newChangeValue } : o,
+  );
+  for (const o of newOutputs) {
+    const outScript = bitcoinjs.address.toOutputScript(o.address, NETWORK);
+    psbt.addOutput({ script: outScript, value: o.value });
+  }
+  const psbtBase64 = psbt.toBase64();
+
+  // 12. Project decoded outputs for the verification block.
+  const decodedOutputs = newOutputs.map((o) => ({
+    address: o.address,
+    amountSats: o.value.toString(),
+    amountBtc: satsToBtcString(BigInt(o.value)),
+    isChange: o.isChange,
+    ...(o.isChange ? { changePath: changeEntryFromPairings.path } : {}),
+  }));
+
+  const decodedSources = [
+    {
+      address: args.wallet,
+      pulledSats: totalInputValue.toString(),
+      pulledBtc: satsToBtcString(BigInt(totalInputValue)),
+      inputCount: inputsForBuild.length,
+    },
+  ];
+  const sources = [
+    {
+      address: args.wallet,
+      path: paired.path,
+      publicKey: paired.publicKey,
+    },
+  ];
+  const inputSources = inputsForBuild.map(() => args.wallet);
+
+  const accountPath = accountPathFromLeaf(paired.path);
+  const oldFeeRate = oldFee / Math.max(1, newVbytes); // approximate; orig vsize ≈ new vsize
+  const description =
+    `RBF bump tx ${args.txid.slice(0, 12)}…: ` +
+    `fee ${oldFee} → ${newFee} sats (${args.newFeeRate} sat/vB)`;
+
+  const tx: Omit<UnsignedBitcoinTx, "handle" | "fingerprint"> = {
+    chain: "bitcoin",
+    action: "rbf_bump",
+    from: args.wallet,
+    sources,
+    inputSources,
+    psbtBase64,
+    accountPath,
+    addressFormat: ADDRESS_FORMAT_BY_TYPE[paired.addressType],
+    change: {
+      address: changeEntryFromPairings.address,
+      path: changeEntryFromPairings.path,
+      publicKey: changeEntryFromPairings.publicKey,
+    },
+    description,
+    replaces: {
+      txid: args.txid,
+      oldFeeSats: oldFee.toString(),
+      oldFeeRateSatPerVb: Math.round(oldFeeRate * 100) / 100,
+    },
+    decoded: {
+      functionName: "bitcoin.rbf_bump",
+      args: {
+        wallet: args.wallet,
+        oldTxid: args.txid,
+        oldFeeSats: oldFee.toString(),
+        newFeeRate: `${args.newFeeRate} sat/vB`,
+      },
+      outputs: decodedOutputs,
+      sources: decodedSources,
+      feeSats: newFee.toString(),
+      feeBtc: satsToBtcString(BigInt(newFee)),
+      feeRateSatPerVb: args.newFeeRate,
+      rbfEligible: true,
+    },
+    vsize: newVbytes,
+  };
+  return issueBitcoinHandle(tx);
+}
+
 /** Validate a BTC address against the four mainnet types. Re-export for tests. */
 export function _isSendableAddressType(
   type: BitcoinAddressType,

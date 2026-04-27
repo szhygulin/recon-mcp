@@ -1250,6 +1250,45 @@ export const prepareBitcoinNativeSendInput = z.object({
     ),
 });
 
+export const prepareBitcoinRbfBumpInput = z.object({
+  wallet: bitcoinAddressSchema.describe(
+    "Paired Bitcoin source address that signed the original tx. Phase 1 " +
+      "scope: native segwit (`bc1q...`) and taproot (`bc1p...`) only. " +
+      "Multi-source RBF (replacing a tx whose inputs span several wallets) " +
+      "is out of scope — every input on the original tx must come from this " +
+      "single address."
+  ),
+  txid: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/)
+    .describe(
+      "64-hex txid of the stuck mempool tx to replace. Must currently be " +
+        "unconfirmed and BIP-125 RBF-eligible (sequence < 0xFFFFFFFE on at " +
+        "least one input — true by default for every tx `prepare_btc_send` " +
+        "produces). Already-confirmed and final-marked txs are refused."
+    ),
+  newFeeRate: z
+    .number()
+    .positive()
+    .max(10_000)
+    .describe(
+      "New fee rate in sat/vB. Must satisfy BIP-125 rule 4: the new absolute " +
+        "fee must be at least the old absolute fee plus 1 sat/vB × new vsize. " +
+        "The replacement preserves every recipient verbatim and shrinks the " +
+        "change output to absorb the bump — refused if the bump would push " +
+        "change below the dust threshold (546 sats)."
+    ),
+  allowHighFee: z
+    .boolean()
+    .optional()
+    .describe(
+      "Override the fee-cap guard. The cap is `max(10 × newFeeRate × vbytes, " +
+        "2% of recipient output value)`. Legitimate priority bumps through " +
+        "heavy congestion can exceed it; pass true after confirming with the " +
+        "user."
+    ),
+});
+
 export const getBitcoinTxHistoryInput = z.object({
   address: bitcoinAddressSchema,
   limit: z
@@ -1305,6 +1344,7 @@ export const signBtcMessageInput = z.object({
 
 export type GetBitcoinTxHistoryArgs = z.infer<typeof getBitcoinTxHistoryInput>;
 export type PrepareBitcoinNativeSendArgs = z.infer<typeof prepareBitcoinNativeSendInput>;
+export type PrepareBitcoinRbfBumpArgs = z.infer<typeof prepareBitcoinRbfBumpInput>;
 export type SignBtcMessageArgs = z.infer<typeof signBtcMessageInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
 export type GetLedgerDeviceInfoArgs = z.infer<typeof getLedgerDeviceInfoInput>;

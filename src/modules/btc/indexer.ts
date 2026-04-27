@@ -106,19 +106,19 @@ export interface BitcoinTxHistoryEntry {
 /**
  * Esplora vin/vout shapes we destructure. Trimmed to fields we read.
  */
-interface EsploraVin {
+export interface EsploraVin {
   txid: string;
   vout: number;
   prevout?: { scriptpubkey_address?: string; value?: number };
   sequence?: number;
 }
 
-interface EsploraVout {
+export interface EsploraVout {
   scriptpubkey_address?: string;
   value?: number;
 }
 
-interface EsploraTx {
+export interface EsploraTx {
   txid: string;
   vin: EsploraVin[];
   vout: EsploraVout[];
@@ -210,6 +210,15 @@ export interface BitcoinIndexer {
    * sign cleanly. Issue #213.
    */
   getTxHex(txid: string): Promise<string>;
+  /**
+   * Fetch the full Esplora tx shape (vin/vout/fee/status) for a single
+   * txid. Used by the RBF fee-bump builder, which needs to: (1) confirm
+   * the tx is still in mempool (not already mined), (2) read original
+   * inputs to rebuild the same input set, (3) read original outputs to
+   * preserve recipients verbatim and identify the change output, (4)
+   * verify at least one input has BIP-125-eligible sequence.
+   */
+  getTx(txid: string): Promise<EsploraTx>;
 }
 
 /**
@@ -544,6 +553,15 @@ class EsploraIndexer implements BitcoinIndexer {
       confirmed: true,
       ...(status.block_height !== undefined ? { blockHeight: status.block_height } : {}),
     };
+  }
+
+  async getTx(txid: string): Promise<EsploraTx> {
+    if (!/^[0-9a-fA-F]{64}$/.test(txid)) {
+      throw new Error(
+        `Bitcoin indexer getTx called with non-64-hex txid "${txid.slice(0, 80)}".`,
+      );
+    }
+    return this.getJson<EsploraTx>(`/tx/${txid}`);
   }
 
   async getTxHex(txid: string): Promise<string> {
