@@ -54,7 +54,7 @@ export function getSkillTargets(): SkillTarget[] {
   return [
     {
       name: "vaultpilot-preflight",
-      repoUrl: "https://github.com/szhygulin/vaultpilot-skill.git",
+      repoUrl: "https://github.com/szhygulin/vaultpilot-security-skill.git",
       installPath: join(skillsRoot, "vaultpilot-preflight"),
     },
     {

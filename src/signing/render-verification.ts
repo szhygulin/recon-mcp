@@ -2276,7 +2276,7 @@ export function renderSolanaAgentTaskBlock(tx: UnsignedSolanaTx): string {
 /**
  * Agent-task block emitted when the user has NOT installed the
  * `vaultpilot-preflight` Claude Code skill (see
- * https://github.com/<OWNER>/vaultpilot-skill). The skill is the only
+ * https://github.com/szhygulin/vaultpilot-security-skill). The skill is the only
  * MCP-independent source of truth for agent-side integrity checks — its
  * content lives under `~/.claude/skills/` on the user's disk, outside
  * this server's reach. Without it, a compromised MCP could silently

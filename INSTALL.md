@@ -269,7 +269,7 @@ The wizard:
   `vaultpilot-mcp` entry to each of their MCP-server configs
   automatically. You don't need to find or edit JSON files.
 - Offers to clone the two companion Claude Code skills
-  ([`vaultpilot-skill`](https://github.com/szhygulin/vaultpilot-skill)
+  ([`vaultpilot-security-skill`](https://github.com/szhygulin/vaultpilot-security-skill)
   for signing-time integrity invariants and
   [`vaultpilot-setup-skill`](https://github.com/szhygulin/vaultpilot-setup-skill)
   for the conversational `/setup` flow) into `~/.claude/skills/`.
