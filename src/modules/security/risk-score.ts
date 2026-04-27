@@ -5,8 +5,13 @@ import { fetchWithTimeout } from "../../data/http.js";
 
 interface LlamaProtocol {
   name: string;
-  tvl?: number;
+  // DefiLlama's `/protocol/<slug>` endpoint returns `tvl` as a time-series
+  // array of `{ date, totalLiquidityUSD }` snapshots. Older docs / legacy
+  // protocols sometimes returned a scalar — accept both.
+  tvl?: number | Array<{ date: number; totalLiquidityUSD: number }>;
   chainTvls?: Record<string, number>;
+  // Legacy field — no longer present on current responses; kept optional for
+  // backwards compat in case it returns for some protocols.
   tvlHistory?: Array<[number, number]>;
   audits?: string;
   audit_links?: string[];
@@ -18,10 +23,65 @@ interface LlamaProtocol {
 // Source: Immunefi program pages (https://immunefi.com/explore/).
 const IMMUNEFI_BOUNTIES: Record<string, { program: string; maxBountyUsd: number }> = {
   aave: { program: "Aave", maxBountyUsd: 1_000_000 },
+  compound: { program: "Compound", maxBountyUsd: 500_000 },
   uniswap: { program: "Uniswap", maxBountyUsd: 15_500_000 }, // Uniswap has a leading program
   lido: { program: "Lido", maxBountyUsd: 2_000_000 },
   eigenlayer: { program: "EigenLayer", maxBountyUsd: 2_000_000 },
 };
+
+// DefiLlama protocol slugs are versioned (`aave-v3`, `compound-v3`) but
+// Immunefi bounties are program-level — one program covers all versions.
+// Map versioned slugs to the canonical bounty key.
+const BOUNTY_ALIASES: Record<string, string> = {
+  "aave-v2": "aave",
+  "aave-v3": "aave",
+  "compound-v2": "compound",
+  "compound-v3": "compound",
+  "uniswap-v2": "uniswap",
+  "uniswap-v3": "uniswap",
+  "uniswap-v4": "uniswap",
+};
+
+/**
+ * DefiLlama's `/protocol/<slug>` returns `tvl` as a time-series array of
+ * `{ date, totalLiquidityUSD }` for current responses. Older / cached shapes
+ * may return a scalar. Pull the latest snapshot when array-shaped.
+ */
+function extractCurrentTvl(
+  tvl: number | Array<{ date: number; totalLiquidityUSD: number }> | undefined,
+): number | undefined {
+  if (typeof tvl === "number" && Number.isFinite(tvl)) return tvl;
+  if (Array.isArray(tvl) && tvl.length > 0) {
+    const last = tvl[tvl.length - 1];
+    if (last && typeof last.totalLiquidityUSD === "number") {
+      return last.totalLiquidityUSD;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 30-day TVL trend as a fractional change. Reads from the `tvl` time-series
+ * (current API) and falls back to the legacy `tvlHistory` field if `tvl` is
+ * scalar. Returns undefined when there isn't enough history.
+ */
+function compute30dTrend(data: LlamaProtocol): number | undefined {
+  if (Array.isArray(data.tvl) && data.tvl.length > 30) {
+    const now = data.tvl[data.tvl.length - 1]?.totalLiquidityUSD;
+    const then = data.tvl[data.tvl.length - 31]?.totalLiquidityUSD;
+    if (typeof now === "number" && typeof then === "number" && then !== 0) {
+      return round((now - then) / then, 4);
+    }
+  }
+  if (data.tvlHistory && data.tvlHistory.length > 30) {
+    const now = data.tvlHistory[data.tvlHistory.length - 1]?.[1];
+    const then = data.tvlHistory[data.tvlHistory.length - 31]?.[1];
+    if (typeof now === "number" && typeof then === "number" && then !== 0) {
+      return round((now - then) / then, 4);
+    }
+  }
+  return undefined;
+}
 
 async function fetchLlamaProtocol(slug: string): Promise<LlamaProtocol | null> {
   const key = `risk:llama:${slug.toLowerCase()}`;
@@ -63,19 +123,16 @@ export async function getProtocolRiskScore(protocol: string): Promise<{
   } = { hasBugBounty: false };
 
   if (data) {
-    raw.tvlUsd = data.tvl ?? undefined;
-    if (data.tvlHistory && data.tvlHistory.length > 30) {
-      const now = data.tvlHistory[data.tvlHistory.length - 1]?.[1];
-      const then = data.tvlHistory[data.tvlHistory.length - 31]?.[1];
-      if (now && then) raw.tvlTrend30d = round((now - then) / then, 4);
-    }
+    raw.tvlUsd = extractCurrentTvl(data.tvl);
+    raw.tvlTrend30d = compute30dTrend(data);
     if (data.listedAt) {
       raw.contractAgeDays = Math.floor((Date.now() / 1000 - data.listedAt) / 86400);
     }
     if (data.audit_links) raw.auditsReported = data.audit_links.length;
   }
 
-  const bounty = IMMUNEFI_BOUNTIES[slug];
+  const bountyKey = BOUNTY_ALIASES[slug] ?? slug;
+  const bounty = IMMUNEFI_BOUNTIES[bountyKey];
   if (bounty) {
     raw.hasBugBounty = true;
     raw.bountyMaxUsd = bounty.maxBountyUsd;
