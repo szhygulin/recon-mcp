@@ -32,3 +32,44 @@ export type SetDemoWalletArgs = z.infer<typeof setDemoWalletInput>;
 export const getDemoWalletInput = z.object({});
 
 export type GetDemoWalletArgs = z.infer<typeof getDemoWalletInput>;
+
+export const exitDemoModeInput = z.object({
+  hasLedger: z
+    .boolean()
+    .optional()
+    .describe(
+      "Whether the user confirmed they have a Ledger device. Pass `false` to get a deferral message recommending they stay in demo until they have hardware. Omit if unknown — the response includes a 'verify Ledger first' caution.",
+    ),
+  hasRunSetup: z
+    .boolean()
+    .optional()
+    .describe(
+      "Whether the user has previously run `vaultpilot-mcp-setup`. When true, the response skips the setup-wizard walkthrough.",
+    ),
+  chains: z
+    .array(
+      z.enum([
+        "ethereum",
+        "arbitrum",
+        "polygon",
+        "base",
+        "optimism",
+        "solana",
+        "tron",
+        "bitcoin",
+        "litecoin",
+      ]),
+    )
+    .optional()
+    .describe(
+      "Chains the user intends to use. Drives which RPC / API keys to recommend. Defaults to ['ethereum'] when omitted.",
+    ),
+  acquireKeys: z
+    .boolean()
+    .optional()
+    .describe(
+      "Whether the user wants help acquiring API keys. Affects recommendation tone — true expands signup links, false keeps the response short.",
+    ),
+});
+
+export type ExitDemoModeArgs = z.infer<typeof exitDemoModeInput>;
