@@ -43,22 +43,36 @@ export type RateLimitSource =
  * Public-facing setup hint. The agent reads this and surfaces it to
  * the user (in chat). The shape is deliberately verbose so an LLM
  * doesn't have to rewrite the prose — just relay the message.
+ *
+ * Two `kind`s today:
+ *  - `rate-limit`: a default no-key RPC source has been throttled past
+ *    threshold; user should add an API key. Carries `hits`,
+ *    `windowMinutes`, `providers`, `setupCommand`.
+ *  - `demo-mode`: fresh-install state (no keys / pairings / custom
+ *    RPC, demo off) — agent should suggest `VAULTPILOT_DEMO=true` as
+ *    the zero-friction try-before-install path (issue #371). The
+ *    rate-limit-specific fields are omitted.
+ *
+ * Default kind is `rate-limit` for backward compatibility with the
+ * pre-#371 shape.
  */
 export interface SetupHint {
+  /** Discriminator for downstream filtering — agents can route on this. */
+  kind: "rate-limit" | "demo-mode";
   /** Stable identifier for deduping in the agent's mind / on-disk caches. */
   source: string;
-  /** How many 429s this source has seen in the rolling window. */
-  hits: number;
-  /** Window length in minutes — context for the hits count. */
-  windowMinutes: number;
+  /** Rate-limit only: how many 429s this source has seen in the rolling window. */
+  hits?: number;
+  /** Rate-limit only: window length in minutes — context for the hits count. */
+  windowMinutes?: number;
   /** One-line headline for chat. */
   message: string;
   /** Longer prose, including the actionable command. */
   recommendation: string;
-  /** Provider name(s) the user can sign up for, with dashboard URL. */
-  providers: Array<{ name: string; dashboardUrl: string }>;
-  /** Wizard subcommand to run (interactive — adds the key to config). */
-  setupCommand: string;
+  /** Rate-limit only: provider name(s) the user can sign up for, with dashboard URL. */
+  providers?: Array<{ name: string; dashboardUrl: string }>;
+  /** Rate-limit only: wizard subcommand to run (interactive — adds the key to config). */
+  setupCommand?: string;
 }
 
 /** Threshold + window. ~3 hits in 5 min before nudging — high enough to mean "sustained". */
@@ -123,7 +137,8 @@ export interface HintRenderContext {
 function renderHint(source: RateLimitSource): SetupHint {
   const key = sourceKey(source);
   const arr = hits.get(key) ?? [];
-  const base: Pick<SetupHint, "source" | "hits" | "windowMinutes"> = {
+  const base: Pick<SetupHint, "kind" | "source" | "hits" | "windowMinutes"> = {
+    kind: "rate-limit",
     source: key,
     hits: arr.length,
     windowMinutes: Math.floor(WINDOW_MS / 60_000),

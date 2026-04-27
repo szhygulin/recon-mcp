@@ -64,9 +64,12 @@ describe("rate-limit tracker — threshold + window", () => {
     const hints = getActiveHints(ALL_DEFAULT);
     expect(hints.length).toBe(1);
     expect(hints[0].source).toBe("evm:ethereum");
-    expect(hints[0].providers.length).toBeGreaterThan(0);
+    // Rate-limit hints carry the `kind: "rate-limit"` discriminator
+    // so callers can distinguish them from `demo-mode` hints (issue #371).
+    expect(hints[0].kind).toBe("rate-limit");
+    expect(hints[0].providers!.length).toBeGreaterThan(0);
     // Sanity: providers point at real signup dashboards.
-    expect(hints[0].providers.some((p) => p.dashboardUrl.startsWith("https://"))).toBe(true);
+    expect(hints[0].providers!.some((p) => p.dashboardUrl.startsWith("https://"))).toBe(true);
   });
 
   it("trims hits outside the rolling window (5 min)", () => {
@@ -165,10 +168,10 @@ describe("rate-limit tracker — independent per-source counters", () => {
     expect(hints.map((h) => h.source).sort()).toEqual(["solana", "tron"]);
     // Solana hint points at Helius.
     const solana = hints.find((h) => h.source === "solana")!;
-    expect(solana.providers[0].name).toBe("Helius");
+    expect(solana.providers![0].name).toBe("Helius");
     // TRON hint points at TronGrid.
     const tron = hints.find((h) => h.source === "tron")!;
-    expect(tron.providers[0].name).toBe("TronGrid");
+    expect(tron.providers![0].name).toBe("TronGrid");
   });
 
   it("each EVM chain tracked independently", () => {
@@ -190,8 +193,8 @@ describe("rate-limit tracker — hint shape sanity", () => {
     recordRateLimit({ kind: "evm", chain: "polygon" });
     recordRateLimit({ kind: "evm", chain: "polygon" });
     const hint = getActiveHints(ALL_DEFAULT)[0];
-    expect(hint.providers.map((p) => p.name).sort()).toEqual(["Alchemy", "Infura"]);
-    for (const p of hint.providers) {
+    expect(hint.providers!.map((p) => p.name).sort()).toEqual(["Alchemy", "Infura"]);
+    for (const p of hint.providers!) {
       expect(() => new URL(p.dashboardUrl)).not.toThrow();
       expect(p.dashboardUrl.startsWith("https://")).toBe(true);
     }

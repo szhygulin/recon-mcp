@@ -2851,21 +2851,24 @@ async function main() {
         "API-key presence + source per service (Etherscan, 1inch, TronGrid, WalletConnect — " +
         "boolean + source enum, never values), counts of paired Ledger accounts (Solana / TRON), " +
         "the WC session-topic SUFFIX (last 8 chars only — same convention as get_ledger_status), " +
-        "the agent-side preflight-skill install state, a `setupHints` array (rate-limit " +
-        "nudges — surfaces when a no-key default RPC has been throttled past threshold; each " +
-        "entry tells the user which provider to sign up for, the dashboard URL, and the wizard " +
-        "subcommand to add the key), AND a `demoMode` field that surfaces whether " +
-        "`VAULTPILOT_DEMO=true` is active plus the activation recipe (issue #371 — agent-side " +
-        "discoverability for the no-Ledger try-before-install fixture mode). Pure local I/O — " +
-        "reads ~/.vaultpilot-mcp/config.json + process.env, no RPC calls, no network. Use this " +
-        "when the user asks 'is my config set up correctly' or 'why is my Solana balance read " +
+        "the agent-side preflight-skill install state, a `setupHints` array (each entry has a " +
+        "`kind` discriminator: `rate-limit` nudges surface when a no-key default RPC has been " +
+        "throttled past threshold and tell the user which provider to sign up for + the wizard " +
+        "subcommand; `demo-mode` nudges fire on a fresh-install state — no keys, no pairings, " +
+        "no custom RPC — suggesting `VAULTPILOT_DEMO=true` as the zero-friction first-time path " +
+        "per issue #371), AND a `demoMode` field that surfaces whether `VAULTPILOT_DEMO=true` " +
+        "is active plus the activation recipe. Pure local I/O — reads " +
+        "~/.vaultpilot-mcp/config.json + process.env, no RPC calls, no network. Use this when " +
+        "the user asks 'is my config set up correctly' or 'why is my Solana balance read " +
         "failing' before suggesting they re-run setup or paste keys. AGENT BEHAVIOR for " +
         "setupHints: when the array is non-empty, surface each entry's `message` + " +
-        "`recommendation` + `providers` to the user as actionable advice. Unlike " +
-        "`suspectedPoisoning` (which is noise), `setupHints` are real remediation paths the user " +
-        "wants to act on. AGENT BEHAVIOR for demoMode: if the user asks 'how do I try this " +
-        "without a Ledger / API keys' or 'is there a demo mode', read `demoMode.howToEnable` and " +
-        "relay it verbatim — that field carries the exact `claude mcp add ... --env " +
+        "`recommendation` to the user as actionable advice (rate-limit hints also carry " +
+        "`providers` + `setupCommand`; demo-mode hints carry just message + recommendation, " +
+        "with the env-var recipe inline in `recommendation`). Unlike `suspectedPoisoning` " +
+        "(which is noise), `setupHints` are real remediation paths the user wants to act on. " +
+        "AGENT BEHAVIOR for demoMode: if the user asks 'how do I try this without a Ledger / " +
+        "API keys' or 'is there a demo mode', read `demoMode.howToEnable` and relay it " +
+        "verbatim — that field carries the exact `claude mcp add ... --env " +
         "VAULTPILOT_DEMO=true` recipe.",
       inputSchema: getVaultPilotConfigStatusInput.shape,
     },
