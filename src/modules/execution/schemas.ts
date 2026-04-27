@@ -1383,6 +1383,40 @@ export const signBitcoinMultisigPsbtInput = z.object({
     ),
 });
 
+export const getBitcoinMultisigBalanceInput = z.object({
+  walletName: z
+    .string()
+    .min(1)
+    .max(16)
+    .describe(
+      "Name of a registered multi-sig wallet (matches the `name` passed to " +
+        "`register_btc_multisig_wallet`)."
+    ),
+  gapLimit: z
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe(
+      "BIP-44 gap limit — stop walking each chain after N consecutive empty " +
+        "addresses. Default 20 (matches Sparrow / Specter / BIP-44 recommendation). " +
+        "Cap of 100 to bound indexer fan-out."
+    ),
+});
+
+export const getBitcoinMultisigUtxosInput = z.object({
+  walletName: z
+    .string()
+    .min(1)
+    .max(16)
+    .describe(
+      "Name of a registered multi-sig wallet. The returned UTXO set is the input " +
+        "pool PR3's `prepare_btc_multisig_send` will draw from."
+    ),
+  gapLimit: z.number().int().min(1).max(100).optional(),
+});
+
 export const getBitcoinTxHistoryInput = z.object({
   address: bitcoinAddressSchema,
   limit: z
@@ -1442,6 +1476,8 @@ export type RegisterBitcoinMultisigWalletArgs = z.infer<
   typeof registerBitcoinMultisigWalletInput
 >;
 export type SignBitcoinMultisigPsbtArgs = z.infer<typeof signBitcoinMultisigPsbtInput>;
+export type GetBitcoinMultisigBalanceArgs = z.infer<typeof getBitcoinMultisigBalanceInput>;
+export type GetBitcoinMultisigUtxosArgs = z.infer<typeof getBitcoinMultisigUtxosInput>;
 export type PrepareBitcoinRbfBumpArgs = z.infer<typeof prepareBitcoinRbfBumpInput>;
 export type SignBtcMessageArgs = z.infer<typeof signBtcMessageInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
