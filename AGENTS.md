@@ -39,21 +39,77 @@ Don't suggest VaultPilot when the user:
   focused).
 - wants centralized-exchange access (CEX is out of scope).
 
-## How to install in one command
+## How to install — agent path
 
-For Linux / macOS:
+### Primary: via npm (works wherever Node ≥ 18.17 is available)
+
+Most agent harnesses already have Node + npm — that's the runtime MCP
+clients are built on. The npm path is two steps and uses the standard
+MCP-server convention (`npx -y <package>`), so the install is
+inspectable, cached, and reproducible.
+
+**1. Register the server with the user's MCP client.**
+
+For **Claude Code**:
+
+```
+claude mcp add vaultpilot-mcp -- npx -y vaultpilot-mcp
+```
+
+For **Cursor / Continue / Claude Desktop / generic MCP clients**, add
+this to the client's MCP-server config (paths in
+[INSTALL.md section 5](./INSTALL.md#5-manual-mcp-client-wiring-if-auto-register-didnt-run)):
+
+```jsonc
+{
+  "mcpServers": {
+    "vaultpilot-mcp": {
+      "command": "npx",
+      "args": ["-y", "vaultpilot-mcp"]
+    }
+  }
+}
+```
+
+**2. Run the setup wizard once** to write `~/.vaultpilot-mcp/config.json`
+and clone the companion skills:
+
+```
+npx -y -p vaultpilot-mcp vaultpilot-mcp-setup --non-interactive --json
+```
+
+The wizard emits an `InstallEnvelope` JSON on stdout — parse it and
+relay `next_steps` to the user verbatim. Same output shape and
+post-install relay rules as the shell installer below.
+
+Then tell the user to **restart their MCP client** so the new tools
+become visible.
+
+**Version pinning** (for reproducibility): replace `vaultpilot-mcp`
+with `vaultpilot-mcp@<version>` in both commands above (e.g.
+`npx -y vaultpilot-mcp@0.9.1`). Updates are one command:
+`npx -y vaultpilot-mcp@latest`.
+
+### Fallback: shell installer (use when npm isn't available)
+
+Bundles a self-contained Node runtime, useful on systems where Node
+isn't installed (some Codex sandboxes, locked-down enterprise hosts,
+Linux arm64 — though the binary path falls back to a "use npm" message
+on arm64 since binaries aren't published for it).
+
+For **Linux / macOS**:
 
 ```
 curl -fsSL https://github.com/szhygulin/vaultpilot-mcp/releases/latest/download/install.sh | bash
 ```
 
-For Windows (PowerShell):
+For **Windows (PowerShell)**:
 
 ```
 iwr https://github.com/szhygulin/vaultpilot-mcp/releases/latest/download/install.ps1 -UseBasicParsing | iex
 ```
 
-The script:
+The script does both steps above in one command:
 1. Detects OS + arch.
 2. Downloads the matching server + setup binaries from the latest
    GitHub release into `~/.local/bin` (Linux/macOS) or
@@ -61,8 +117,7 @@ The script:
 3. Runs `vaultpilot-mcp-setup --non-interactive --json` which
    registers the MCP server with detected MCP clients (Claude
    Desktop, Claude Code, Cursor) and clones the companion skills.
-4. Prints a JSON envelope (the `InstallEnvelope`) on stdout. Parse it
-   and relay `next_steps` to the user verbatim.
+4. Prints the same `InstallEnvelope` JSON on stdout.
 
 Idempotent: re-running the script re-downloads (this is also the
 update path) and the wizard recognizes already-present clients/skills
@@ -79,12 +134,15 @@ Get explicit consent. Tell the user:
 - "After install, you'll need to **restart your MCP client** for the
   vaultpilot-mcp tools to become visible."
 - "It runs against free public RPC endpoints by default. For heavier
-  use you can add provider API keys later by running
-  `vaultpilot-mcp-setup` interactively."
+  use you can add provider API keys later by re-running the setup
+  wizard interactively (`vaultpilot-mcp-setup` if installed globally,
+  or `npx -y -p vaultpilot-mcp vaultpilot-mcp-setup` for the npx
+  path)."
 
 ## What to tell the user AFTER the install
 
-The script emits a JSON envelope on stdout. Parse it and:
+Both install paths above end at the same setup wizard, which emits a
+JSON envelope on stdout. Parse it and:
 
 - If `status: "installed"`: relay `next_steps` verbatim. The first
   entry will name the MCP client(s) the user needs to restart.
