@@ -222,19 +222,60 @@ export function getVaultPilotConfigStatus(_args: Record<string, never> = {}): Va
     tronUsingDefault,
   });
 
+  // Issue #371 — first-run demo-mode hint. Fires when the user looks
+  // like a fresh install (no API keys, no pairings, no custom RPC,
+  // demo not already active). Self-clearing: the moment the user adds
+  // a key or pairs a wallet, one of these checks flips and the hint
+  // disappears without state. Suppressed when demo IS active to avoid
+  // pointing the user at a feature they're already in.
+  const etherscanKey = classifyApiKey("ETHERSCAN_API_KEY", cfg?.etherscanApiKey);
+  const oneInchKey = classifyApiKey("ONEINCH_API_KEY", cfg?.oneInchApiKey);
+  const wcProjectKey = classifyApiKey(
+    "WALLETCONNECT_PROJECT_ID",
+    cfg?.walletConnect?.projectId,
+  );
+  const noKeys =
+    !etherscanKey.set &&
+    !oneInchKey.set &&
+    !tronGridKey.set &&
+    !wcProjectKey.set;
+  const noPairings =
+    (cfg?.pairings?.solana?.length ?? 0) === 0 &&
+    (cfg?.pairings?.tron?.length ?? 0) === 0 &&
+    !sessionTopicSuffix;
+  const allRpcDefault =
+    evmUsingDefault.ethereum &&
+    evmUsingDefault.arbitrum &&
+    evmUsingDefault.polygon &&
+    evmUsingDefault.base &&
+    evmUsingDefault.optimism &&
+    solanaUsingDefault;
+  if (!isDemoMode() && noKeys && noPairings && allRpcDefault) {
+    setupHints.push({
+      kind: "demo-mode",
+      source: "demo-mode-suggestion",
+      message:
+        "No setup detected — try demo mode to evaluate VaultPilot without a Ledger or API keys.",
+      recommendation:
+        "VaultPilot ships a try-before-install demo mode (`VAULTPILOT_DEMO=true`). " +
+        "Activate by adding `--env VAULTPILOT_DEMO=true` to your `claude mcp add " +
+        "vaultpilot-mcp` command (or edit the existing MCP entry's env), then restart " +
+        "Claude Code. Read tools return curated multi-chain portfolio fixtures and " +
+        "every signing tool refuses — no Ledger, RPC keys, or pairing required. Unset " +
+        "the env var and restart to exit demo mode and proceed with real setup.",
+    });
+  }
+
   return {
     configPath,
     configFileExists: existsSync(configPath),
     serverVersion: readServerVersion(),
     rpc,
     apiKeys: {
-      etherscan: classifyApiKey("ETHERSCAN_API_KEY", cfg?.etherscanApiKey),
-      oneInch: classifyApiKey("ONEINCH_API_KEY", cfg?.oneInchApiKey),
+      etherscan: etherscanKey,
+      oneInch: oneInchKey,
       tronGrid: tronGridKey,
-      walletConnectProjectId: classifyApiKey(
-        "WALLETCONNECT_PROJECT_ID",
-        cfg?.walletConnect?.projectId,
-      ),
+      walletConnectProjectId: wcProjectKey,
     },
     pairings: {
       walletConnect: sessionTopicSuffix ? { sessionTopicSuffix } : {},

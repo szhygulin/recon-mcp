@@ -324,6 +324,66 @@ describe("get_vaultpilot_config_status — demo-mode discoverability (issue #371
   });
 });
 
+describe("get_vaultpilot_config_status — first-run demo-mode hint (issue #371 Option 3)", () => {
+  it("emits a demo-mode setupHint when nothing is configured (no keys, no pairings, no custom RPC, demo off)", async () => {
+    const { getVaultPilotConfigStatus } = await loadFresh();
+    const status = getVaultPilotConfigStatus();
+    const demoHint = status.setupHints.find((h: { kind: string }) => h.kind === "demo-mode");
+    expect(demoHint).toBeDefined();
+    expect(demoHint.source).toBe("demo-mode-suggestion");
+    // The recommendation carries the activation recipe inline since
+    // demo hints don't use the rate-limit `setupCommand` field.
+    expect(demoHint.recommendation).toContain("VAULTPILOT_DEMO=true");
+    expect(demoHint.recommendation).toContain("claude mcp add");
+    expect(demoHint.recommendation).toContain("restart");
+    // Demo hints should NOT carry rate-limit-specific fields.
+    expect(demoHint.hits).toBeUndefined();
+    expect(demoHint.providers).toBeUndefined();
+    expect(demoHint.setupCommand).toBeUndefined();
+  });
+
+  it("does NOT emit the demo-mode hint when VAULTPILOT_DEMO is already active", async () => {
+    process.env.VAULTPILOT_DEMO = "true";
+    const { getVaultPilotConfigStatus } = await loadFresh();
+    const status = getVaultPilotConfigStatus();
+    const demoHint = status.setupHints.find((h: { kind: string }) => h.kind === "demo-mode");
+    expect(demoHint).toBeUndefined();
+  });
+
+  it("self-clears when the user adds an Etherscan API key", async () => {
+    process.env.ETHERSCAN_API_KEY = "k";
+    const { getVaultPilotConfigStatus } = await loadFresh();
+    const status = getVaultPilotConfigStatus();
+    expect(status.setupHints.find((h: { kind: string }) => h.kind === "demo-mode")).toBeUndefined();
+  });
+
+  it("self-clears when the user has a Solana pairing", async () => {
+    writeConfig({
+      rpc: { provider: "infura", apiKey: "irrelevant-but-flips-rpc-source" },
+      pairings: {
+        solana: [
+          {
+            address: "wallet1",
+            path: "44'/501'/0'",
+            accountIndex: 0,
+            appVersion: "1",
+          },
+        ],
+      },
+    });
+    const { getVaultPilotConfigStatus } = await loadFresh();
+    const status = getVaultPilotConfigStatus();
+    expect(status.setupHints.find((h: { kind: string }) => h.kind === "demo-mode")).toBeUndefined();
+  });
+
+  it("self-clears when any chain has a custom RPC URL", async () => {
+    process.env.ETHEREUM_RPC_URL = "https://my-eth.example.com/";
+    const { getVaultPilotConfigStatus } = await loadFresh();
+    const status = getVaultPilotConfigStatus();
+    expect(status.setupHints.find((h: { kind: string }) => h.kind === "demo-mode")).toBeUndefined();
+  });
+});
+
 describe("get_vaultpilot_config_status — basic shape", () => {
   it("includes serverVersion + configPath + configFileExists", async () => {
     const { getVaultPilotConfigStatus } = await loadFresh();
