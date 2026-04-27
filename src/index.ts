@@ -449,6 +449,15 @@ import { requestCapability, requestCapabilityInput } from "./modules/feedback/in
 
 import { issueHandles } from "./signing/tx-store.js";
 import {
+  EXPECTED_SKILL_SHA256,
+  EXPECTED_SKILL_SENTINEL_A,
+  EXPECTED_SKILL_SENTINEL_B,
+  EXPECTED_SKILL_SENTINEL_C,
+  checkSkillPinDrift,
+  getSkillPinDriftNotice,
+  recordSkillPinDriftResult,
+} from "./diagnostics/skill-pin-drift.js";
+import {
   renderAgentTaskBlock,
   renderLedgerHashBlock,
   renderMissingSkillWarning,
@@ -771,6 +780,12 @@ function handler<T, R>(
       {
         const warning = missingPreflightSkillWarning();
         if (warning) content.push({ type: "text", text: warning });
+        // Issue #379 design 4 — surface skill-pin drift detected at
+        // server startup. Same once-per-session dedup as the install
+        // notice, fires only when status === "drift" (no notice on
+        // match or fetch-failed).
+        const driftNotice = getSkillPinDriftNotice();
+        if (driftNotice) content.push({ type: "text", text: driftNotice });
       }
       // Emit the prepare-receipt for every tool that built a transaction
       // (result carries `verification`). Gives the user a verbatim-relay view
@@ -1558,13 +1573,13 @@ async function main() {
         "",
         "PIN DATA:",
         "  Expected SHA-256 of SKILL.md:",
-        "    e48d5c0cdeb85be7b3a431a678d1cf2ff40aa52a69259567bb575779af75007a",
+        `    ${EXPECTED_SKILL_SHA256}`,
         "  Expected in-file sentinel — NOTE: assembled from fragments below so the",
         "  full literal does not appear in these instructions (if it did, searching",
         "  context for it would always succeed and defeat the check). Concatenate:",
-        "    fragment A: `VAULTPILOT_PREFLIGHT_INTEGRITY`",
-        "    fragment B: `_v5_`",
-        "    fragment C: `9c4a2e7f3d816b50` (16 hex chars)",
+        `    fragment A: \`${EXPECTED_SKILL_SENTINEL_A}\``,
+        `    fragment B: \`${EXPECTED_SKILL_SENTINEL_B}\``,
+        `    fragment C: \`${EXPECTED_SKILL_SENTINEL_C}\` (16 hex chars)`,
         "  Search target for step (4) below is the full string A+B+C.",
         "",
         "PROTOCOL — on each vaultpilot-mcp flow that touches signing",
@@ -4201,6 +4216,37 @@ async function main() {
   // ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING and the binary exits before
   // serving its first JSON-RPC. See issue #330.
   startOraclePoller();
+
+  // Issue #379 design 4 — non-blocking startup self-check that fetches
+  // the live `SKILL.md` from canonical master, hashes it, compares to
+  // the server-side pin (`EXPECTED_SKILL_SHA256`). On drift, registers
+  // a session-level `VAULTPILOT NOTICE — Skill pin drift detected`
+  // block that fires on the first tool response (deduped).
+  //
+  // Fire-and-forget: must NOT block server startup on internet
+  // availability. Failures (timeout, DNS, non-200) resolve silently
+  // as `fetch-failed`; only `drift` surfaces a notice. Stderr log on
+  // both `drift` and `fetch-failed` so operators have visibility.
+  void checkSkillPinDrift().then((result) => {
+    recordSkillPinDriftResult(result);
+    if (result.status === "drift") {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[vaultpilot-mcp] skill-pin drift detected — pinned ` +
+          `${result.pinnedHash.slice(0, 16)}…, live ` +
+          `${result.liveHash.slice(0, 16)}…. The MCP version installed ` +
+          `here may break signing flows for users on the current ` +
+          `vaultpilot-security-skill release. Surface to operator; ` +
+          `fix is a coordinated MCP release with the updated pin.`,
+      );
+    } else if (result.status === "fetch-failed") {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[vaultpilot-mcp] skill-pin drift check did not run: ${result.reason}. ` +
+          `Server starts up normally; check will not retry until next restart.`,
+      );
+    }
+  });
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
