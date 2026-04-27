@@ -154,6 +154,8 @@ import type {
   PrepareBitcoinRbfBumpArgs,
   RegisterBitcoinMultisigWalletArgs,
   SignBitcoinMultisigPsbtArgs,
+  CombineBitcoinPsbtsArgs,
+  FinalizeBitcoinPsbtArgs,
   SignBtcMessageArgs,
   PairLedgerLitecoinArgs,
   GetLitecoinBalanceArgs,
@@ -1244,6 +1246,19 @@ export async function signBtcMultisigPsbt(args: SignBitcoinMultisigPsbtArgs) {
   return signBitcoinMultisigPsbt({
     walletName: args.walletName,
     psbtBase64: args.psbtBase64,
+  });
+}
+
+export async function combineBtcPsbts(args: CombineBitcoinPsbtsArgs) {
+  const { combinePsbts } = await import("../btc/psbt-combine.js");
+  return combinePsbts({ psbts: args.psbts });
+}
+
+export async function finalizeBtcPsbt(args: FinalizeBitcoinPsbtArgs) {
+  const { finalizePsbt } = await import("../btc/psbt-combine.js");
+  return finalizePsbt({
+    psbtBase64: args.psbtBase64,
+    ...(args.broadcast !== undefined ? { broadcast: args.broadcast } : {}),
   });
 }
 

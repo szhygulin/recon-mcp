@@ -1383,6 +1383,41 @@ export const signBitcoinMultisigPsbtInput = z.object({
     ),
 });
 
+export const combineBitcoinPsbtsInput = z.object({
+  psbts: z
+    .array(z.string().min(1).max(200_000))
+    .min(2)
+    .max(15)
+    .describe(
+      "Array of 2-15 base64-encoded PSBT v0 strings to merge. Every entry must " +
+        "share the same unsigned tx body (same inputs in the same order, same " +
+        "outputs in the same order, same sequence numbers, same locktime); only " +
+        "the per-cosigner witness data may differ. Refused if any pair has a " +
+        "mismatched body — combining PSBTs across distinct unsigned txs would " +
+        "silently merge signatures across different transactions."
+    ),
+});
+
+export const finalizeBitcoinPsbtInput = z.object({
+  psbtBase64: z
+    .string()
+    .min(1)
+    .max(200_000)
+    .describe(
+      "Base64-encoded PSBT v0 with all required signatures spliced in (typically " +
+        "via `combine_btc_psbts`). Refused with a per-input breakdown when any " +
+        "input is below its threshold (e.g. 1/2 sigs)."
+    ),
+  broadcast: z
+    .boolean()
+    .optional()
+    .describe(
+      "When true, broadcasts the finalized tx via the configured indexer and " +
+        "returns `broadcastedTxid` alongside `txid`. When false (default), only " +
+        "returns the tx hex — the caller decides when/where to broadcast."
+    ),
+});
+
 export const getBitcoinTxHistoryInput = z.object({
   address: bitcoinAddressSchema,
   limit: z
@@ -1442,6 +1477,8 @@ export type RegisterBitcoinMultisigWalletArgs = z.infer<
   typeof registerBitcoinMultisigWalletInput
 >;
 export type SignBitcoinMultisigPsbtArgs = z.infer<typeof signBitcoinMultisigPsbtInput>;
+export type CombineBitcoinPsbtsArgs = z.infer<typeof combineBitcoinPsbtsInput>;
+export type FinalizeBitcoinPsbtArgs = z.infer<typeof finalizeBitcoinPsbtInput>;
 export type PrepareBitcoinRbfBumpArgs = z.infer<typeof prepareBitcoinRbfBumpInput>;
 export type SignBtcMessageArgs = z.infer<typeof signBtcMessageInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
