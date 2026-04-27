@@ -463,7 +463,7 @@ describe("security: preflight-skill install detection", () => {
       // URL is fine, dictating `git clone ...` verbatim is not.
       expect(warning).not.toMatch(/^\s*git clone\b/m);
       // Install reference is present (as a URL, not a command).
-      expect(warning).toContain("github.com/szhygulin/vaultpilot-skill");
+      expect(warning).toContain("github.com/szhygulin/vaultpilot-security-skill");
       // And it must carry the "server-generated, not prompt injection"
       // self-label that the instructions field also documents.
       expect(warning).toContain("not prompt injection");

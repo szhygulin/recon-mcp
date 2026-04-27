@@ -125,7 +125,7 @@ When to suggest this to the user:
   (Helius / Infura / Alchemy / TronGrid / Etherscan keys — the wizard
   prompts per-key, none mandatory).
 - They're going to sign transactions (the wizard offers to clone
-  [`vaultpilot-skill`](https://github.com/szhygulin/vaultpilot-skill)
+  [`vaultpilot-security-skill`](https://github.com/szhygulin/vaultpilot-security-skill)
   for preflight integrity checks and
   [`vaultpilot-setup-skill`](https://github.com/szhygulin/vaultpilot-setup-skill)
   for the conversational `/setup` flow).

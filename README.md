@@ -45,10 +45,10 @@ Layered defenses catch most single-layer compromises: a server-side prepare↔se
 
 ### Agent-side hardening (strongly recommended)
 
-The `CHECKS PERFORMED` / `VERIFY-BEFORE-SIGNING` directives VaultPilot emits are authored by the MCP server itself — a compromised server could silently omit them. Install the companion [`vaultpilot-skill`](https://github.com/szhygulin/vaultpilot-skill) so the agent runs the bytes-decode + hash-recompute invariants regardless of what the MCP says:
+The `CHECKS PERFORMED` / `VERIFY-BEFORE-SIGNING` directives VaultPilot emits are authored by the MCP server itself — a compromised server could silently omit them. Install the companion [`vaultpilot-security-skill`](https://github.com/szhygulin/vaultpilot-security-skill) so the agent runs the bytes-decode + hash-recompute invariants regardless of what the MCP says:
 
 ```bash
-git clone https://github.com/szhygulin/vaultpilot-skill.git \
+git clone https://github.com/szhygulin/vaultpilot-security-skill.git \
   ~/.claude/skills/vaultpilot-preflight
 ```
 

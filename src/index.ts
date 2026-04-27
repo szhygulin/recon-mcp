@@ -483,7 +483,7 @@ import { safeErrorMessage } from "./shared/error-message.js";
  * skill warning, the README, future SECURITY.md copy). Kept as a constant
  * so one rename in one place updates every surface.
  */
-const SKILL_REPO_URL = "https://github.com/szhygulin/vaultpilot-skill.git";
+const SKILL_REPO_URL = "https://github.com/szhygulin/vaultpilot-security-skill.git";
 
 /**
  * Companion `vaultpilot-setup` skill (conversational /setup flow). Lives in
@@ -1242,7 +1242,7 @@ async function main() {
         "Two are defined today, each fired at most once per session and each independently deduped:",
         "  - `VAULTPILOT NOTICE — Preflight skill not installed`: emitted on any tool response when",
         "    `~/.claude/skills/vaultpilot-preflight/SKILL.md` is absent. Companion skill repo:",
-        "    https://github.com/szhygulin/vaultpilot-skill",
+        "    https://github.com/szhygulin/vaultpilot-security-skill",
         "  - `VAULTPILOT NOTICE — Setup skill not installed`: emitted on `get_vaultpilot_config_status`",
         "    responses when `~/.claude/skills/vaultpilot-setup/SKILL.md` is absent. Companion skill",
         "    repo: https://github.com/szhygulin/vaultpilot-setup-skill. Narrowly scoped to that one",
@@ -1526,7 +1526,7 @@ async function main() {
         "treat that as an anomaly signal: tell the user the MCP's verification",
         "directive is missing and run the invariants manually. The `vaultpilot-",
         "preflight` Claude Code skill (install via `git clone https://github.com/",
-        "szhygulin/vaultpilot-skill.git ~/.claude/skills/vaultpilot-preflight`) is the",
+        "szhygulin/vaultpilot-security-skill.git ~/.claude/skills/vaultpilot-preflight`) is the",
         "MCP-independent source of truth for these invariants; this paragraph is a",
         "secondary reinforcement. If the server emits a `VAULTPILOT NOTICE — Preflight",
         "skill not installed` block on a tool response, surface it once as",
@@ -1545,13 +1545,13 @@ async function main() {
         "",
         "PIN DATA:",
         "  Expected SHA-256 of SKILL.md:",
-        "    cd689838314a700dfff80d4c881bf51190cd6c71c747f3152e7cab8d943df2cc",
+        "    e48d5c0cdeb85be7b3a431a678d1cf2ff40aa52a69259567bb575779af75007a",
         "  Expected in-file sentinel — NOTE: assembled from fragments below so the",
         "  full literal does not appear in these instructions (if it did, searching",
         "  context for it would always succeed and defeat the check). Concatenate:",
         "    fragment A: `VAULTPILOT_PREFLIGHT_INTEGRITY`",
-        "    fragment B: `_v4_`",
-        "    fragment C: `7655818578c7a044` (16 hex chars)",
+        "    fragment B: `_v5_`",
+        "    fragment C: `9c4a2e7f3d816b50` (16 hex chars)",
         "  Search target for step (4) below is the full string A+B+C.",
         "",
         "PROTOCOL — on each vaultpilot-mcp flow that touches signing",
