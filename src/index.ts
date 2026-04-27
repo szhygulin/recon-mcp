@@ -339,6 +339,7 @@ import {
 import { getCompoundMarketInfo } from "./modules/compound/market-info.js";
 import { getMarketIncidentStatus } from "./modules/incidents/index.js";
 import { getMarketIncidentStatusInput } from "./modules/incidents/schemas.js";
+import { startOraclePoller } from "./modules/incidents/oracle-poller.js";
 import {
   buildCompoundSupply,
   buildCompoundWithdraw,
@@ -3471,9 +3472,12 @@ async function main() {
   // call here even if a future code path also invokes it. The
   // setInterval is unref'd so it doesn't keep the process alive
   // beyond the stdio transport's lifecycle.
-  const { startOraclePoller } = await import(
-    "./modules/incidents/oracle-poller.js"
-  );
+  //
+  // Imported statically (not via `await import()`) because @yao-pkg/pkg
+  // bundles the binary into a single snapshot whose host VM does not wire
+  // a dynamic-import callback — any `import()` at startup throws
+  // ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING and the binary exits before
+  // serving its first JSON-RPC. See issue #330.
   startOraclePoller();
 
   const transport = new StdioServerTransport();
