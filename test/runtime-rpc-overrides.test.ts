@@ -49,14 +49,14 @@ describe("setHeliusApiKey — input validation", () => {
   });
 
   it("rejects malformed UUIDs", () => {
-    expect(() => setHeliusApiKey("not-a-uuid")).toThrow(/Helius UUID format/);
+    expect(() => setHeliusApiKey("not-a-uuid")).toThrow(/UUID format/);
     expect(() => setHeliusApiKey("12345678-1234-1234-1234-12345678")).toThrow(
-      /Helius UUID format/,
+      /UUID format/,
     );
     expect(() =>
       // wrong segment lengths
       setHeliusApiKey("12345678-1234-1234-1234-1234567890ab-extra"),
-    ).toThrow(/Helius UUID format/);
+    ).toThrow(/UUID format/);
   });
 });
 
@@ -110,35 +110,47 @@ describe("Solana public-error counter — tracks exactly when no override is set
   });
 });
 
-describe("Helius nudge — fires every 10th public error, clears on consume", () => {
-  it("does NOT fire on counts 1-9", () => {
-    for (let i = 0; i < 9; i++) recordSolanaPublicError();
+describe("Helius nudge — fires on first error + every 10th thereafter", () => {
+  it("fires on count 1 (first error of the session)", () => {
+    recordSolanaPublicError();
+    const nudge = consumePendingHeliusNudge();
+    expect(nudge).not.toBeNull();
+    // Mentions the count so the user sees how often they've been throttled.
+    // Singular form on count 1 (no trailing 's').
+    expect(nudge!).toContain("hit 1 rate-limit error");
+  });
+
+  it("does NOT re-fire on counts 2-9 after the first nudge has been consumed", () => {
+    recordSolanaPublicError();
+    consumePendingHeliusNudge(); // pop the count=1 nudge
+    for (let i = 0; i < 8; i++) recordSolanaPublicError(); // counts 2..9
     expect(consumePendingHeliusNudge()).toBeNull();
   });
 
-  it("fires on count 10", () => {
-    for (let i = 0; i < 10; i++) recordSolanaPublicError();
+  it("re-fires on count 10 after the count=1 nudge was consumed", () => {
+    recordSolanaPublicError();
+    consumePendingHeliusNudge();
+    for (let i = 0; i < 9; i++) recordSolanaPublicError(); // brings to 10
     const nudge = consumePendingHeliusNudge();
     expect(nudge).not.toBeNull();
     expect(nudge!).toContain("VAULTPILOT_DEMO");
     expect(nudge!).toContain("Helius");
     expect(nudge!).toContain("set_helius_api_key");
     expect(nudge!).toContain("dashboard.helius.dev");
-    // Mentions the count so the user sees how often they've been throttled.
-    expect(nudge!).toContain("10");
+    expect(nudge!).toContain("hit 10 rate-limit errors");
   });
 
   it("consume is pop-style — clears the flag after returning the text", () => {
-    for (let i = 0; i < 10; i++) recordSolanaPublicError();
+    recordSolanaPublicError();
     expect(consumePendingHeliusNudge()).not.toBeNull();
     // Second consume returns null — only one response per threshold crossing.
     expect(consumePendingHeliusNudge()).toBeNull();
   });
 
-  it("re-fires on the next threshold (count 20)", () => {
+  it("re-fires on the next threshold (count 20) after pop at 10", () => {
     for (let i = 0; i < 10; i++) recordSolanaPublicError();
-    consumePendingHeliusNudge(); // pop the first one
-    for (let i = 0; i < 9; i++) recordSolanaPublicError();
+    consumePendingHeliusNudge(); // pop the count=10 (count=1 already consumed implicitly via the same flag)
+    for (let i = 0; i < 9; i++) recordSolanaPublicError(); // 11..19
     expect(consumePendingHeliusNudge()).toBeNull();
     recordSolanaPublicError(); // 20th
     const nudge = consumePendingHeliusNudge();
@@ -153,6 +165,136 @@ describe("Helius nudge — fires every 10th public error, clears on consume", ()
     // is active — but guard anyway), they don't count.
     recordSolanaPublicError();
     expect(consumePendingHeliusNudge()).toBeNull();
+  });
+});
+
+describe("Etherscan override (issue #371 PR generalization)", () => {
+  const VALID_ETHERSCAN_KEY = "ZQTKPM98R5N4YT8GMTBI3XR2P4HFZNTAYG"; // 34 chars
+
+  it("setRuntimeOverride('etherscan', key) stores the bare key (no URL wrapping)", async () => {
+    const { setRuntimeOverride, getRuntimeOverride } = await import(
+      "../src/data/runtime-rpc-overrides.js"
+    );
+    setRuntimeOverride("etherscan", VALID_ETHERSCAN_KEY);
+    // Etherscan resolves to the bare key (used as-is in query params),
+    // unlike Helius which wraps in a URL.
+    expect(getRuntimeOverride("etherscan")).toBe(VALID_ETHERSCAN_KEY);
+  });
+
+  it("rejects URL-shaped input (security: no prompt-injection redirects)", async () => {
+    const { setRuntimeOverride } = await import(
+      "../src/data/runtime-rpc-overrides.js"
+    );
+    expect(() =>
+      setRuntimeOverride("etherscan", "https://malicious.example.com/?api=stealth"),
+    ).toThrow(/pass the bare API key, not a URL/);
+  });
+
+  it("rejects malformed keys (wrong length / dashes / etc.)", async () => {
+    const { setRuntimeOverride } = await import(
+      "../src/data/runtime-rpc-overrides.js"
+    );
+    expect(() => setRuntimeOverride("etherscan", "too-short")).toThrow(
+      /Etherscan V2/,
+    );
+    // UUID-shaped (Helius's format) is wrong for Etherscan — too-many dashes.
+    expect(() =>
+      setRuntimeOverride("etherscan", "b7d6f3a1-1234-5678-9abc-def012345678"),
+    ).toThrow(/Etherscan V2/);
+    // 33 chars (off by one) — must be exactly 34.
+    expect(() =>
+      setRuntimeOverride("etherscan", "ZQTKPM98R5N4YT8GMTBI3XR2P4HFZNTAY"),
+    ).toThrow(/Etherscan V2/);
+  });
+
+  it("Etherscan + Helius counters are independent (per-service state)", async () => {
+    const {
+      recordPublicError,
+      getPublicErrorCount,
+    } = await import("../src/data/runtime-rpc-overrides.js");
+    recordPublicError("helius");
+    recordPublicError("helius");
+    recordPublicError("etherscan");
+    expect(getPublicErrorCount("helius")).toBe(2);
+    expect(getPublicErrorCount("etherscan")).toBe(1);
+  });
+
+  it("nudge fires on first Etherscan error + every 10th thereafter", async () => {
+    const {
+      recordPublicError,
+      consumePendingNudge,
+    } = await import("../src/data/runtime-rpc-overrides.js");
+    // Count 1 → fires.
+    recordPublicError("etherscan");
+    const first = consumePendingNudge("etherscan");
+    expect(first).not.toBeNull();
+    expect(first!).toContain("Etherscan");
+    expect(first!).toContain("set_etherscan_api_key");
+    expect(first!).toContain("etherscan.io/myapikey");
+    expect(first!).toContain("rejected 1 call");
+    // Counts 2-9 → no fire.
+    for (let i = 0; i < 8; i++) recordPublicError("etherscan");
+    expect(consumePendingNudge("etherscan")).toBeNull();
+    // Count 10 → fires.
+    recordPublicError("etherscan");
+    const tenth = consumePendingNudge("etherscan");
+    expect(tenth).not.toBeNull();
+    expect(tenth!).toContain("rejected 10 calls");
+  });
+
+  it("setting an Etherscan key zeroes the counter + clears pending nudge", async () => {
+    const {
+      recordPublicError,
+      setRuntimeOverride,
+      getPublicErrorCount,
+      consumePendingNudge,
+    } = await import("../src/data/runtime-rpc-overrides.js");
+    recordPublicError("etherscan");
+    expect(getPublicErrorCount("etherscan")).toBe(1);
+    setRuntimeOverride("etherscan", VALID_ETHERSCAN_KEY);
+    expect(getPublicErrorCount("etherscan")).toBe(0);
+    expect(consumePendingNudge("etherscan")).toBeNull();
+  });
+
+  it("consumeAllPendingNudges returns both Helius + Etherscan when both pending", async () => {
+    const {
+      recordPublicError,
+      consumeAllPendingNudges,
+    } = await import("../src/data/runtime-rpc-overrides.js");
+    recordPublicError("helius");
+    recordPublicError("etherscan");
+    const all = consumeAllPendingNudges();
+    expect(all.length).toBe(2);
+    const services = all.map((x) => x.service).sort();
+    expect(services).toEqual(["etherscan", "helius"]);
+    // Subsequent call: both consumed, returns empty.
+    expect(consumeAllPendingNudges()).toEqual([]);
+  });
+
+  it("Etherscan status surface redacts to last-4 chars", async () => {
+    const {
+      setRuntimeOverride,
+      getRuntimeOverrideStatus,
+    } = await import("../src/data/runtime-rpc-overrides.js");
+    setRuntimeOverride("etherscan", VALID_ETHERSCAN_KEY);
+    const status = getRuntimeOverrideStatus("etherscan");
+    expect(status.active).toBe(true);
+    expect(status.apiKeySuffix).toBe(VALID_ETHERSCAN_KEY.slice(-4));
+    expect(JSON.stringify(status)).not.toContain(VALID_ETHERSCAN_KEY);
+  });
+
+  it("resolveEtherscanApiKey integration — runtime-override wins over env + config", async () => {
+    delete process.env.ETHERSCAN_API_KEY;
+    const { setRuntimeOverride } = await import(
+      "../src/data/runtime-rpc-overrides.js"
+    );
+    setRuntimeOverride("etherscan", VALID_ETHERSCAN_KEY);
+    const { resolveEtherscanApiKey } = await import("../src/config/user-config.js");
+    expect(resolveEtherscanApiKey(null)).toBe(VALID_ETHERSCAN_KEY);
+    // Env var doesn't override the runtime setting.
+    process.env.ETHERSCAN_API_KEY = "DIFFERENT_KEY_VIA_ENV_VAR_THAT_LOSES_MMM";
+    expect(resolveEtherscanApiKey(null)).toBe(VALID_ETHERSCAN_KEY);
+    delete process.env.ETHERSCAN_API_KEY;
   });
 });
 

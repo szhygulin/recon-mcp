@@ -1,7 +1,7 @@
 /**
- * Zod input schema for `set_helius_api_key`. Lives in a sibling file so
- * src/index.ts stays free of inline zod definitions (matches the
- * convention every other module follows).
+ * Zod input schemas for the runtime API-key tools. Lives in a sibling
+ * file so src/index.ts stays free of inline zod definitions (matches
+ * the convention every other module follows).
  */
 
 import { z } from "zod";
@@ -19,3 +19,17 @@ export const setHeliusApiKeyInput = z.object({
 });
 
 export type SetHeliusApiKeyArgs = z.infer<typeof setHeliusApiKeyInput>;
+
+export const setEtherscanApiKeyInput = z.object({
+  apiKey: z
+    .string()
+    .min(1)
+    .describe(
+      "Etherscan V2 API key (34-char alphanumeric, e.g. ZQTKPM98R5N4YT8GMTBI3XR2P4HFZNTAYG). " +
+        "Get one for free at https://etherscan.io/myapikey. One key works across all 5 " +
+        "supported EVM chains via the V2 unified API. Stored in process memory only — " +
+        "survives until the MCP server restarts.",
+    ),
+});
+
+export type SetEtherscanApiKeyArgs = z.infer<typeof setEtherscanApiKeyInput>;

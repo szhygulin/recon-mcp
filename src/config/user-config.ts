@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, lstatSync, cpSync }
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import type { UserConfig } from "../types/index.js";
+import { getRuntimeOverride } from "../data/runtime-rpc-overrides.js";
 
 // Pre-rename path. We still read from here if the new dir doesn't exist, and
 // copy the legacy dir on first write so existing users keep their WC pairing
@@ -142,8 +143,13 @@ export function getConfigPath(): string {
   return join(getConfigDir(), "config.json");
 }
 
-/** Pull the Etherscan API key from env (highest priority) or user config. */
+/** Pull the Etherscan API key from runtime override (highest), env, or user config. */
 export function resolveEtherscanApiKey(userConfig: UserConfig | null): string | undefined {
+  // Issue #371 follow-up: a runtime override (set via `set_etherscan_api_key`
+  // in demo mode) takes precedence over env/config — lets agents inject
+  // a key mid-session without restarting the MCP.
+  const override = getRuntimeOverride("etherscan");
+  if (override) return override;
   return process.env.ETHERSCAN_API_KEY || userConfig?.etherscanApiKey;
 }
 
