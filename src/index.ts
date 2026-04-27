@@ -157,6 +157,8 @@ import {
   signBtcMultisigPsbt,
   combineBtcPsbts,
   finalizeBtcPsbt,
+  getBtcMultisigBalance,
+  getBtcMultisigUtxos,
   signBtcMessage,
   pairLedgerLitecoin,
   getLitecoinBalance,
@@ -238,6 +240,8 @@ import {
   signBitcoinMultisigPsbtInput,
   combineBitcoinPsbtsInput,
   finalizeBitcoinPsbtInput,
+  getBitcoinMultisigBalanceInput,
+  getBitcoinMultisigUtxosInput,
   signBtcMessageInput,
   pairLedgerLitecoinInput,
   getLitecoinBalanceInput,
@@ -2540,6 +2544,37 @@ async function main() {
       inputSchema: finalizeBitcoinPsbtInput.shape,
     },
     handler(finalizeBtcPsbt, { toolName: "finalize_btc_psbt" })
+  );
+
+  registerTool(server,
+    "get_btc_multisig_balance",
+    {
+      description:
+        "Watch-only balance read for a registered multi-sig wallet. Walks both " +
+        "BIP-32 chains (chain=0 receive, chain=1 change) up to a gap-limit window " +
+        "(default 20, BIP-44 standard), queries each derived address via the " +
+        "configured Esplora indexer, returns the aggregate balance plus per-address " +
+        "breakdown for entries with on-chain history. No device touch — addresses " +
+        "are derived locally from the stored cosigner xpubs. Phase 3 supports " +
+        "P2WSH (`wsh`) wallets only; taproot lands in a follow-up PR.",
+      inputSchema: getBitcoinMultisigBalanceInput.shape,
+    },
+    handler(getBtcMultisigBalance, { toolName: "get_btc_multisig_balance" })
+  );
+
+  registerTool(server,
+    "get_btc_multisig_utxos",
+    {
+      description:
+        "Return the UTXO set for a registered multi-sig wallet. Same gap-limit " +
+        "walk as `get_btc_multisig_balance`; each UTXO carries the witnessScript + " +
+        "cosigner pubkeys needed to build a multi-sig PSBT input. Used internally " +
+        "by `prepare_btc_multisig_send` (initiator flow); also exposed directly " +
+        "for users who want to inspect the spendable set without preparing a tx. " +
+        "No device touch.",
+      inputSchema: getBitcoinMultisigUtxosInput.shape,
+    },
+    handler(getBtcMultisigUtxos, { toolName: "get_btc_multisig_utxos" })
   );
 
   registerTool(server,
