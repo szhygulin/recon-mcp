@@ -249,6 +249,50 @@ export function runDoctor(): DoctorReport {
     });
   }
 
+  // Demo-mode classification — `--check` is the canonical pre-restart
+  // surface, so it should tell the user (and any assisting agent)
+  // whether the next boot will be in demo or real mode and why.
+  // Surfaced as `warn` for demo (not `fail`) so the doctor exits 0;
+  // demo isn't an install error, it's a deliberate configuration.
+  const envValue = process.env.VAULTPILOT_DEMO;
+  const envEnabled = envValue === "true";
+  const envDisabled = envValue === "false";
+  const envInvalid = envValue !== undefined && !envEnabled && !envDisabled;
+  if (envEnabled) {
+    checks.push({
+      name: "demo-mode",
+      status: "warn",
+      message:
+        "Demo mode is ON via VAULTPILOT_DEMO=true. Signing tools refuse, broadcast is intercepted to a simulation envelope. To use real funds, unset VAULTPILOT_DEMO and restart.",
+    });
+  } else if (envInvalid) {
+    checks.push({
+      name: "demo-mode",
+      status: "warn",
+      message: `VAULTPILOT_DEMO is set to '${envValue}' — server expects the exact literal 'true' (or 'false' to opt out). Treated as normal mode. Fix the value or remove the var.`,
+    });
+  } else if (envDisabled) {
+    checks.push({
+      name: "demo-mode",
+      status: "ok",
+      message:
+        "Demo mode is OFF via explicit VAULTPILOT_DEMO=false (suppresses auto-demo on fresh installs).",
+    });
+  } else if (!configExists && !legacyExists) {
+    checks.push({
+      name: "demo-mode",
+      status: "warn",
+      message:
+        "Auto-demo will activate on next boot: VAULTPILOT_DEMO is unset and no config file exists. Signing tools will refuse, broadcast intercepted. To opt out, run `vaultpilot-mcp-setup` (writes config, restart-gated) or set VAULTPILOT_DEMO=false.",
+    });
+  } else {
+    checks.push({
+      name: "demo-mode",
+      status: "ok",
+      message: "Demo mode is OFF (env unset + config present). Signing routes through Ledger as normal.",
+    });
+  }
+
   return {
     ok: checks.every((c) => c.status !== "fail"),
     checks,

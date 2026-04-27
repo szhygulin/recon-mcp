@@ -15,6 +15,8 @@ import {
   defaultModeRefusalMessage,
   buildSimulationEnvelope,
   buildGetDemoWalletResponse,
+  getDemoModeReason,
+  initDemoMode,
   isLiveMode,
   getLiveWallet,
   setLivePersona,
@@ -653,37 +655,33 @@ export function _resetMissingDemoWalletDedup(): void {
 }
 
 /**
- * Render the demo-wallet onboarding notice when the server starts with
- * no user config file AND no active demo wallet — the canonical post-
- * install / pre-pairing state. Once the user creates a config (via
- * `vaultpilot-mcp-setup`) or activates a persona via `set_demo_wallet`,
- * the notice stops firing — the agent already has a clear path forward
- * either way and the nudge would just be noise.
+ * Render the demo-mode onboarding notice once per session when the
+ * server is in demo mode (any reason — explicit env or auto-detected
+ * fresh install) AND no live wallet is active yet. Once the user
+ * activates a persona via `set_demo_wallet`, or restarts into a
+ * non-demo mode (config written, env unset), the notice stops firing.
  *
- * Dedup: once per session. Reset semantics mirror the skill notices —
- * if the user later removes the config and clears the persona, the
- * notice retriggers, since the post-install-zero state has returned.
+ * The auto-fresh-install reason latches at boot via `initDemoMode()`
+ * in `src/demo/index.ts`, so the notice's auto-vs-explicit copy
+ * branch is stable for the whole process even if the user writes a
+ * config mid-session.
  *
- * `readUserConfig()` returns null when neither the new
- * `~/.vaultpilot-mcp/config.json` nor the legacy `~/.recon-crypto-mcp/`
- * path exists, which is exactly the "no config" signal we want.
+ * Dedup: once per session, reset semantics mirror the skill notices.
  */
 export function missingDemoWalletNotice(): string | null {
-  let configPresent = false;
-  try {
-    configPresent = readUserConfig() !== null;
-  } catch {
-    // Malformed config still counts as "config present" — the user has
-    // been here, the post-install onboarding nudge would be wrong.
-    configPresent = true;
-  }
-  if (configPresent || isLiveMode()) {
+  const reason = getDemoModeReason();
+  // Notice only fires while we're in demo mode AND no live wallet
+  // is set yet. Outside demo mode, the notice would be misleading.
+  if (
+    (reason !== "auto-fresh-install" && reason !== "explicit-env") ||
+    isLiveMode()
+  ) {
     missingDemoWalletNoticeEmitted = false;
     return null;
   }
   if (missingDemoWalletNoticeEmitted) return null;
   missingDemoWalletNoticeEmitted = true;
-  return renderMissingDemoWalletWarning();
+  return renderMissingDemoWalletWarning({ reason });
 }
 
 /**
@@ -1290,6 +1288,23 @@ async function main() {
       process.stderr.write(formatDoctorReport(report));
     }
     process.exit(report.ok ? 0 : 1);
+  }
+
+  // Latch the auto-demo detection at boot. Must run BEFORE tool
+  // registration so the first `isDemoMode()` evaluation during dispatch
+  // sees a resolved value. Subsequent calls are no-ops; the result is
+  // frozen for the process lifetime.
+  initDemoMode();
+  if (isDemoMode()) {
+    const reason = getDemoModeReason();
+    console.error(
+      `[vaultpilot-mcp] demo mode: ON (reason=${reason}). Signing tools refuse / ` +
+        `broadcast intercepted. ${
+          reason === "auto-fresh-install"
+            ? "Run `vaultpilot-mcp-setup` and restart to leave."
+            : "Unset VAULTPILOT_DEMO and restart to leave."
+        }`,
+    );
   }
 
   // Check for at least one configured RPC path early. We don't hard-fail — the

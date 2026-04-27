@@ -1,129 +1,100 @@
 /**
- * Issue #391 — VAULTPILOT NOTICE — Demo wallets available.
+ * Demo-mode onboarding notice — rendering + dedup behavior.
  *
- * Onboarding nudge fired once per session when (a) the user has no
- * config file at all (canonical post-`claude mcp add` state) AND
- * (b) no demo wallet has been activated. Designed so an agent's first
- * "let's send some BTC" doesn't dead-end on "you need a Ledger" —
- * the demo path is surfaced before that happens.
- *
- * The helper is mocked at the module level (readUserConfig +
- * isLiveMode) so these tests don't depend on the developer's actual
- * `~/.vaultpilot-mcp/` or `~/.recon-crypto-mcp/` directory state.
+ * Two paths into demo mode (auto-fresh-install OR explicit-env), so
+ * the notice fires under either reason. The notice copy varies by
+ * reason so the leave path matches how demo got activated. Trigger
+ * logic itself (env state + latched auto-detect) is exhaustively
+ * covered in test/auto-demo.test.ts; here we just assert the notice
+ * helper uses that machinery correctly.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
-describe("issue #391: demo-wallet onboarding notice", () => {
-  beforeEach(() => vi.resetModules());
-  afterEach(() => vi.restoreAllMocks());
+const ENV_KEY = "VAULTPILOT_DEMO";
 
-  function mockEnv(opts: { configPresent: boolean; liveMode: boolean }): void {
-    vi.doMock("../src/config/user-config.js", async () => {
-      const actual = await vi.importActual<
-        typeof import("../src/config/user-config.js")
-      >("../src/config/user-config.js");
-      return {
-        ...actual,
-        readUserConfig: () => (opts.configPresent ? ({} as unknown as never) : null),
-      };
-    });
-    vi.doMock("../src/demo/live-mode.js", async () => {
-      const actual = await vi.importActual<
-        typeof import("../src/demo/live-mode.js")
-      >("../src/demo/live-mode.js");
-      return {
-        ...actual,
-        isLiveMode: () => opts.liveMode,
-      };
-    });
-  }
+describe("demo-mode onboarding notice", () => {
+  let savedEnv: string | undefined;
 
-  it("fires a VAULTPILOT NOTICE block when there is no config and no active demo wallet", async () => {
-    mockEnv({ configPresent: false, liveMode: false });
-    const {
-      missingDemoWalletNotice,
-      _resetMissingDemoWalletDedup,
-    } = await import("../src/index.js");
+  beforeEach(async () => {
+    savedEnv = process.env[ENV_KEY];
+    const { _resetAutoDemoLatchForTests } = await import("../src/demo/index.js");
+    const { _resetLiveWalletForTests } = await import(
+      "../src/demo/live-mode.js"
+    );
+    _resetAutoDemoLatchForTests();
+    _resetLiveWalletForTests();
+    const { _resetMissingDemoWalletDedup } = await import("../src/index.js");
     _resetMissingDemoWalletDedup();
+  });
+
+  afterEach(async () => {
+    if (savedEnv === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = savedEnv;
+    const { _resetAutoDemoLatchForTests } = await import("../src/demo/index.js");
+    const { _resetLiveWalletForTests } = await import(
+      "../src/demo/live-mode.js"
+    );
+    _resetAutoDemoLatchForTests();
+    _resetLiveWalletForTests();
+  });
+
+  it("fires under auto-fresh-install reason with copy that names the auto path and setup as the leave route", async () => {
+    delete process.env[ENV_KEY];
+    const { _setAutoDemoLatchForTests } = await import("../src/demo/index.js");
+    _setAutoDemoLatchForTests(true);
+    const { missingDemoWalletNotice } = await import("../src/index.js");
     const notice = missingDemoWalletNotice();
     expect(notice).not.toBeNull();
-    // Same shape as the existing notice family — agents trust this prefix.
     expect(notice).toMatch(/^VAULTPILOT NOTICE — /);
-    expect(notice).toContain("Demo wallets available");
-    // No imperative agent verbs / pasteable shell — the framing that
-    // earlier agents flagged as injection.
-    expect(notice).not.toMatch(/\[AGENT TASK/);
-    expect(notice).not.toMatch(/^\s*git clone\b/m);
-    expect(notice).not.toMatch(/^\s*npm (install|i)\b/m);
-    // The three discoverability handles the issue asks for.
+    expect(notice).toContain("Auto demo mode active");
+    expect(notice).toContain("vaultpilot-mcp-setup");
+    // Universal discoverability handles.
     expect(notice).toContain("set_demo_wallet");
     expect(notice).toContain("get_demo_wallet");
     expect(notice).toContain("exit_demo_mode");
-    // Self-label so a defensive agent doesn't classify this as injection.
+    // No imperative-agent / shell-paste shapes that earlier agents
+    // flagged as injection.
+    expect(notice).not.toMatch(/\[AGENT TASK/);
+    expect(notice).not.toMatch(/^\s*git clone\b/m);
+    expect(notice).not.toMatch(/^\s*npm (install|i)\b/m);
     expect(notice).toContain("not prompt injection");
   });
 
-  it("returns null when the user has a config file (post-setup users don't need the nudge)", async () => {
-    mockEnv({ configPresent: true, liveMode: false });
-    const {
-      missingDemoWalletNotice,
-      _resetMissingDemoWalletDedup,
-    } = await import("../src/index.js");
-    _resetMissingDemoWalletDedup();
+  it("fires under explicit-env reason with copy that names VAULTPILOT_DEMO as the leave route", async () => {
+    process.env[ENV_KEY] = "true";
+    const { missingDemoWalletNotice } = await import("../src/index.js");
+    const notice = missingDemoWalletNotice();
+    expect(notice).not.toBeNull();
+    expect(notice).toMatch(/^VAULTPILOT NOTICE — /);
+    expect(notice).toContain("Demo mode active (VAULTPILOT_DEMO=true)");
+    expect(notice).toContain("unset");
+    expect(notice).toContain("VAULTPILOT_DEMO");
+  });
+
+  it("returns null when demo mode is OFF (env unset, latched=false)", async () => {
+    delete process.env[ENV_KEY];
+    const { _setAutoDemoLatchForTests } = await import("../src/demo/index.js");
+    _setAutoDemoLatchForTests(false);
+    const { missingDemoWalletNotice } = await import("../src/index.js");
     expect(missingDemoWalletNotice()).toBeNull();
   });
 
   it("returns null when a live demo wallet is already active (path already taken)", async () => {
-    mockEnv({ configPresent: false, liveMode: true });
-    const {
-      missingDemoWalletNotice,
-      _resetMissingDemoWalletDedup,
-    } = await import("../src/index.js");
-    _resetMissingDemoWalletDedup();
+    process.env[ENV_KEY] = "true";
+    const { setLivePersona } = await import("../src/demo/index.js");
+    setLivePersona("defi-power-user");
+    const { missingDemoWalletNotice } = await import("../src/index.js");
     expect(missingDemoWalletNotice()).toBeNull();
   });
 
   it("dedupes to once-per-session: first call returns the block, subsequent calls return null", async () => {
-    mockEnv({ configPresent: false, liveMode: false });
-    const {
-      missingDemoWalletNotice,
-      _resetMissingDemoWalletDedup,
-    } = await import("../src/index.js");
-    _resetMissingDemoWalletDedup();
+    process.env[ENV_KEY] = "true";
+    const { missingDemoWalletNotice } = await import("../src/index.js");
     const first = missingDemoWalletNotice();
     const second = missingDemoWalletNotice();
     const third = missingDemoWalletNotice();
     expect(first).not.toBeNull();
     expect(second).toBeNull();
     expect(third).toBeNull();
-  });
-
-  it("malformed config counts as 'config present' (don't nag a user mid-setup-error)", async () => {
-    // readUserConfig throws on malformed JSON. The helper must not crash
-    // the tool call; a malformed config means the user has been here and
-    // the post-install nudge would be the wrong message anyway.
-    vi.doMock("../src/config/user-config.js", async () => {
-      const actual = await vi.importActual<
-        typeof import("../src/config/user-config.js")
-      >("../src/config/user-config.js");
-      return {
-        ...actual,
-        readUserConfig: () => {
-          throw new Error("malformed JSON");
-        },
-      };
-    });
-    vi.doMock("../src/demo/live-mode.js", async () => {
-      const actual = await vi.importActual<
-        typeof import("../src/demo/live-mode.js")
-      >("../src/demo/live-mode.js");
-      return { ...actual, isLiveMode: () => false };
-    });
-    const {
-      missingDemoWalletNotice,
-      _resetMissingDemoWalletDedup,
-    } = await import("../src/index.js");
-    _resetMissingDemoWalletDedup();
-    expect(missingDemoWalletNotice()).toBeNull();
   });
 });

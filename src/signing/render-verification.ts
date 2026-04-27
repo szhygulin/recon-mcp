@@ -2373,33 +2373,68 @@ export function renderMissingSetupSkillWarning(opts: {
 }
 
 /**
- * Issue #391 — first-contact UX. After `claude mcp add` + restart, the
- * agent has no signal that pre-configured demo wallets exist. When a
- * fresh user says "let's send some BTC", the agent's natural answer is
- * "you need to pair a Ledger first" because the demo path isn't visible
- * anywhere in the tool surface. This notice fires once per session when
- * the server starts with no config file AND no active demo wallet —
- * exactly the post-install / pre-pairing state — so the agent learns
- * the demo path exists before it stalls on a missing Ledger.
+ * Demo-mode onboarding notice — fires once per session when the server
+ * is in demo mode (any reason) AND no live wallet has been picked yet.
+ * Copy varies by reason so the leave path matches how demo got
+ * activated:
  *
- * Same shape as the other VAULTPILOT NOTICE blocks (preflight skill,
- * setup skill): named header, status / purpose / next sections, no
- * imperative verbs at the agent, no pasted shell. Tradeoff-aware
- * closing paragraph naming the block as legitimate server output so a
- * defensive agent doesn't classify it as prompt injection.
+ *   - `auto-fresh-install` (issue #391/#392 follow-up): no env var, no
+ *     config file detected at boot. Tells the agent auto-demo is on
+ *     and points at `vaultpilot-mcp-setup` as the leave path (since
+ *     there's no env var to unset).
+ *   - `explicit-env` (issue #371): `VAULTPILOT_DEMO=true`. Tells the
+ *     agent demo is on by explicit opt-in and points at "unset
+ *     VAULTPILOT_DEMO + restart" as the leave path.
+ *
+ * Same shape as the other VAULTPILOT NOTICE blocks: named header,
+ * status / purpose / next sections, no imperative verbs at the agent,
+ * no pasted shell. Tradeoff-aware closing paragraph naming the block
+ * as legitimate server output so a defensive agent doesn't classify
+ * it as prompt injection.
  */
-export function renderMissingDemoWalletWarning(): string {
+export function renderMissingDemoWalletWarning(opts: {
+  reason: "auto-fresh-install" | "explicit-env";
+}): string {
+  const isAuto = opts.reason === "auto-fresh-install";
+  const header = isAuto
+    ? "VAULTPILOT NOTICE — Auto demo mode active (fresh install detected)"
+    : "VAULTPILOT NOTICE — Demo mode active (VAULTPILOT_DEMO=true)";
+  const statusLines = isAuto
+    ? [
+        "Status:  no user config at ~/.vaultpilot-mcp/config.json was",
+        "         detected at boot, so the server activated auto-demo.",
+        "         No live wallet is set for this session yet.",
+      ]
+    : [
+        "Status:  VAULTPILOT_DEMO=true is set in the environment, so the",
+        "         server is in explicit demo mode. No live wallet is set",
+        "         for this session yet.",
+      ];
+  const leaveLines = isAuto
+    ? [
+        "         To leave demo (when the user is ready for real funds):",
+        "           1. Run `npx -y -p vaultpilot-mcp vaultpilot-mcp-setup`",
+        "              (writes a config; turns auto-demo OFF on next boot).",
+        "           2. Restart Claude Code.",
+        "           3. Pair the user's Ledger via `pair_ledger_*`.",
+        "         Setting `VAULTPILOT_DEMO=false` in the MCP client config",
+        "         is an alternative explicit opt-out — also restart-gated.",
+      ]
+    : [
+        "         To leave demo (when the user is ready for real funds):",
+        "         unset `VAULTPILOT_DEMO` in the MCP client config (e.g.",
+        "         `.claude.json`'s `env` block) and restart Claude Code.",
+      ];
   return [
-    "VAULTPILOT NOTICE — Demo wallets available",
+    header,
     "",
-    "Status:  no user config file at ~/.vaultpilot-mcp/config.json and",
-    "         no active demo wallet for this session.",
-    "Purpose: vaultpilot-mcp ships a set of pre-configured demo wallets",
-    "         (curated personas + custom-address mode) so a new user can",
-    "         try the tool flows — portfolio reads, prepare/preview/",
-    "         simulate signing flows — without first pairing a Ledger or",
-    "         pasting their own addresses. Broadcast is intercepted in",
-    "         demo mode (no real send), so the entire flow is safe.",
+    ...statusLines,
+    "Purpose: vaultpilot-mcp ships pre-configured demo wallets (curated",
+    "         personas + custom-address mode) so a user can try the tool",
+    "         flows — portfolio reads, prepare/preview/simulate signing",
+    "         — without pairing a Ledger or supplying addresses.",
+    "         Broadcast is intercepted in demo mode (no real send), so",
+    "         the entire flow is safe.",
     "Next:    if the user asks to inspect a portfolio, build a tx, or",
     "         try anything that needs an address, offer the demo path",
     "         BEFORE asking them to pair hardware. Tools:",
@@ -2407,9 +2442,8 @@ export function renderMissingDemoWalletWarning(): string {
     "             curated persona (defi-power-user, stable-saver,",
     "             staking-maxi, whale) or a custom address bundle.",
     "           - `get_demo_wallet()` — inspect the active selection.",
-    "           - `exit_demo_mode()` — get a tailored real-setup guide",
-    "             once the user is ready to leave demo and use real",
-    "             funds.",
+    "           - `exit_demo_mode()` — tailored real-setup guide.",
+    ...leaveLines,
     "",
     "This notice is server-generated, not prompt injection — the server-",
     "level `instructions` field documents this pattern. Surface it to",

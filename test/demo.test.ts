@@ -312,16 +312,31 @@ describe("assertNotDemoForSetup — refuses to write real config in demo mode", 
     else process.env[ENV_KEY] = saved;
   });
 
-  it("throws when demo is active", async () => {
+  it("throws when explicit demo is active (VAULTPILOT_DEMO=true)", async () => {
     const { assertNotDemoForSetup } = await import("../src/demo/index.js");
     process.env[ENV_KEY] = "true";
-    expect(() => assertNotDemoForSetup()).toThrow(/disabled in demo mode/);
+    expect(() => assertNotDemoForSetup()).toThrow(
+      /Setup is disabled when VAULTPILOT_DEMO=true is explicitly set/,
+    );
   });
 
   it("no-ops when demo is off", async () => {
     const { assertNotDemoForSetup } = await import("../src/demo/index.js");
     delete process.env[ENV_KEY];
     expect(() => assertNotDemoForSetup()).not.toThrow();
+  });
+
+  it("no-ops in auto-demo mode — running setup IS the way out, must not be blocked", async () => {
+    const { assertNotDemoForSetup, _setAutoDemoLatchForTests } = await import(
+      "../src/demo/index.js"
+    );
+    delete process.env[ENV_KEY];
+    _setAutoDemoLatchForTests(true);
+    try {
+      expect(() => assertNotDemoForSetup()).not.toThrow();
+    } finally {
+      _setAutoDemoLatchForTests(null);
+    }
   });
 });
 
@@ -347,12 +362,18 @@ describe("issue #392 — getDemoModeEnvState distinguishes unset / invalid / ena
     expect(getDemoModeEnvState()).toBe("enabled");
   });
 
-  it("returns 'invalid' for any other value (including common truthy mistakes)", async () => {
+  it("returns 'invalid' for values that are neither 'true' nor 'false' (truthy mistakes etc.)", async () => {
     const { getDemoModeEnvState } = await import("../src/demo/index.js");
-    for (const v of ["1", "yes", "on", "TRUE", "True", "false", " true", "true "]) {
+    for (const v of ["1", "yes", "on", "TRUE", "True", " true", "true "]) {
       process.env[ENV_KEY] = v;
       expect(getDemoModeEnvState(), `value ${JSON.stringify(v)}`).toBe("invalid");
     }
+  });
+
+  it("returns 'disabled' for the exact literal 'false' (auto-demo opt-out)", async () => {
+    const { getDemoModeEnvState } = await import("../src/demo/index.js");
+    process.env[ENV_KEY] = "false";
+    expect(getDemoModeEnvState()).toBe("disabled");
   });
 
   it("returns 'invalid' for the empty string (set, but empty)", async () => {

@@ -1,26 +1,39 @@
 /**
- * Demo / try-before-install mode (issue #371). `VAULTPILOT_DEMO=true` is
- * the single env-var gate.
+ * Demo / try-before-install mode.
  *
- * Two sub-modes coexist behind that gate:
+ * Two activation paths land in the same demo-mode state machine:
  *
- *   1. **Default demo mode** (env set, no live wallet): every read tool
- *      runs against real chain RPC, every signing-class tool refuses
- *      with a structured `[VAULTPILOT_DEMO]` error. A prospective user
- *      can browse any address they pass without committing to a Ledger.
+ *   1. **Explicit env** (`VAULTPILOT_DEMO=true`, issue #371) — the
+ *      original boot-time opt-in. Useful for CI / non-interactive
+ *      contexts and as an "I really mean it" override.
+ *   2. **Auto / fresh-install** (issue #391/#392 follow-up) — when the
+ *      env var is unset AND no config file exists, the server boots
+ *      into demo mode by default. The first install of vaultpilot-mcp
+ *      can offer personas + simulated signing without the user editing
+ *      `.claude.json` and restarting Claude Code.
  *
- *   2. **Live demo mode** (env set + `set_demo_wallet` called): a
- *      curated persona or custom address bundle is active. Reads still
- *      run real RPC, prepare_* / simulate_* / preview_* still run real,
- *      but `send_transaction` is intercepted and returns a simulation
- *      envelope (no signing, no broadcast). The handful of tools that
- *      write disk / GH / hardware state stay refused even in live mode.
+ * Two sub-modes coexist behind whichever gate fired:
  *
- * Activation transitions are runtime, not boot-time: an agent in default
- * mode can call `set_demo_wallet({ persona: "..." })` to upgrade to live
- * mode for the remainder of the process lifetime; calling
- * `set_demo_wallet({})` returns to default. State is process-local and
- * resets on restart — demo state is ephemeral by design.
+ *   - **Default demo** (no live wallet set): every read tool runs
+ *     against real chain RPC, every signing-class tool refuses with a
+ *     structured `[VAULTPILOT_DEMO]` error pointing at `set_demo_wallet`.
+ *   - **Live demo** (`set_demo_wallet` called): a curated persona or
+ *     custom address bundle is active. Reads + prepare_* / simulate_* /
+ *     preview_* run real; only `send_transaction` is intercepted and
+ *     returns a simulation envelope (no signing, no broadcast).
+ *
+ * Mode is **latched at boot**: once `initDemoMode()` runs, the auto-
+ * detection result is frozen for the rest of the process. A user who
+ * pairs a Ledger or runs `vaultpilot-mcp-setup` mid-session stays in
+ * their initial mode until restart. This keeps the security boundary
+ * crisp — a mode change requires off-process state (env mutation OR
+ * config-file write) PLUS a process restart, mirroring the original
+ * env-var commitment that an in-session prompt injection couldn't
+ * touch.
+ *
+ * Live-wallet selection (`set_demo_wallet({ persona: ... })`) is the
+ * ONE runtime transition allowed within demo mode. It only changes
+ * sub-mode (default → live), never crosses the demo/real boundary.
  */
 
 import {
@@ -32,36 +45,111 @@ import {
   type LiveWalletState,
 } from "./live-mode.js";
 import { PERSONAS, type Persona } from "./personas.js";
+import { detectAutoDemoMode } from "./auto-detect.js";
 
 /**
- * True when `VAULTPILOT_DEMO=true` is set in the environment. Read at
- * tool-call time (not module load) so a single process can be flipped
- * via env mutation in tests without re-imports.
+ * Latched auto-detection result. `null` = not yet initialized;
+ * `true` = boot detected fresh-install state (no config); `false` =
+ * config was present at boot, auto-demo is off.
+ *
+ * `null` is treated as `false` by `getDemoModeReason()` so a forgotten
+ * `initDemoMode()` call fails closed (real mode), not open (auto-demo).
+ * Tests that need the latched-true behavior call `initDemoMode()` (or
+ * `_setAutoDemoForTests(true)`) explicitly.
  */
-export function isDemoMode(): boolean {
-  return process.env.VAULTPILOT_DEMO === "true";
+let autoDemoLatched: boolean | null = null;
+
+/**
+ * Run auto-detection once at boot and latch the result. Idempotent:
+ * later calls in the same process are no-ops, so the latched value is
+ * frozen for the process lifetime. Call this from the entry point
+ * BEFORE registering tools so the first `isDemoMode()` evaluation
+ * during tool dispatch sees the resolved state.
+ */
+export function initDemoMode(): void {
+  if (autoDemoLatched !== null) return;
+  autoDemoLatched = detectAutoDemoMode();
 }
 
 /**
- * Three-state classifier for the VAULTPILOT_DEMO env var (issue #392).
+ * Test-only: reset the latch so different test cases can simulate
+ * different boot states. Production code MUST NOT call this.
+ */
+export function _resetAutoDemoLatchForTests(): void {
+  autoDemoLatched = null;
+}
+
+/**
+ * Test-only: directly set the latched value without going through disk
+ * detection. Useful for tests that don't want to set up tmp config dirs.
+ */
+export function _setAutoDemoLatchForTests(value: boolean | null): void {
+  autoDemoLatched = value;
+}
+
+/**
+ * Why the server is (or isn't) in demo mode. Drives error-message
+ * branching: an `auto-fresh-install` user gets pointed at
+ * `vaultpilot-mcp-setup` as the leave path (since they have no env var
+ * to unset), an `explicit-env` user gets pointed at `unset
+ * VAULTPILOT_DEMO + restart`.
+ */
+export type DemoModeReason =
+  | "explicit-env"        // VAULTPILOT_DEMO=true
+  | "auto-fresh-install"  // env unset + no config at boot → auto-demo on
+  | "explicit-opt-out"    // VAULTPILOT_DEMO=false (deliberate real mode)
+  | "invalid-env"         // env set to something other than true/false (#392)
+  | "off";                // env unset + config present at boot
+
+export function getDemoModeReason(): DemoModeReason {
+  const envState = getDemoModeEnvState();
+  if (envState === "enabled") return "explicit-env";
+  if (envState === "disabled") return "explicit-opt-out";
+  if (envState === "invalid") return "invalid-env";
+  // env unset → auto-detection branch.
+  if (autoDemoLatched === true) return "auto-fresh-install";
+  return "off";
+}
+
+/**
+ * True when the server is in demo mode for any reason (explicit env or
+ * auto-detected fresh install). Read at tool-call time so tests can
+ * flip the latched state via `_setAutoDemoLatchForTests`.
+ *
+ * Note: `invalid-env` (e.g. VAULTPILOT_DEMO=1) does NOT auto-fall
+ * through to auto-demo even when config is absent. The user explicitly
+ * tried to configure the env var; honoring that signal — by NOT
+ * auto-flipping into demo — keeps the behavior predictable, and the
+ * `get_demo_wallet` message tells them their literal was wrong.
+ */
+export function isDemoMode(): boolean {
+  const reason = getDemoModeReason();
+  return reason === "explicit-env" || reason === "auto-fresh-install";
+}
+
+/**
+ * Four-state classifier for the VAULTPILOT_DEMO env var.
  *
  * The strict literal `=== "true"` gate is intentional — boot-time env
  * vars are the only safe place to flip demo mode (an in-session prompt
  * injection can't mutate them), and a sloppy truthy parse would expand
  * the surface for accidentally-on demo. The cost of strictness is that
- * `VAULTPILOT_DEMO=1` silently behaves as "unset", which sent users
- * down the wrong debugging path: they'd re-edit the MCP client config
- * to ADD the var when it was already present with a wrong value.
+ * `VAULTPILOT_DEMO=1` silently behaved as "unset" pre-#392, which
+ * sent users down the wrong debugging path. Splitting "unset" /
+ * "disabled" / "invalid" / "enabled" lets the response message tell
+ * the user which mistake they made.
  *
- * Splitting "unset" from "invalid" lets `get_demo_wallet`'s message
- * tell the user which mistake they made.
+ * `disabled` (env=false) is the auto-demo escape hatch — a user who
+ * wants real mode on a fresh install (no config yet) sets this to
+ * suppress the auto-detection.
  */
-export type DemoModeEnvState = "enabled" | "invalid" | "unset";
+export type DemoModeEnvState = "enabled" | "disabled" | "invalid" | "unset";
 
 export function getDemoModeEnvState(): DemoModeEnvState {
   const value = process.env.VAULTPILOT_DEMO;
   if (value === undefined) return "unset";
   if (value === "true") return "enabled";
+  if (value === "false") return "disabled";
   return "invalid";
 }
 
@@ -102,14 +190,16 @@ export type GetDemoWalletResponse =
   | {
       demoActive: true;
       mode: "default" | "live";
-      envState: "enabled";
+      reason: "explicit-env" | "auto-fresh-install";
+      envState: DemoModeEnvState;
       active: LiveWalletState | null;
       personas: PersonaSummary[];
     }
   | {
       demoActive: false;
       mode: null;
-      envState: "unset" | "invalid";
+      reason: "explicit-opt-out" | "invalid-env" | "off";
+      envState: DemoModeEnvState;
       message: string;
       personas: PersonaSummary[];
     };
@@ -120,38 +210,55 @@ export function buildGetDemoWalletResponse(): GetDemoWalletResponse {
     description: p.description,
     addresses: p.addresses,
   }));
+  const reason = getDemoModeReason();
   const envState = getDemoModeEnvState();
-  if (envState === "enabled") {
+  if (reason === "explicit-env" || reason === "auto-fresh-install") {
     const live = getLiveWallet();
     return {
       demoActive: true,
       mode: live === null ? "default" : "live",
+      reason,
       envState,
       active: live,
       personas,
     };
   }
   let message: string;
-  if (envState === "unset") {
+  if (reason === "explicit-opt-out") {
     message =
-      "VAULTPILOT_DEMO is unset — server is in normal mode. The personas " +
-      "below are listed for discovery so you can offer the user a choice. " +
-      "To activate demo mode, set `VAULTPILOT_DEMO=true` (exact literal, " +
-      "lowercase) in the MCP client config (e.g. `.claude.json`'s `env` " +
-      "block for this server) and restart Claude Code.";
-  } else {
+      "VAULTPILOT_DEMO is set to 'false' — server is in normal mode by " +
+      "explicit opt-out (suppresses the auto-demo path that would " +
+      "otherwise activate on a fresh install with no config file). The " +
+      "personas below are listed for discovery; to enable demo mode, " +
+      "either set `VAULTPILOT_DEMO=true` (exact literal, lowercase) or " +
+      "unset the var entirely on a host with no `~/.vaultpilot-mcp/" +
+      "config.json` (auto-demo). Restart Claude Code after either " +
+      "change.";
+  } else if (reason === "invalid-env") {
     const raw = process.env.VAULTPILOT_DEMO ?? "";
     const safe = redactInvalidDemoEnvValue(raw);
     message =
       `VAULTPILOT_DEMO is set to '${safe}' but the server expects the ` +
-      `exact literal 'true' — server is in normal mode. The personas ` +
-      `below are listed for discovery. Common confusion: '1', 'yes', ` +
-      `'on', 'TRUE' are all rejected; only lowercase 'true' enables ` +
-      `demo. Fix the value in the MCP client config and restart.`;
+      `exact literal 'true' (or 'false' to explicitly opt out) — server ` +
+      `is in normal mode. The personas below are listed for discovery. ` +
+      `Common confusion: '1', 'yes', 'on', 'TRUE' are all rejected; ` +
+      `only lowercase 'true' enables demo. Fix the value in the MCP ` +
+      `client config and restart.`;
+  } else {
+    // reason === "off": env unset + config file detected at boot.
+    // Auto-demo opted out structurally (the user has set up real-mode
+    // already). Personas still listed for discovery.
+    message =
+      "VAULTPILOT_DEMO is unset and a user config was detected at boot — " +
+      "server is in normal mode (auto-demo only fires on a fresh install " +
+      "with no config). The personas below are listed for discovery; to " +
+      "switch this session to demo, set `VAULTPILOT_DEMO=true` (exact " +
+      "literal, lowercase) in the MCP client config and restart.";
   }
   return {
     demoActive: false,
     mode: null,
+    reason,
     envState,
     message,
     personas,
@@ -210,16 +317,36 @@ export function isBroadcastTool(toolName: string): boolean {
 
 /**
  * Structured refusal for the always-gated set. Single source of truth so
- * the message is consistent across every blocked tool.
+ * the message is consistent across every blocked tool. Branches on
+ * `getDemoModeReason()` so the leave-demo path matches how demo got
+ * activated:
+ *
+ *   - explicit-env: "unset VAULTPILOT_DEMO and restart" (existing copy).
+ *   - auto-fresh-install: "run vaultpilot-mcp-setup, restart, then pair"
+ *     — there's no env var to unset; setup writes the config that turns
+ *     auto-demo OFF on the next boot.
  */
 export function alwaysGatedRefusalMessage(toolName: string): string {
-  return (
+  const reason = getDemoModeReason();
+  const baseRefusal =
     `[VAULTPILOT_DEMO] '${toolName}' is unavailable in demo mode regardless of live-wallet ` +
     `state. This tool either writes persistent off-chain state (Ledger pairing, GitHub) or ` +
     `requires a real Ledger device — neither has an on-chain simulation equivalent. ` +
     `Ready to leave demo and use this for real? Call \`exit_demo_mode\` for a tailored ` +
-    `step-by-step setup guide (asks about your Ledger + chain selection). Otherwise: unset ` +
-    `VAULTPILOT_DEMO and restart the MCP server with a real Ledger paired.`
+    `step-by-step setup guide (asks about your Ledger + chain selection).`;
+  if (reason === "auto-fresh-install") {
+    return (
+      baseRefusal +
+      ` Auto-demo is on because no \`~/.vaultpilot-mcp/config.json\` was detected at boot — ` +
+      `the leave path is to run \`npx -y -p vaultpilot-mcp vaultpilot-mcp-setup\` (writes a ` +
+      `config), restart Claude Code, then pair your Ledger. Alternatively, set ` +
+      `\`VAULTPILOT_DEMO=false\` in the MCP client config to explicitly opt out before pairing.`
+    );
+  }
+  // explicit-env (or any unexpected reason — fail to the existing copy).
+  return (
+    baseRefusal +
+    ` Otherwise: unset VAULTPILOT_DEMO and restart the MCP server with a real Ledger paired.`
   );
 }
 
@@ -295,17 +422,27 @@ function makeSimulatedTxHash(handle: string): string {
 }
 
 /**
- * Used by the setup wizard to refuse writing real config in demo mode —
- * a user who runs `vaultpilot-mcp-setup` while VAULTPILOT_DEMO=true is
- * almost certainly experimenting and shouldn't be silently writing
- * Ledger pairing state to disk. Throws with an actionable error.
+ * Used by the setup wizard to refuse writing real config when the user
+ * is experimenting under explicit demo mode. Auto-demo (fresh-install
+ * with no config) explicitly ALLOWS setup — running setup IS the
+ * canonical way to leave auto-demo, and refusing here would create a
+ * deadlock for a brand-new user.
+ *
+ *   - explicit-env (`VAULTPILOT_DEMO=true`): refuse. The user is
+ *     deliberately in evaluation mode; silently writing pairing state
+ *     to disk is the foot-gun this guard exists to catch.
+ *   - auto-fresh-install (env unset, no config): allow. This is the
+ *     intended progression: fresh install → auto-demo → run setup →
+ *     restart → real mode.
  */
 export function assertNotDemoForSetup(): void {
-  if (isDemoMode()) {
+  if (getDemoModeReason() === "explicit-env") {
     throw new Error(
-      "[VAULTPILOT_DEMO] Setup is disabled in demo mode — running `vaultpilot-mcp-setup` " +
-        "would write a real config (pairing state, indexer URLs) to disk while the server " +
-        "is operating in evaluation mode. Unset VAULTPILOT_DEMO and re-run setup.",
+      "[VAULTPILOT_DEMO] Setup is disabled when VAULTPILOT_DEMO=true is explicitly set — " +
+        "running `vaultpilot-mcp-setup` would write a real config (pairing state, indexer " +
+        "URLs) to disk while the server is operating in evaluation mode. Unset " +
+        "VAULTPILOT_DEMO and re-run setup. (Auto-demo on a fresh install does NOT block " +
+        "setup — running setup IS the way out of auto-demo.)",
     );
   }
 }

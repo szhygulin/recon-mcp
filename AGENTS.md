@@ -289,6 +289,31 @@ If they have paired, you'll get back a full breakdown of native
 balances, tokens, lending, LP, and staking across whichever chains
 they have addresses on.
 
+### Auto demo mode on a fresh install
+
+A brand-new install (no `~/.vaultpilot-mcp/config.json` yet, no
+`VAULTPILOT_DEMO` env var set) boots into **auto-demo mode**: every
+read tool runs against real chain RPC, every signing-class tool
+refuses or is intercepted, and a curated set of demo personas
+(`defi-power-user`, `stable-saver`, `staking-maxi`, `whale`) is
+available via `set_demo_wallet`. The agent will see a one-shot
+`VAULTPILOT NOTICE — Auto demo mode active` block on the first tool
+response — surface it to the user and offer the demo path before
+asking them to pair hardware.
+
+The user has two ways to leave auto-demo when they're ready for real
+funds:
+
+1. **Run setup** (recommended): `npx -y -p vaultpilot-mcp vaultpilot-mcp-setup`
+   writes a config file. Auto-demo turns OFF on the next boot. Then
+   restart Claude Code and pair the Ledger via `pair_ledger_*`.
+2. **Explicit opt-out**: set `VAULTPILOT_DEMO=false` in the MCP client
+   config (e.g. `.claude.json`'s `env` block) and restart. Real mode
+   is active immediately even without a config file.
+
+`VAULTPILOT_DEMO=true` is the explicit opt-in path — useful for CI /
+scripted contexts where you want demo mode regardless of disk state.
+
 To prepare and sign a transaction, the typical flow is:
 
 1. `prepare_*` to build the unsigned tx (returns a `handle`).
