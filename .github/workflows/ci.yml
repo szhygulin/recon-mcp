@@ -43,55 +43,14 @@ jobs:
       - name: Run tests
         run: npm test
 
-  binary-smoke-test:
-    # Build the linux-x64 binary the same way `release-binaries.yml` does
-    # and run the cross-OS smoke test against it. Catches startup-time
-    # regressions that only surface inside a pkg-bundled snapshot — e.g.
-    # `await import()` calls in the boot path tripping
-    # ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING (issue #330). Linux only on
-    # PRs; the macOS / Windows targets keep building on the release event,
-    # where pkg cross-compile cost is acceptable. Linux catches the common
-    # class because pkg's snapshot host is the same across targets — the
-    # dynamic-import bug shows up identically on every OS.
-    name: Binary smoke test (linux-x64)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci --legacy-peer-deps
-
-      - name: Build dist/
-        run: npm run build
-
-      - name: Prune devDependencies before pkg snapshot
-        # Mirror release-binaries.yml so the smoke test exercises the same
-        # node_modules shape the release binary will see. Catches the case
-        # where a runtime feature accidentally requires a devDep (would be
-        # invisible without prune; would only fail at release time).
-        run: npm prune --omit=dev --legacy-peer-deps
-
-      - name: Bundle server binary
-        # `npx --package=@yao-pkg/pkg pkg` (NOT plain `npx pkg`): the prune
-        # step above removed the @yao-pkg/pkg devDep + its `pkg` bin link
-        # from node_modules, so plain `npx pkg` falls through to the npm
-        # registry and fetches the unrelated deprecated `pkg@5.8.1`, which
-        # doesn't support Node 22 (`Error! No available node version
-        # satisfies 'node22'`). The explicit --package flag tells npx
-        # which package to fetch when the bin isn't local.
-        run: npx --package=@yao-pkg/pkg pkg . --target node22-linux-x64 --output release/vaultpilot-mcp-linux-x64-server
-        env:
-          CI: "true"
-
-      - name: Mark server binary executable
-        run: chmod +x ./release/vaultpilot-mcp-linux-x64-server
-
-      - name: Smoke-test server binary
-        run: node scripts/smoke-test-binary.mjs ./release/vaultpilot-mcp-linux-x64-server
+  # Note: a `binary-smoke-test` job lived here that built the linux-x64
+  # pkg-bundled binary on every PR and ran scripts/smoke-test-binary.mjs
+  # against it. It was the per-PR catch for pkg-bundle startup
+  # regressions like issue #330 (await import() tripping
+  # ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING inside the snapshot). Removed
+  # as a CI cost reduction — the same smoke test still runs in
+  # release-binaries.yml for every release artifact (linux + macOS +
+  # Windows), so a pkg-bundle regression still gets caught before users
+  # see it; it just lands on main first and surfaces at the next release
+  # cut instead of at PR-review time. Restore this job if pkg-bundle
+  # regressions start making it to release-time again.
