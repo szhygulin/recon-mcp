@@ -292,6 +292,32 @@ export class WalletConnectSessionUnavailableError extends Error {
 }
 
 /**
+ * Discriminator for `WalletConnectRequestTimeoutError`. Surfaces which
+ * post-timeout probe outcome produced the error so callers (today:
+ * `sendTransaction` in `modules/execution/index.ts`) can route their
+ * follow-up logic without parsing message text. Issue #326 P3 reads
+ * this field to mark the handle's ambiguous-attempt state.
+ *
+ *   - `unknown` — pre-probe code path (no pin / no preSignHash). Only
+ *     reachable via test/legacy callers that don't supply both.
+ *   - `no_broadcast` — local RPC + Etherscan agree the pinned nonce
+ *     is still pending; safe to retry but the duplicate-prompt risk
+ *     warning still applies.
+ *   - `consumed_unmatched` — pinned nonce was consumed but no tx in
+ *     the recent block window matches our pre-sign hash; investigate
+ *     before any retry (a same-pin retry would fail with "nonce too
+ *     low").
+ *   - `ambiguous_disagreement` — local RPC says no broadcast, Etherscan
+ *     says the wallet has advanced past the pinned nonce. Strong DO
+ *     NOT retry signal.
+ */
+export type WcTimeoutKind =
+  | "unknown"
+  | "no_broadcast"
+  | "consumed_unmatched"
+  | "ambiguous_disagreement";
+
+/**
  * Error thrown when the WC request itself exceeds the hard wall-clock
  * timeout. Complements the pre-publish probe: even if the session is alive
  * at probe time, the peer can go away between probe and `c.request`
@@ -300,9 +326,11 @@ export class WalletConnectSessionUnavailableError extends Error {
  * send_transaction eventually returns control to the agent.
  */
 export class WalletConnectRequestTimeoutError extends Error {
-  constructor(message: string) {
+  readonly kind: WcTimeoutKind;
+  constructor(message: string, kind: WcTimeoutKind = "unknown") {
     super(message);
     this.name = "WalletConnectRequestTimeoutError";
+    this.kind = kind;
   }
 }
 
@@ -964,6 +992,7 @@ export async function requestSendTransaction(
           chainId,
           probeWindowBlocks: LATE_BROADCAST_PROBE_BLOCKS,
         }),
+        "consumed_unmatched",
       );
     }
     if (probe.status === "ambiguous_nonce_disagreement") {
@@ -980,6 +1009,7 @@ export async function requestSendTransaction(
           chainId,
           timeoutSeconds: WC_SEND_REQUEST_TIMEOUT_MS / 1000,
         }),
+        "ambiguous_disagreement",
       );
     }
     // probe.status === "no_broadcast" → safe to retry, surface the
@@ -993,6 +1023,7 @@ export async function requestSendTransaction(
         timeoutSeconds: WC_SEND_REQUEST_TIMEOUT_MS / 1000,
         etherscanPendingNonce: probe.etherscanPendingNonce,
       }),
+      "no_broadcast",
     );
   });
   return hash;

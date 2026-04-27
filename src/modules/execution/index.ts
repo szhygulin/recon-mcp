@@ -7,12 +7,17 @@ import {
   initiatePairing,
   requestSendTransaction,
   getConnectedAccounts,
+  WalletConnectRequestTimeoutError,
 } from "../../signing/walletconnect.js";
 import {
   consumeHandle,
   retireHandle,
   attachPinnedGas,
   getPinnedGas,
+  markAmbiguousAttempt,
+  getAmbiguousAttempt,
+  clearAmbiguousAttempt,
+  type AmbiguousAttempt,
   type StashedPin,
 } from "../../signing/tx-store.js";
 import { consumeTronHandle, retireTronHandle } from "../../signing/tron-tx-store.js";
@@ -2814,6 +2819,79 @@ export async function previewSend(args: PreviewSendArgs): Promise<{
  * failure (no WC relay roundtrip, no eth_call, no chain-id check that would
  * meaninglessly fire before we even know what chain we're on).
  */
+/**
+ * Build the user-facing refusal text when an EVM `send_transaction` is
+ * called on a handle that has a previous ambiguous-attempt mark and
+ * the agent did not pass `acknowledgeRetryRiskAfterAmbiguousFailure:
+ * true`. Issue #326 P3 — the previous attempt's recovery guidance is
+ * re-stated so the agent surfaces it to the user before retrying.
+ *
+ * Per-kind copy: `consumed_unmatched` and `ambiguous_disagreement`
+ * lean stronger on "DO NOT retry without verifying on a block
+ * explorer first"; `no_broadcast` is permissive but still requires
+ * the user to know about the duplicate-prompt risk.
+ */
+function buildAmbiguousRetryRefusalMessage(
+  prev: AmbiguousAttempt,
+  handle: string,
+): string {
+  const ageMs = Date.now() - prev.at;
+  const ageSec = Math.round(ageMs / 1000);
+  const common =
+    `This send_transaction call is a retry on a handle whose previous attempt (${ageSec}s ago) ` +
+    `returned a WalletConnect timeout with probe outcome \`${prev.kind}\`. Issue #326 — a blind retry ` +
+    `at this point CAN queue a duplicate signing prompt to Ledger Live (the WC subapp may have ` +
+    `silently completed signing in the background). The duplicate-prompt scenario looks identical ` +
+    `to a key-leak attack pattern (two prompts for the same nonce) even though it's mathematically ` +
+    `benign — the user's first reaction will be alarm.\n\n` +
+    `Before passing \`acknowledgeRetryRiskAfterAmbiguousFailure: true\` to retry, do this with the user:\n`;
+  const perKind = (() => {
+    if (prev.kind === "no_broadcast") {
+      return (
+        `  1. Tell the user that the previous attempt timed out but the on-chain probe (local RPC + ` +
+        `Etherscan cross-check, where available) confirmed nothing landed at the pinned nonce.\n` +
+        `  2. Tell them that retrying CAN STILL queue a duplicate prompt; if a duplicate prompt ` +
+        `appears on their Ledger, the right action is **REJECT** — the original tx will land normally ` +
+        `(retrying after a successful background sign double-counts the slot otherwise).\n` +
+        `  3. Get explicit user acknowledgement, then re-call send_transaction with the same ` +
+        `\`previewToken\`, \`userDecision: "send"\`, AND \`acknowledgeRetryRiskAfterAmbiguousFailure: true\`.`
+      );
+    }
+    if (prev.kind === "consumed_unmatched") {
+      return (
+        `  1. Tell the user that the pinned nonce was consumed in the last 16 blocks but no tx in ` +
+        `that window had a matching pre-sign hash. Most likely the original tx mined further back ` +
+        `than the probe window, or a parallel tool / RBF replacement used the same slot.\n` +
+        `  2. Have them check on a block explorer (Etherscan / Ledger Live tx history) for any tx ` +
+        `with the pinned nonce on this wallet — if found, the original send already succeeded.\n` +
+        `  3. If genuinely no tx with the pinned nonce is found AND the user wants to try again, ` +
+        `they should re-prepare from scratch (new handle, fresh nonce/gas pin) — a same-pin retry ` +
+        `would fail at the chain level with "nonce too low". Acknowledging the risk on THIS handle ` +
+        `is unlikely to be useful; mostly this kind exists so the agent stops to verify rather than ` +
+        `silently retrying.`
+      );
+    }
+    // ambiguous_disagreement
+    return (
+      `  1. Tell the user that local RPC and Etherscan disagree on whether the pinned nonce was ` +
+      `consumed: most likely Ledger Live finished signing + relayed the tx through ITS own RPC ` +
+      `after our 120s timer fired and the propagation hasn't reached our local node yet.\n` +
+      `  2. Have them check on a block explorer (etherscan.io / Ledger Live tx history) for a tx ` +
+      `with the pinned nonce on this wallet within the last ~5 minutes — if found, the original ` +
+      `send already succeeded and NO retry is needed.\n` +
+      `  3. If after ~5 minutes no tx with the pinned nonce appears on chain, the slot is genuinely ` +
+      `free and they should re-prepare from scratch (NEW handle, fresh nonce/gas pin). Retrying ` +
+      `THIS handle with the ack flag is allowed but discouraged — re-prepare is the safer path.`
+    );
+  })();
+  return (
+    common +
+    perKind +
+    `\n\nHandle: \`${handle}\` (still valid; 15-min TTL from prepare). Previous outcome kind: ` +
+    `\`${prev.kind}\`. Issue #326 P3.`
+  );
+}
+
 export async function sendTransaction(args: SendTransactionArgs): Promise<{
   txHash: `0x${string}` | string;
   chain: SupportedChain | "tron" | "solana" | "bitcoin" | "litecoin";
@@ -2903,6 +2981,24 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
         "token drift without a user-initiated refresh is not expected.",
     );
   }
+  // Issue #326 P3 — gate retries behind an explicit ack flag when the
+  // previous attempt on this handle returned a timeout-with-probe
+  // outcome. The mark survives until the agent re-calls with the ack,
+  // a successful submission retires the handle, or the 15-minute TTL
+  // prunes the entry. Without this guard, an agent that sees the
+  // probe's "safe to retry" message can pile retries on top of each
+  // other and queue duplicate device prompts that look like a
+  // key-leak attack pattern.
+  const previousAmbiguous = getAmbiguousAttempt(args.handle);
+  if (previousAmbiguous && args.acknowledgeRetryRiskAfterAmbiguousFailure !== true) {
+    throw new Error(buildAmbiguousRetryRefusalMessage(previousAmbiguous, args.handle));
+  }
+  if (previousAmbiguous && args.acknowledgeRetryRiskAfterAmbiguousFailure === true) {
+    // The user has acknowledged the risk; clear the mark so the next
+    // attempt is a fresh slate. A SECOND ambiguous outcome on this
+    // retry will set the mark again and require ANOTHER explicit ack.
+    clearAmbiguousAttempt(args.handle);
+  }
   const tx = consumeHandle(args.handle);
   const pinned = {
     nonce: stashed.nonce,
@@ -2913,7 +3009,28 @@ export async function sendTransaction(args: SendTransactionArgs): Promise<{
   // Issue #232: thread the pinned pre-sign hash so a WC timeout can
   // run a late-broadcast probe (find a tx that mined after our 120s
   // timer fired) instead of surfacing a false-alarm timeout.
-  const hash = await requestSendTransaction(tx, pinned, stashed.preSignHash);
+  let hash: `0x${string}`;
+  try {
+    hash = await requestSendTransaction(tx, pinned, stashed.preSignHash);
+  } catch (e) {
+    // Issue #326 P3 — mark the handle as ambiguous when the timeout
+    // path produced a structured probe outcome. The next
+    // send_transaction call on this handle will require the explicit
+    // ack flag. Mark fires regardless of the WC error wording so
+    // future probe-result variants slot in cleanly.
+    if (e instanceof WalletConnectRequestTimeoutError && e.kind !== "unknown") {
+      const kindMap: Record<
+        Exclude<typeof e.kind, "unknown">,
+        "no_broadcast" | "consumed_unmatched" | "ambiguous_disagreement"
+      > = {
+        no_broadcast: "no_broadcast",
+        consumed_unmatched: "consumed_unmatched",
+        ambiguous_disagreement: "ambiguous_disagreement",
+      };
+      markAmbiguousAttempt(args.handle, kindMap[e.kind]);
+    }
+    throw e;
+  }
   // Only retire the handle after successful submission. If requestSendTransaction
   // throws (device disconnect, user rejection, relay timeout), the handle stays
   // valid and the caller can retry until the 15-minute TTL expires. The pin

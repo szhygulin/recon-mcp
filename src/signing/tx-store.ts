@@ -50,10 +50,49 @@ export interface StashedPin {
   previewToken: string;
 }
 
+/**
+ * Discriminator for the three timeout-path outcomes that produce an
+ * ambiguous send_transaction result. Issue #326 P3 — when any of these
+ * fires, the handle is marked so a subsequent `send_transaction` call
+ * on the same handle refuses unless the agent passes
+ * `acknowledgeRetryRiskAfterAmbiguousFailure: true`. Different kinds
+ * carry different recovery guidance:
+ *
+ *   - `no_broadcast` → cross-checked safe to retry, but retry CAN
+ *     queue a duplicate device prompt if WC silently completed signing
+ *     in the background. User must understand the duplicate-prompt
+ *     risk before retrying.
+ *   - `consumed_unmatched` → the slot was consumed by SOME tx in the
+ *     last 16 blocks but its pre-sign hash didn't match ours. Retrying
+ *     with the same pin will fail at the chain level (nonce too low);
+ *     the user must investigate via block explorer.
+ *   - `ambiguous_disagreement` → local RPC and Etherscan disagree on
+ *     the pending nonce. The tx may have broadcast through Ledger
+ *     Live's RPC. User must verify on a block explorer before any
+ *     retry.
+ */
+export type AmbiguousAttemptKind =
+  | "no_broadcast"
+  | "consumed_unmatched"
+  | "ambiguous_disagreement";
+
+export interface AmbiguousAttempt {
+  kind: AmbiguousAttemptKind;
+  /** Date.now() at which the ambiguous outcome was recorded. */
+  at: number;
+}
+
 interface StoredTx {
   tx: UnsignedTx;
   expiresAt: number;
   pin?: StashedPin;
+  /**
+   * Set when a previous `send_transaction` on this handle returned a
+   * timeout-with-probe-result. Cleared on `retireHandle` (successful
+   * submission) or when the agent retries with the explicit ack flag.
+   * Issue #326 P3.
+   */
+  ambiguousAttempt?: AmbiguousAttempt;
 }
 
 const store = new Map<string, StoredTx>();
@@ -170,4 +209,44 @@ export function getPinnedGas(handle: string): StashedPin | undefined {
 export function hasHandle(handle: string): boolean {
   prune();
   return store.has(handle);
+}
+
+/**
+ * Mark `handle` as having had an ambiguous-outcome send attempt. Called
+ * from `sendTransaction`'s catch block when `requestSendTransaction`
+ * raises a `WalletConnectRequestTimeoutError` whose `kind` is one of
+ * the post-probe outcomes. The mark survives until `retireHandle`
+ * (successful submission) or `clearAmbiguousAttempt` (explicit
+ * acknowledged retry). Issue #326 P3.
+ */
+export function markAmbiguousAttempt(handle: string, kind: AmbiguousAttemptKind): void {
+  prune();
+  const entry = store.get(handle);
+  if (!entry) return;
+  entry.ambiguousAttempt = { kind, at: Date.now() };
+}
+
+/**
+ * Read the ambiguous-attempt mark on `handle`, or undefined if none.
+ * Called at the top of `sendTransaction` to gate retries behind the
+ * `acknowledgeRetryRiskAfterAmbiguousFailure` flag. Does NOT clear
+ * the mark — clearing is the caller's choice (only after a fresh
+ * acknowledged attempt completes or starts).
+ */
+export function getAmbiguousAttempt(handle: string): AmbiguousAttempt | undefined {
+  prune();
+  return store.get(handle)?.ambiguousAttempt;
+}
+
+/**
+ * Clear the ambiguous-attempt mark. Called when the agent retries with
+ * the ack flag — the next attempt is a fresh slate (one ack per
+ * ambiguity); a SECOND ambiguous outcome on the retry will set the
+ * mark again and require ANOTHER explicit ack.
+ */
+export function clearAmbiguousAttempt(handle: string): void {
+  prune();
+  const entry = store.get(handle);
+  if (!entry) return;
+  delete entry.ambiguousAttempt;
 }

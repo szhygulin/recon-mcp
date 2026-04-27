@@ -780,6 +780,24 @@ export const sendTransactionInput = z.object({
         "Schema-enforced contract that the preview-time / prepare-time summary was surfaced to " +
         "the user, not skipped. Missing value → send_transaction refuses with a clear error."
     ),
+  acknowledgeRetryRiskAfterAmbiguousFailure: z
+    .literal(true)
+    .optional()
+    .describe(
+      "Required ONLY when re-calling send_transaction on an EVM handle whose previous attempt " +
+        "returned a `WalletConnectRequestTimeoutError` (no_broadcast / consumed_unmatched / " +
+        "ambiguous_disagreement). Issue #326 P3: a previous timeout-with-probe outcome leaves " +
+        "the device in an uncertain state — Ledger Live may have silently completed signing in " +
+        "the background, and a blind retry queues a duplicate signing prompt that LOOKS exactly " +
+        "like a key-leak attack pattern (two prompts for the same nonce). The flag is the agent's " +
+        "schema-level confirmation that the user has been told about the duplicate-prompt risk " +
+        "(reject any duplicate prompt; the original tx will land normally) AND has verified via " +
+        "a block explorer that no tx with the pinned nonce has landed in the last ~5 minutes. " +
+        "Without this flag on a marked handle, send_transaction refuses and surfaces the " +
+        "previous outcome's recovery guidance. Cleared by the ack itself — a SECOND ambiguous " +
+        "outcome on the retry requires another explicit ack. EVM-only; ignored on TRON / Solana / " +
+        "BTC / LTC handles since their signing paths don't go through WalletConnect."
+    ),
 });
 
 export const previewSendInput = z.object({
