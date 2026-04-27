@@ -621,6 +621,25 @@ export const getLedgerDeviceInfoInput = z.object({});
  */
 export const verifyLedgerFirmwareInput = z.object({});
 
+/**
+ * `verify_ledger_live_codesign` — verify the on-disk Ledger Live
+ * binary carries a valid Ledger-issued code signature. Issue #325 P4.
+ */
+export const verifyLedgerLiveCodesignInput = z.object({
+  binaryPath: z
+    .string()
+    .min(1)
+    .max(4096)
+    .optional()
+    .describe(
+      "Absolute path to the Ledger Live binary or app bundle. Optional on " +
+        "macOS / Windows (defaults to canonical install path). REQUIRED on " +
+        "Linux — pass the absolute path to your downloaded AppImage. " +
+        "flatpak / snap / dpkg installs aren't supported by this check; use " +
+        "your package manager's verify command instead."
+    ),
+});
+
 export const getMarginfiPositionsInput = z.object({
   wallet: solanaAddressSchema.describe(
     "Solana wallet to enumerate MarginFi positions for. Probes the first 4 MarginfiAccount " +
@@ -1556,6 +1575,7 @@ export type SignBtcMessageArgs = z.infer<typeof signBtcMessageInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
 export type GetLedgerDeviceInfoArgs = z.infer<typeof getLedgerDeviceInfoInput>;
 export type VerifyLedgerFirmwareArgs = z.infer<typeof verifyLedgerFirmwareInput>;
+export type VerifyLedgerLiveCodesignArgs = z.infer<typeof verifyLedgerLiveCodesignInput>;
 
 /**
  * Litecoin (initial release) — minimal core surface: pair, single-address

@@ -97,6 +97,7 @@ import { getPortfolioSummaryInput } from "./modules/portfolio/schemas.js";
 import { getVaultPilotConfigStatus } from "./modules/diagnostics/index.js";
 import { getLedgerDeviceInfo } from "./modules/diagnostics/ledger-device-info.js";
 import { verifyLedgerFirmware } from "./modules/diagnostics/ledger-firmware-verify.js";
+import { verifyLedgerLiveCodesign } from "./modules/diagnostics/ledger-live-codesign-tool.js";
 
 import { getTransactionHistory } from "./modules/history/index.js";
 import { getTransactionHistoryInput } from "./modules/history/schemas.js";
@@ -263,6 +264,7 @@ import {
   getVaultPilotConfigStatusInput,
   getLedgerDeviceInfoInput,
   verifyLedgerFirmwareInput,
+  verifyLedgerLiveCodesignInput,
   getLedgerStatusInput,
   prepareAaveSupplyInput,
   prepareAaveWithdrawInput,
@@ -2845,6 +2847,31 @@ async function main() {
       inputSchema: verifyLedgerFirmwareInput.shape,
     },
     handler(verifyLedgerFirmware)
+  );
+
+  registerTool(server,
+    "verify_ledger_live_codesign",
+    {
+      description:
+        "READ-ONLY codesign verification of the on-disk Ledger Live binary " +
+        "(issue #325 P4). Per-platform: macOS uses `codesign --verify --deep " +
+        "--strict` + Apple Team ID match; Windows uses PowerShell " +
+        "`Get-AuthenticodeSignature` + Subject substring match; Linux verifies " +
+        "the AppImage's embedded PGP signature is present (full key fingerprint " +
+        "pinning is a follow-up). Defaults to the platform's canonical install " +
+        "path; pass `binaryPath` to override (REQUIRED on Linux — no canonical " +
+        "AppImage location). Returns: `verified` (signature valid + matches " +
+        "Ledger), `mismatch` (signed by someone else — likely self-built / dev " +
+        "Ledger Live or a tampered binary), `invalid` (signature failed " +
+        "verification), `not-found` (no install at the expected path), " +
+        "`platform-not-supported` (Linux flatpak/snap/dpkg or unknown OS), " +
+        "`tool-missing` (codesign / powershell unavailable), `error`. NEVER " +
+        "refuses signing — surfaces the verdict for the agent to relay. Run " +
+        "after first install / Ledger Live update / OS update. Codesign tools " +
+        "take 100s of ms so this is NOT auto-fired on every signing call.",
+      inputSchema: verifyLedgerLiveCodesignInput.shape,
+    },
+    handler(verifyLedgerLiveCodesign)
   );
 
   registerTool(server,
