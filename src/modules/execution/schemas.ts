@@ -1710,3 +1710,65 @@ export const prepareUniswapV3MintInput = z.object({
 });
 
 export type PrepareUniswapV3MintArgs = z.infer<typeof prepareUniswapV3MintInput>;
+
+// Increase liquidity on an existing Uniswap V3 LP position. Reads the
+// position's pair + tick range on-chain via positions(tokenId) — caller
+// only supplies the tokenId + amounts. Same v1 limitation as mint:
+// WETH on both sides (no native-ETH refund-via-multicall in v1).
+export const prepareUniswapV3IncreaseLiquidityInput = z.object({
+  wallet: walletSchema,
+  chain: chainEnum.default("ethereum"),
+  tokenId: z
+    .string()
+    .regex(/^[0-9]+$/)
+    .max(100)
+    .describe(
+      "ERC-721 tokenId of the Uniswap V3 LP NFT to add liquidity to. The position " +
+        "must be owned by `wallet` — the builder reads ownerOf(tokenId) and refuses " +
+        "if it doesn't match. Use `get_lp_positions` to enumerate the wallet's " +
+        "tokenIds.",
+    ),
+  amount0Desired: z
+    .string()
+    .max(50)
+    .describe(
+      'Human-readable decimal amount of the position\'s token0 to add. NOT raw wei. ' +
+        'Pass "0" for a single-sided range deposit when the current price is outside ' +
+        "the position's range.",
+    ),
+  amount1Desired: z
+    .string()
+    .max(50)
+    .describe("Human-readable decimal amount of the position's token1. Same shape as amount0Desired."),
+  slippageBps: z
+    .number()
+    .int()
+    .min(0)
+    .max(500)
+    .optional()
+    .describe(
+      "Slippage tolerance in basis points (1 bp = 0.01%). Default 50 bps (0.5%). " +
+        "Hard ceiling 500 bps; soft cap 100 bps requires acknowledgeHighSlippage: true.",
+    ),
+  acknowledgeHighSlippage: z
+    .boolean()
+    .optional()
+    .describe(
+      "Required when slippageBps is in (100, 500]. Surface the trade-off to the user " +
+        "before proceeding.",
+    ),
+  deadlineSec: z
+    .number()
+    .int()
+    .min(60)
+    .max(3600)
+    .optional()
+    .describe(
+      "Seconds from now until the on-chain `deadline` parameter expires. Default 1200 (20 min).",
+    ),
+  approvalCap: approvalCapSchema,
+});
+
+export type PrepareUniswapV3IncreaseLiquidityArgs = z.infer<
+  typeof prepareUniswapV3IncreaseLiquidityInput
+>;

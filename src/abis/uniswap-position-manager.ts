@@ -13,6 +13,13 @@ export const uniswapPositionManagerAbi = [
   },
   {
     type: "function",
+    name: "ownerOf",
+    stateMutability: "view",
+    inputs: [{ name: "tokenId", type: "uint256" }],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
     name: "tokenOfOwnerByIndex",
     stateMutability: "view",
     inputs: [
