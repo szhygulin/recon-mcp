@@ -27,7 +27,7 @@
  */
 
 import { CONTRACTS } from "../config/contracts.js";
-import type { SupportedChain } from "../types/index.js";
+import type { SupportedChain, UnsignedTx } from "../types/index.js";
 
 /**
  * Tool families with canonical-target enforcement. Keyed by the
@@ -138,6 +138,25 @@ export function assertCanonicalDispatchTarget(
       `[INV_1A] ✗ DISPATCH-TARGET MISMATCH for ${toolName} on ${chain}: builder produced to=${to}, but the canonical target(s) for this tool family are: ${allowed}. Refusing to issue handle.`,
     );
   }
+}
+
+/**
+ * Walk to the action leg of a prepared `UnsignedTx` chain and assert its
+ * dispatch target against the canonical-target allowlist for `toolName`.
+ *
+ * Approval legs sit ahead of the action and target the ERC-20 token
+ * contract (never in the allowlist) — the canonical-target check applies
+ * to the protocol action at the tail of the chain. Wired into `txHandler`
+ * (src/index.ts) so every prepare_* handler runs through this guard
+ * before handles are issued.
+ */
+export function assertCanonicalDispatchOnTxChain(
+  toolName: string,
+  tx: UnsignedTx,
+): void {
+  let tail: UnsignedTx = tx;
+  while (tail.next) tail = tail.next;
+  assertCanonicalDispatchTarget(toolName, tail.chain, tail.to);
 }
 
 /**
