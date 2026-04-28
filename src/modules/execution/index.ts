@@ -108,6 +108,8 @@ import {
   buildLidoWrap,
   buildLidoUnwrap,
   buildEigenLayerDeposit,
+  buildRocketPoolStake,
+  buildRocketPoolUnstake,
 } from "../staking/actions.js";
 import { buildWethUnwrap } from "../weth/actions.js";
 import { getTokenPrice } from "../../data/prices.js";
@@ -130,6 +132,8 @@ import type {
   PrepareLidoWrapArgs,
   PrepareLidoUnwrapArgs,
   PrepareEigenLayerDepositArgs,
+  PrepareRocketPoolStakeArgs,
+  PrepareRocketPoolUnstakeArgs,
   PrepareNativeSendArgs,
   PrepareWethUnwrapArgs,
   PrepareTokenSendArgs,
@@ -2436,6 +2440,24 @@ export async function prepareEigenLayerDeposit(args: PrepareEigenLayerDepositArg
       decimals: meta.decimals,
       symbol: meta.symbol,
       approvalCap: args.approvalCap,
+    })
+  );
+}
+
+export async function prepareRocketPoolStake(args: PrepareRocketPoolStakeArgs): Promise<UnsignedTx> {
+  return enrichTx(
+    await buildRocketPoolStake({
+      wallet: args.wallet as `0x${string}`,
+      amountEth: args.amountEth,
+    })
+  );
+}
+
+export async function prepareRocketPoolUnstake(args: PrepareRocketPoolUnstakeArgs): Promise<UnsignedTx> {
+  return enrichTx(
+    await buildRocketPoolUnstake({
+      wallet: args.wallet as `0x${string}`,
+      amountReth: args.amountReth,
     })
   );
 }

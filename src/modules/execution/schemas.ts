@@ -743,6 +743,26 @@ export const prepareLidoUnwrapInput = z.object({
     ),
 });
 
+export const prepareRocketPoolStakeInput = z.object({
+  wallet: walletSchema,
+  amountEth: z
+    .string()
+    .max(50)
+    .describe(
+      'Human-readable ETH amount to stake into Rocket Pool (mints rETH), NOT raw wei. Example: "0.5" for 0.5 ETH. Protocol minimum is ~0.01 ETH; the deposit pool also has a per-deposit capacity that we preflight-check.',
+    ),
+});
+
+export const prepareRocketPoolUnstakeInput = z.object({
+  wallet: walletSchema,
+  amountReth: z
+    .string()
+    .max(50)
+    .describe(
+      'Human-readable rETH amount to burn for ETH, NOT raw wei. Example: "0.5" for 0.5 rETH (18 decimals). Burning requires sufficient on-protocol ETH collateral (rETH contract balance + RocketDepositPool excess); if collateral is insufficient, sell rETH on the rETH/ETH Uniswap V3 pool instead via `prepare_uniswap_swap`.',
+    ),
+});
+
 export const prepareEigenLayerDepositInput = z.object({
   wallet: walletSchema,
   strategy: addressSchema,
@@ -1014,6 +1034,8 @@ export type PrepareLidoUnstakeArgs = z.infer<typeof prepareLidoUnstakeInput>;
 export type PrepareLidoWrapArgs = z.infer<typeof prepareLidoWrapInput>;
 export type PrepareLidoUnwrapArgs = z.infer<typeof prepareLidoUnwrapInput>;
 export type PrepareEigenLayerDepositArgs = z.infer<typeof prepareEigenLayerDepositInput>;
+export type PrepareRocketPoolStakeArgs = z.infer<typeof prepareRocketPoolStakeInput>;
+export type PrepareRocketPoolUnstakeArgs = z.infer<typeof prepareRocketPoolUnstakeInput>;
 export type PrepareNativeSendArgs = z.infer<typeof prepareNativeSendInput>;
 export type PrepareWethUnwrapArgs = z.infer<typeof prepareWethUnwrapInput>;
 export type PrepareTokenSendArgs = z.infer<typeof prepareTokenSendInput>;
