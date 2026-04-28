@@ -1258,6 +1258,27 @@ export interface UnsignedTx {
     warnings?: string[];
   };
   /**
+   * Non-standard ERC-20 transfer-semantics flags (issue #441) — looked
+   * up at `prepare_token_send` time from the curated registry in
+   * `modules/execution/token-class.ts`. Absent when the token is plain
+   * ERC-20 (no point surfacing `flags: ["standard"]` and adding noise
+   * to every receipt). When present, the verification renderer
+   * appends `warnings[]` as `⚠ <warning>` lines so the user reads
+   * them before signing — caught the smoke-test case where a 0.3 stETH
+   * transfer landed 1-2 wei short with no warning (script 019).
+   */
+  tokenClass?: {
+    flags: Array<
+      | "standard"
+      | "rebasing"
+      | "fee_on_transfer"
+      | "pausable"
+      | "blocklisted"
+      | "upgradeable_admin"
+    >;
+    warnings: string[];
+  };
+  /**
    * Set when the tx was built by `prepare_custom_call` after the user passed
    * the affirmative `acknowledgeNonProtocolTarget: true` schema-enforced
    * gate. Read by `assertTransactionSafe` to skip ONLY the catch-all

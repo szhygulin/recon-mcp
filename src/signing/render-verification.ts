@@ -159,7 +159,10 @@ function formatDecoder(v: TxVerification): string {
 }
 
 export function renderVerificationBlock(
-  tx: Pick<UnsignedTx, "chain" | "to" | "value" | "data" | "recipient"> & {
+  tx: Pick<
+    UnsignedTx,
+    "chain" | "to" | "value" | "data" | "recipient" | "tokenClass"
+  > & {
     verification: TxVerification;
   },
 ): string {
@@ -185,6 +188,16 @@ export function renderVerificationBlock(
     `  Hash: ${v.payloadHash}  (short ${v.payloadHashShort}, echoed at send time)`,
   ];
   for (const w of tx.recipient?.warnings ?? []) {
+    lines.push(`  ⚠ ${w}`);
+  }
+  // Token-class warnings (issue #441) — non-standard ERC-20 transfer
+  // semantics flagged by the curated registry in
+  // `modules/execution/token-class.ts`. Same `⚠ <warning>` shape so
+  // the user reads them at the same scan position as recipient
+  // warnings; the token-class field is its own struct on UnsignedTx
+  // so renderers downstream can branch on the flags if they want
+  // different treatment per class.
+  for (const w of tx.tokenClass?.warnings ?? []) {
     lines.push(`  ⚠ ${w}`);
   }
   return lines.join("\n");
