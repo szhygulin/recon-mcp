@@ -88,3 +88,23 @@
   - **Cryptographic integrity** — data unaltered since signed/hashed (`payloadFingerprint`, skill-pin SHA, BIP-143 sighashes — call this out by name).
 - Scope: user-facing docs only. Internal `claude-work/` plans, memory entries, chat replies, and commit messages can stay informal — vocabulary discipline lives where the audience is professional reviewers.
 - **Don't open a PR to bulk find-and-replace existing "honest" usages** (SECURITY.md, prior PR bodies, closed-issue comments still carry them). Migrate the wording opportunistically when you're already editing the surrounding text for another reason.
+
+## Documentation Style — concise, non-redundant, sharp
+- **In user-facing docs (READMEs, AGENTS.md, INSTALL guides, prose sections of SECURITY.md, ROADMAP), state each idea once, in its most natural place.** Long docs accumulate redundancy as features land incrementally — taglines, callout blocks, intro paragraphs, and feature bullets all end up restating the same pitch because each was written in isolation. The reader pays for that.
+- Concrete tells the doc has drifted into redundancy:
+  - The same fact appears in 3+ places (e.g. "durable-nonce protects sends from blockhash expiry" stated in tagline + Features bullet + Supported chains + Tools entry).
+  - Intro region with tagline + callout + multi-paragraph "what this is" — pick one.
+  - Tool / feature descriptions explaining what the name already implies (`get_token_balance` "fetches a token's balance").
+  - Bullet lists that duplicate prose immediately above them.
+  - Run-on sentences where two short sentences would land harder.
+  - "Limitations" / "what this isn't" sections re-covering ground from the body.
+- How to apply at write time:
+  - Lead with the strongest sentence. Don't ramp up.
+  - One fact, one home. If a detail belongs in two sections, pick the more natural one and link from the other.
+  - Cut adjectives that don't change meaning ("comprehensive" / "robust" / "powerful" / "seamless").
+  - Tool / feature descriptions: state what's NON-obvious from the name; otherwise list the name with no description.
+- How to apply at edit time:
+  - Read the doc top-to-bottom in one pass; flag every sentence you've read before. Resolve duplicates: keep the best location, delete the rest, add a cross-link if navigation value is lost.
+  - Opportunistic dedup is fine while editing for another reason. Standalone churn PRs aren't — pair the cleanup with substantive content work.
+- Scope: user-facing docs and PR descriptions. Internal `claude-work/` plans, memory entries, code comments, and chat replies can stay verbose — concision discipline lives where the audience is the reader, not future-you.
+- **Past incident (2026-04-28)**: README.md grew to 258 lines with the intro restated four times (line 7 tagline + line 11 callout block + line 18 paragraph + line 22 closer), the Solana durable-nonce explanation in three sections, and the "Ledger Live's WalletConnect doesn't support TRON / Solana" fact in two. Rewrite cut to ~227 lines without losing technical content — pure dedup. Future README edits should preserve that density.
