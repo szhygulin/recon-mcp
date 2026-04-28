@@ -501,3 +501,139 @@ describe("Pre-sign check: WETH9-specific selectors", () => {
     ).rejects.toThrow(/not a known function on weth9/);
   });
 });
+
+describe("Pre-sign check: prepare_custom_call escape hatch (issue #496)", () => {
+  // OpenZeppelin TimelockController on mainnet — outside our canonical
+  // CONTRACTS table, exactly the use case `prepare_custom_call` was filed
+  // for in #493. The bug from #496: preview_send / send_transaction's
+  // assertTransactionSafe refuses any tx whose `to` isn't in
+  // KNOWN_DESTINATIONS, which made every prepare_custom_call handle dead-
+  // on-arrival.
+  const TIMELOCK = "0x22bc85C483103950441EaaB8312BE9f07e234634" as const;
+  // schedule(address,uint256,bytes,bytes32,bytes32,uint256) selector +
+  // valid abi-encoded args (zero target, zero value, empty bytes, two
+  // zero bytes32 salts, 172800 delay).
+  const SCHEDULE_CALLDATA =
+    ("0x01d5062a" +
+      "0000000000000000000000000000000000000000000000000000000000000001" + // target
+      "0000000000000000000000000000000000000000000000000000000000000000" + // value
+      "00000000000000000000000000000000000000000000000000000000000000c0" + // bytes offset
+      "0000000000000000000000000000000000000000000000000000000000000000" + // predecessor
+      "0000000000000000000000000000000000000000000000000000000000000000" + // salt
+      "000000000000000000000000000000000000000000000000000000000002a300" + // delay (172800)
+      "0000000000000000000000000000000000000000000000000000000000000000") as `0x${string}`; // empty bytes len=0
+
+  it("WITHOUT the affirmative-ack flag — refuses unknown destination (current behavior)", async () => {
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: TIMELOCK as `0x${string}`,
+        data: SCHEDULE_CALLDATA,
+        value: "0",
+        from: WALLET,
+        description: "schedule call on a third-party Timelock",
+      }),
+    ).rejects.toThrow(/refusing to sign against unknown contract/);
+  });
+
+  it("error message points the user at prepare_custom_call as the right path", async () => {
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: TIMELOCK as `0x${string}`,
+        data: SCHEDULE_CALLDATA,
+        value: "0",
+        from: WALLET,
+        description: "schedule call on a third-party Timelock",
+      }),
+    ).rejects.toThrow(/prepare_custom_call.*acknowledgeNonProtocolTarget/);
+  });
+
+  it("WITH acknowledgedNonProtocolTarget=true — accepts the unknown destination", async () => {
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: TIMELOCK as `0x${string}`,
+        data: SCHEDULE_CALLDATA,
+        value: "0",
+        from: WALLET,
+        description: "prepare_custom_call: schedule on Timelock",
+        acknowledgedNonProtocolTarget: true,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("the ack does NOT bypass the approve() spender allowlist", async () => {
+    // A user calling `approve(attacker, max)` via prepare_custom_call
+    // should still hit the allowlist refusal — the approve gate (block
+    // 2 in assertTransactionSafe) is independent of the catch-all
+    // unknown-destination check (block 4) the ack bypasses.
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const data = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [ATTACKER as `0x${string}`, maxUint256],
+    });
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: USDC_ETH as `0x${string}`,
+        data,
+        value: "0",
+        from: WALLET,
+        description: "prepare_custom_call: approve attacker max USDC",
+        acknowledgedNonProtocolTarget: true,
+      }),
+    ).rejects.toThrow(/spender is not in the protocol allowlist/);
+  });
+
+  it("the ack does NOT bypass the transfer-on-unknown-token refusal", async () => {
+    // A custom-call transfer() against an unrecognized token contract
+    // still hits block 3 (transfer-on-unknown-token), not the catch-all.
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const data = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "transfer",
+      args: [ATTACKER as `0x${string}`, 100n],
+    });
+    const RANDOM_TOKEN = "0x9999999999999999999999999999999999999999";
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: RANDOM_TOKEN as `0x${string}`,
+        data,
+        value: "0",
+        from: WALLET,
+        description: "prepare_custom_call: transfer on a random contract",
+        acknowledgedNonProtocolTarget: true,
+      }),
+    ).rejects.toThrow(/token is not in our.*recognized set/);
+  });
+
+  it("the ack does NOT bypass the per-destination ABI-selector check on KNOWN destinations", async () => {
+    // If the ack-tagged handle somehow lands on a known protocol
+    // destination (Aave Pool) but with an arbitrary selector that isn't
+    // a real Aave function, the per-destination ABI guard (block 5)
+    // still fires. The ack only opens the catch-all branch for
+    // genuinely unknown destinations.
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const data = ("0xdeadbeef" + "00".repeat(32)) as `0x${string}`;
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: AAVE_POOL_ETH as `0x${string}`,
+        data,
+        value: "0",
+        from: WALLET,
+        description: "prepare_custom_call: bogus selector on Aave",
+        acknowledgedNonProtocolTarget: true,
+      }),
+    ).rejects.toThrow(/not a known function on aave-v3-pool/);
+    // Suppress unused warning — zeroAddress is imported by the file's
+    // existing tests; this block doesn't reference it.
+    void zeroAddress;
+  });
+});

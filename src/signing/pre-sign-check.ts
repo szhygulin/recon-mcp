@@ -282,14 +282,32 @@ export async function assertTransactionSafe(tx: UnsignedTx): Promise<void> {
     return;
   }
 
-  // 4) Every other selector: must be a known protocol destination.
+  // 4) Every other selector: must be a known protocol destination — UNLESS
+  //    this handle came through `prepare_custom_call`'s affirmative-ack
+  //    path (`acknowledgeNonProtocolTarget: true`). The schema-enforced
+  //    gate at build time already covered consent for the non-protocol
+  //    target; refusing here would render the escape hatch dead-on-arrival
+  //    at the very next step (the bug from issue #496). Note this skips
+  //    ONLY the catch-all unknown-destination refusal — the approve()
+  //    spender-allowlist (block 2 above), the transfer()-on-unknown-token
+  //    refusal (block 3), and the per-destination ABI-selector check
+  //    (block 5 below) all stay active because they protect against
+  //    distinct attack shapes that the ack does not subsume.
   if (!dest) {
+    if (tx.acknowledgedNonProtocolTarget === true) {
+      // Pre-sign defenses #2 (approve spender allowlist) and #3 (transfer
+      // on unknown token) are already past; this catch-all is the right
+      // place to cleanly accept the call.
+      return;
+    }
     throw new Error(
       `Pre-sign check: refusing to sign against unknown contract ${tx.to} on ${tx.chain} ` +
         `(selector ${selector}). Accepted destinations: Aave V3 Pool, Compound V3 Comet markets, ` +
         `Morpho Blue, Lido (stETH/Queue), EigenLayer StrategyManager, Uniswap V3 NPM, Uniswap V3 SwapRouter02, LiFi Diamond, ` +
         `and known ERC-20s. An unknown destination with non-empty calldata is exactly the shape of ` +
-        `a prompt-injection attack.`
+        `a prompt-injection attack. (If you intended an arbitrary contract call, use ` +
+        `\`prepare_custom_call\` with \`acknowledgeNonProtocolTarget: true\` — that path is ` +
+        `built specifically to bypass this check.)`
     );
   }
 
