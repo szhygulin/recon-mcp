@@ -158,6 +158,7 @@ export function getToolScope(name: string): { family?: ChainFamily; protocol?: P
     name === "prepare_swap" ||
     name === "prepare_weth_unwrap" ||
     name === "prepare_revoke_approval" ||
+    name === "prepare_custom_call" ||
     name === "get_token_allowances" ||
     name === "resolve_ens_name" ||
     name === "reverse_resolve_ens" ||

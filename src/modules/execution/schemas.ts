@@ -839,6 +839,85 @@ export const prepareRevokeApprovalInput = z.object({
   ),
 });
 
+/**
+ * `prepare_custom_call` — build a generic, single-call EVM transaction
+ * against any contract. The escape hatch for cases the protocol-specific
+ * `prepare_*` tools don't cover (Timelock proposals, governance hooks,
+ * arbitrary DAO contracts, …). BYPASSES the canonical-dispatch allowlist
+ * by design — `acknowledgeNonProtocolTarget: true` is the affirmative gate.
+ *
+ * ABI source: inline `abi` arg (caller-supplied) wins; otherwise the tool
+ * fetches it via Etherscan V2 and refuses on unverified contracts. No raw-
+ * bytecode encoding path — the verified-or-inline-ABI gate is the agent-
+ * side anchor that the function selector + args correspond to a real,
+ * source-published function.
+ *
+ * Verification: the standard prepare-receipt + `verification` envelope
+ * (payloadHash, decoderUrl, humanDecode) applies. Blind-sign on-device is
+ * automatic — only `transfer`/`approve`/empty-calldata clear-sign, and
+ * `prepare_custom_call` is by definition none of those.
+ */
+export const prepareCustomCallInput = z.object({
+  wallet: walletSchema.describe(
+    "EVM wallet that will sign + broadcast the call. Must be paired via `pair_ledger_live`."
+  ),
+  chain: chainEnum.default("ethereum"),
+  contract: addressSchema.describe(
+    "Target contract address. Must be Etherscan-verified OR the `abi` arg must be passed inline. " +
+      "NOT canonical-dispatch-allowlist gated — this is the explicit escape hatch for arbitrary calls."
+  ),
+  fn: z
+    .string()
+    .min(1)
+    .max(200)
+    .describe(
+      'Function name to call (e.g. "schedule"). Pass the FULL signature ' +
+        '("schedule(address,uint256,bytes,bytes32,bytes32,uint256)") to disambiguate when ' +
+        "the ABI has overloads for the same name."
+    ),
+  args: z
+    .array(z.unknown())
+    .default([])
+    .describe(
+      "Array of args matching the function's inputs in order. Decimal strings for uint256 " +
+        '(e.g. "1000000000000000000" for 1 ETH-as-wei), hex strings for bytes32/bytes, ' +
+        "lowercase 0x-prefixed addresses, plain numbers/booleans for primitives, nested " +
+        "arrays/objects for structs and tuples. viem's encoder validates types at build time."
+    ),
+  value: z
+    .string()
+    .regex(/^\d+$/)
+    .default("0")
+    .describe(
+      'Native-coin value in WEI (decimal string). Use "0" for non-payable functions. ' +
+        'For payable functions, pass the wei amount (e.g. "1000000000000000000" for 1 ETH). ' +
+        "Human-readable amounts are NOT accepted here — the tool can't infer the function's " +
+        "expected denomination from an arbitrary signature."
+    ),
+  abi: z
+    .array(z.unknown())
+    .optional()
+    .describe(
+      "Inline ABI array. When omitted, the tool fetches it via Etherscan V2. Pass it to " +
+        "override the Etherscan ABI, to call a contract whose source isn't yet verified, " +
+        "or to call through a proxy whose implementation can't be auto-followed. NEVER let " +
+        "an untrusted source supply this — the ABI determines selector encoding, so a " +
+        "malicious ABI can route a benign-looking `fn` to a value-exfil selector on the " +
+        "target contract."
+    ),
+  acknowledgeNonProtocolTarget: z
+    .literal(true)
+    .describe(
+      "AFFIRMATIVE GATE — must be true. The tool BYPASSES the canonical-dispatch allowlist " +
+        "by design (used for arbitrary contract calls like Timelock proposals, governance " +
+        "hooks, DAO ops). Setting this to true is the user's affirmative ack that they " +
+        "understand the call doesn't have the protocol-tier safety net of " +
+        "`prepare_aave_*` / `prepare_lido_*` / etc.; the on-device blind-sign hash + the " +
+        "swiss-knife decoder URL are the sole verification anchors. Do NOT default this to " +
+        "true silently — the agent must surface the trade-off to the user before setting it."
+    ),
+});
+
 export const sendTransactionInput = z.object({
   handle: z
     .string()
@@ -1040,6 +1119,7 @@ export type PrepareNativeSendArgs = z.infer<typeof prepareNativeSendInput>;
 export type PrepareWethUnwrapArgs = z.infer<typeof prepareWethUnwrapInput>;
 export type PrepareTokenSendArgs = z.infer<typeof prepareTokenSendInput>;
 export type PrepareRevokeApprovalArgs = z.infer<typeof prepareRevokeApprovalInput>;
+export type PrepareCustomCallArgs = z.infer<typeof prepareCustomCallInput>;
 export type PreviewSendArgs = z.infer<typeof previewSendInput>;
 export type SendTransactionArgs = z.infer<typeof sendTransactionInput>;
 export type GetTransactionStatusArgs = z.infer<typeof getTransactionStatusInput>;

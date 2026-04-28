@@ -112,6 +112,7 @@ import {
   buildRocketPoolUnstake,
 } from "../staking/actions.js";
 import { buildWethUnwrap } from "../weth/actions.js";
+import { buildCustomCall } from "../custom-call/actions.js";
 import { getTokenPrice } from "../../data/prices.js";
 import type {
   PairLedgerTronArgs,
@@ -138,6 +139,7 @@ import type {
   PrepareWethUnwrapArgs,
   PrepareTokenSendArgs,
   PrepareRevokeApprovalArgs,
+  PrepareCustomCallArgs,
   PrepareSolanaNativeSendArgs,
   PrepareSolanaSplSendArgs,
   PrepareSolanaNonceInitArgs,
@@ -2655,6 +2657,32 @@ export async function prepareRevokeApproval(
       },
     },
   });
+}
+
+export async function prepareCustomCall(
+  args: PrepareCustomCallArgs,
+): Promise<UnsignedTx> {
+  // Schema enforces `acknowledgeNonProtocolTarget: z.literal(true)` so
+  // anything that lands here has already crossed the affirmative gate.
+  // Re-assert defensively in case a future caller bypasses the schema.
+  if (args.acknowledgeNonProtocolTarget !== true) {
+    throw new Error(
+      "prepare_custom_call requires acknowledgeNonProtocolTarget=true. The tool " +
+        "BYPASSES the canonical-dispatch allowlist by design; this flag is the " +
+        "user's affirmative ack that they're calling a non-protocol target.",
+    );
+  }
+  return enrichTx(
+    await buildCustomCall({
+      wallet: args.wallet as `0x${string}`,
+      chain: args.chain as SupportedChain,
+      contract: args.contract as `0x${string}`,
+      fn: args.fn,
+      args: args.args ?? [],
+      value: args.value,
+      abi: args.abi,
+    }),
+  );
 }
 
 /**

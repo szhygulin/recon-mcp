@@ -236,6 +236,7 @@ import {
   prepareWethUnwrap,
   prepareTokenSend,
   prepareRevokeApproval,
+  prepareCustomCall,
   previewSend,
   previewSolanaSend,
   sendTransaction,
@@ -339,6 +340,7 @@ import {
   prepareWethUnwrapInput,
   prepareTokenSendInput,
   prepareRevokeApprovalInput,
+  prepareCustomCallInput,
   previewSendInput,
   previewSolanaSendInput,
   sendTransactionInput,
@@ -4213,6 +4215,16 @@ async function main() {
       inputSchema: prepareRevokeApprovalInput.shape,
     },
     txHandler("prepare_revoke_approval", prepareRevokeApproval)
+  );
+
+  registerTool(server,
+    "prepare_custom_call",
+    {
+      description:
+        "ESCAPE HATCH for arbitrary EVM contract calls — Timelock proposals, governance hooks, DAO ops, anything not covered by a protocol-specific `prepare_*`. BYPASSES the canonical-dispatch allowlist by design; the schema's `acknowledgeNonProtocolTarget: true` literal is the user's affirmative gate. ABI source: pass `abi: [...]` inline (preferred when you have the project's published artifact), OR omit it and the tool fetches via Etherscan V2 — refuses on unverified contracts with NO raw-bytecode fallback. Proxies are followed once to the implementation when Etherscan exposes the link; deeper proxy chains require an inline ABI. Pass `fn` as a name (\"schedule\") when unambiguous or as the full signature (\"schedule(address,uint256,bytes,bytes32,bytes32,uint256)\") to disambiguate overloads. `args` types are validated by viem's encoder at build time — uint256 expects a decimal string, address expects a 0x-prefixed lowercase hex, bytes/bytes32 expect 0x-prefixed hex, structs are objects with their named fields. `value` is RAW WEI (decimal string), not human-readable. The standard prepare-receipt + verification envelope (payloadHash, decoderUrl, humanDecode) applies; on-device verification is blind-sign by definition (no Ledger plugin decodes arbitrary calldata) — the swiss-knife decoder URL surfaced in chat is the user-side anchor. Use a protocol-specific `prepare_*` whenever one fits — this tool exists for the long tail.",
+      inputSchema: prepareCustomCallInput.shape,
+    },
+    txHandler("prepare_custom_call", prepareCustomCall)
   );
 
   // ---- Module 8: Compound V3 ----
