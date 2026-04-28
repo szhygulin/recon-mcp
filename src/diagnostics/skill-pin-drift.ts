@@ -53,7 +53,7 @@ import { createHash } from "node:crypto";
  * literal a second time.
  */
 export const EXPECTED_SKILL_SHA256 =
-  "d7428dae8a223a39b378cc3e37dbed97a2beb3ec2d8efc5c3d9072194b7ac576";
+  "18ca800d2696720de9ca22e3a037a89a788ef069a17cfcdcd6649fa2f62b11cb";
 
 /**
  * Sentinel fragments. Assembled from three pieces so the full literal
@@ -63,8 +63,8 @@ export const EXPECTED_SKILL_SHA256 =
  * search the `Skill` tool's result text for the assembled value.
  */
 export const EXPECTED_SKILL_SENTINEL_A = "VAULTPILOT_PREFLIGHT_INTEGRITY";
-export const EXPECTED_SKILL_SENTINEL_B = "_v9_";
-export const EXPECTED_SKILL_SENTINEL_C = "8b2c1d6e5f7a9301";
+export const EXPECTED_SKILL_SENTINEL_B = "_v10_";
+export const EXPECTED_SKILL_SENTINEL_C = "3f4d8e2a6c9b1057";
 
 /** Raw GitHub URL of the canonical `SKILL.md` on `master`. */
 export const SKILL_MD_RAW_URL =
