@@ -2884,11 +2884,17 @@ async function main() {
         "BTC app clear-signs every output (address + amount) + fee on-screen, so there " +
         "is NO blind-sign hash to pre-match in chat. The verification block surfaces " +
         "every output's address, amount in BTC, isChange flag, fee (BTC + sat/vB), " +
-        "and RBF flag. Coin-selection runs branch-and-bound + accumulative fallback " +
-        "via the `coinselect` library; a fee-cap guard refuses any tx whose fee " +
-        "exceeds `max(10 × feeRate × vbytes, 2% of total output value)` unless " +
-        "`allowHighFee: true` is passed. RBF is enabled by default (sequence " +
-        "0xFFFFFFFD); pass `rbf: false` to mark final.",
+        "and RBF flag. " +
+        "Fee selection: pass `feeRateSatPerVb` for an explicit sat/vB number, OR " +
+        "`feePriority` for a fuzzy preset (`fastestFee` / `halfHourFee` / `hourFee` / " +
+        "`economyFee` / `minimumFee` — issue #435) that resolves to mempool.space's " +
+        "named buckets at prepare time. Default (neither set) is `halfHourFee`. " +
+        "The resolved sat/vB always appears in the response under `feeRateSatPerVb` so " +
+        "the user sees what was picked. Coin-selection runs branch-and-bound + " +
+        "accumulative fallback via the `coinselect` library; a fee-cap guard refuses " +
+        "any tx whose fee exceeds `max(10 × feeRate × vbytes, 2% of total output " +
+        "value)` unless `allowHighFee: true` is passed. RBF is enabled by default " +
+        "(sequence 0xFFFFFFFD); pass `rbf: false` to mark final.",
       inputSchema: prepareBitcoinNativeSendInput.shape,
     },
     handler(prepareBitcoinNativeSend, { toolName: "prepare_btc_send" })

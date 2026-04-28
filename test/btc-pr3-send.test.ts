@@ -283,6 +283,93 @@ describe("buildBitcoinNativeSend", () => {
     expect(getFeeEstimatesMock).not.toHaveBeenCalled();
   });
 
+  it("issue #435: resolves feePriority preset to the indexer bucket", async () => {
+    getUtxosMock.mockResolvedValueOnce([
+      { txid: FAKE_TXID, vout: 0, value: 100_000, unconfirmed: false },
+    ]);
+    getFeeEstimatesMock.mockResolvedValueOnce({
+      fastestFee: 50,
+      halfHourFee: 10,
+      hourFee: 5,
+      economyFee: 2,
+      minimumFee: 1,
+    });
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    const tx = await buildBitcoinNativeSend({
+      wallet: SEGWIT_ADDR,
+      to: RECIPIENT,
+      amount: "0.0005",
+      feePriority: "fastestFee",
+    });
+    expect(tx.decoded.feeRateSatPerVb).toBe(50);
+    expect(getFeeEstimatesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("issue #435: resolves the economyFee preset", async () => {
+    getUtxosMock.mockResolvedValueOnce([
+      { txid: FAKE_TXID, vout: 0, value: 100_000, unconfirmed: false },
+    ]);
+    getFeeEstimatesMock.mockResolvedValueOnce({
+      fastestFee: 50,
+      halfHourFee: 10,
+      hourFee: 5,
+      economyFee: 2,
+      minimumFee: 1,
+    });
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    const tx = await buildBitcoinNativeSend({
+      wallet: SEGWIT_ADDR,
+      to: RECIPIENT,
+      amount: "0.0005",
+      feePriority: "economyFee",
+    });
+    expect(tx.decoded.feeRateSatPerVb).toBe(2);
+  });
+
+  it("issue #435: rejects when both feeRateSatPerVb and feePriority are set", async () => {
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    await expect(
+      buildBitcoinNativeSend({
+        wallet: SEGWIT_ADDR,
+        to: RECIPIENT,
+        amount: "0.0005",
+        feeRateSatPerVb: 25,
+        feePriority: "fastestFee",
+      }),
+    ).rejects.toThrow(/not both/i);
+    // Indexer must NOT be hit when the args are ambiguous — the guard
+    // runs before any network work.
+    expect(getFeeEstimatesMock).not.toHaveBeenCalled();
+  });
+
+  it("issue #435: default behavior unchanged — neither set falls back to halfHourFee", async () => {
+    getUtxosMock.mockResolvedValueOnce([
+      { txid: FAKE_TXID, vout: 0, value: 100_000, unconfirmed: false },
+    ]);
+    getFeeEstimatesMock.mockResolvedValueOnce({
+      fastestFee: 50,
+      halfHourFee: 10,
+      hourFee: 5,
+      economyFee: 2,
+      minimumFee: 1,
+    });
+    const { buildBitcoinNativeSend } = await import(
+      "../src/modules/btc/actions.ts"
+    );
+    const tx = await buildBitcoinNativeSend({
+      wallet: SEGWIT_ADDR,
+      to: RECIPIENT,
+      amount: "0.0005",
+    });
+    expect(tx.decoded.feeRateSatPerVb).toBe(10);
+  });
+
   it("rejects unpaired source addresses", async () => {
     const { buildBitcoinNativeSend } = await import(
       "../src/modules/btc/actions.ts"

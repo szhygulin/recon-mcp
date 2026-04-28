@@ -181,9 +181,22 @@ export interface BuildBitcoinNativeSendArgs {
   amount: string;
   /**
    * Fee rate in sat/vB. Optional — when omitted, uses the indexer's
-   * `halfHourFee` recommendation (~3-block target).
+   * `halfHourFee` recommendation (~3-block target). Mutually exclusive
+   * with `feePriority`; the schema rejects both-set at the call site.
    */
   feeRateSatPerVb?: number;
+  /**
+   * Issue #435 — preset that resolves to one of mempool.space's named
+   * fee buckets. Resolved via `getFeeEstimates()` once; the resolved
+   * sat/vB flows through `feeRateSatPerVb` semantics for the rest of
+   * the build. When neither is set, defaults to `halfHourFee`.
+   */
+  feePriority?:
+    | "fastestFee"
+    | "halfHourFee"
+    | "hourFee"
+    | "economyFee"
+    | "minimumFee";
   /**
    * BIP-125 RBF. Default true → sequence `0xFFFFFFFD` (replaceable).
    */
@@ -289,13 +302,27 @@ export async function buildBitcoinNativeSend(
 
   const indexer = getBitcoinIndexer();
 
-  // 2. Resolve fee rate.
+  // 2. Resolve fee rate. Both `feeRateSatPerVb` (raw) and `feePriority`
+  //    (preset, issue #435) are optional. When neither is supplied the
+  //    default is the indexer's `halfHourFee` (~3-block target) — same
+  //    behavior as before #435 added the preset enum.
+  if (
+    args.feeRateSatPerVb !== undefined &&
+    args.feePriority !== undefined
+  ) {
+    throw new Error(
+      "Pass either `feeRateSatPerVb` (raw sat/vB) or `feePriority` (preset), " +
+        "not both. The preset resolves to a sat/vB at prepare time so passing " +
+        "both is ambiguous.",
+    );
+  }
   let feeRate: number;
   if (args.feeRateSatPerVb !== undefined) {
     feeRate = args.feeRateSatPerVb;
   } else {
     const fees = await indexer.getFeeEstimates();
-    feeRate = fees.halfHourFee;
+    const bucket = args.feePriority ?? "halfHourFee";
+    feeRate = fees[bucket];
   }
   if (!Number.isFinite(feeRate) || feeRate <= 0) {
     throw new Error(

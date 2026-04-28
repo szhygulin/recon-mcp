@@ -1239,6 +1239,9 @@ export async function prepareBitcoinNativeSend(
     ...(args.feeRateSatPerVb !== undefined
       ? { feeRateSatPerVb: args.feeRateSatPerVb }
       : {}),
+    ...(args.feePriority !== undefined
+      ? { feePriority: args.feePriority }
+      : {}),
     ...(args.rbf !== undefined ? { rbf: args.rbf } : {}),
     ...(args.allowHighFee !== undefined ? { allowHighFee: args.allowHighFee } : {}),
   });

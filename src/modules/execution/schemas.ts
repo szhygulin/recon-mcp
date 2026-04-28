@@ -1327,7 +1327,26 @@ export const prepareBitcoinNativeSendInput = z.object({
     .describe(
       "Fee rate in sat/vB. Optional — when omitted, uses mempool.space's " +
         "`halfHourFee` recommendation (~3-block confirm target). Override for " +
-        "priority sends through congestion. Capped at 10000 sat/vB for safety."
+        "priority sends through congestion. Capped at 10000 sat/vB for safety. " +
+        "Mutually exclusive with `feePriority`."
+    ),
+  feePriority: z
+    .enum([
+      "fastestFee",
+      "halfHourFee",
+      "hourFee",
+      "economyFee",
+      "minimumFee",
+    ])
+    .optional()
+    .describe(
+      "Issue #435 — fuzzy-fee preset that resolves to mempool.space's named " +
+        "buckets (`fastestFee` ~next-block, `halfHourFee` ~3-block, `hourFee` " +
+        "~6-block, `economyFee` lowest still-included, `minimumFee` floor). " +
+        "Resolves at prepare time via `getFeeEstimates()`; the resolved sat/vB " +
+        "appears in the response so the user sees what was picked. Default " +
+        "(neither preset nor `feeRateSatPerVb` supplied) is `halfHourFee`. " +
+        "Mutually exclusive with `feeRateSatPerVb`."
     ),
   rbf: z
     .boolean()
