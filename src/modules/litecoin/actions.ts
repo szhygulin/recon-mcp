@@ -457,6 +457,12 @@ export interface SignLitecoinMessageArgs {
 export interface SignedLitecoinMessage {
   address: string;
   message: string;
+  /**
+   * SHA-256 of the exact UTF-8 bytes submitted to the device (issue
+   * #454 part a). See the BTC equivalent in `modules/btc/actions.ts`
+   * for the rationale.
+   */
+  messageBytesSha256: string;
   signature: string;
   format: "BIP-137";
   addressType: PairedLtcAddressType;
@@ -479,6 +485,16 @@ export async function signLitecoinMessage(
       `Message length ${args.message.length} exceeds the 10000-char ceiling.`,
     );
   }
+  // Issue #454 — drainer-pattern refusal mirrors the BTC handler.
+  // Runs BEFORE the pairing / device-call branches.
+  const { refuseIfDrainerLike, messageBytesSha256 } = await import(
+    "../../signing/message-sign-guard.js"
+  );
+  refuseIfDrainerLike({
+    wallet: args.wallet,
+    message: args.message,
+    toolName: "sign_message_ltc",
+  });
   const paired = getPairedLtcByAddress(args.wallet);
   if (!paired) {
     throw new Error(
@@ -500,6 +516,7 @@ export async function signLitecoinMessage(
   return {
     address: args.wallet,
     message: args.message,
+    messageBytesSha256: messageBytesSha256(args.message),
     signature: result.signature,
     format: result.format,
     addressType: paired.addressType,

@@ -916,6 +916,14 @@ export interface SignBitcoinMessageArgs {
 export interface SignedBitcoinMessage {
   address: string;
   message: string;
+  /**
+   * SHA-256 of the exact UTF-8 bytes submitted to the device (issue
+   * #454 part a). Surface alongside the verbatim message so the user
+   * can detect Unicode-confusable substitution that the OLED
+   * rendering would otherwise hide (em-dash vs hyphen, Cyrillic А vs
+   * Latin A — the bytes differ, the hash differs).
+   */
+  messageBytesSha256: string;
   signature: string;
   format: "BIP-137";
   addressType: PairedBtcAddressType;
@@ -942,6 +950,17 @@ export async function signBitcoinMessage(
         `into 16-char windows and a multi-KB string is not realistically reviewable.`,
     );
   }
+  // Issue #454 — drainer-pattern refusal. Runs BEFORE the pairing /
+  // device-call branches so a refusal is silent (no hardware round
+  // trip wasted, no Ledger prompt the user has to dismiss).
+  const { refuseIfDrainerLike, messageBytesSha256 } = await import(
+    "../../signing/message-sign-guard.js"
+  );
+  refuseIfDrainerLike({
+    wallet: args.wallet,
+    message: args.message,
+    toolName: "sign_message_btc",
+  });
   const paired = getPairedBtcByAddress(args.wallet);
   if (!paired) {
     throw new Error(
@@ -963,6 +982,7 @@ export async function signBitcoinMessage(
   return {
     address: args.wallet,
     message: args.message,
+    messageBytesSha256: messageBytesSha256(args.message),
     signature: result.signature,
     format: result.format,
     addressType: paired.addressType,
