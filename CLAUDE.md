@@ -96,6 +96,7 @@
   - One fact, one home — link from secondary locations instead of duplicating.
   - Cut adjectives that don't change meaning ("comprehensive" / "robust" / "powerful" / "seamless").
   - Tool/feature descriptions: state what's NON-obvious from the name; otherwise just list the name.
+  - **Stay high-level. Don't over-explain.** Prefer one sharp sentence over an explanatory paragraph; one canonical example over four; a brief reference over a transcript. Readers can ask follow-ups; they cannot un-read filler. Factual accuracy is non-negotiable — high-level is fine, vague-bordering-on-wrong is not. If you're tempted to add a third example "for clarity," the first two were probably enough.
 - Apply at edit time:
   - Read top-to-bottom; flag every sentence you've read before. Keep the best location, delete the rest, link if navigation value is lost.
   - Opportunistic dedup is fine while editing for another reason. Standalone churn PRs aren't.
