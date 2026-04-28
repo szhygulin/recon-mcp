@@ -213,6 +213,75 @@ Idempotent: re-running the script re-downloads (this is also the
 update path) and the wizard recognizes already-present clients/skills
 so a re-run on a configured machine emits `status: "already_installed"`.
 
+#### Patience expectations — the binary is large, the download is slow
+
+The bundled-Node binary is several hundred MB. Realistic timings:
+
+- Broadband / corporate connection — **1–3 minutes**.
+- Slow / metered / mobile-tethered — **5–10 minutes**.
+- Very slow / packet-loss-prone — **up to 15 minutes** before you
+  should suspect a real problem.
+
+**Do NOT abort the install before it has run for at least 10 minutes.**
+A live 2026-04-28 user report on Windows + Claude Code Desktop shows
+the worst-case failure mode of premature aborts: agent saw "this is
+taking a while", killed the install.ps1 mid-download, then attempted
+to fall back to npm (futile — the user had no Node, that's why we
+took the binary path), then flailed through `claude mcp add` →
+manual `settings.json` edit → `/update-config` skill → project-scoped
+`.mcp.json` creation, none of which actually registered the server.
+The user's machine was left with a broken setup and no install.
+
+If 10 minutes elapse with no completion, surface the situation to the
+user verbatim: "the binary download is taking longer than expected;
+this can happen on slow connections. The script is still running.
+Want to wait another 5 minutes, or stop and try a different approach?"
+Let the user decide. Do **not** silently fall back to a different path.
+
+#### When the binary install fails (real failure, not slow download)
+
+If the install.ps1 / install.sh **completes** but reports a real
+error (non-zero exit, or `status: "error"` in the InstallEnvelope),
+do NOT fall back to npm if the Step 0 probe showed Node was absent
+— that path is futile by construction; you've already confirmed
+the prerequisite isn't there. Surface the binary failure to the
+user with the install URL so they can investigate directly:
+"the binary installer failed with `<error>`. The full installer
+script is at `https://github.com/szhygulin/vaultpilot-mcp/releases/latest/download/install.ps1`
+— want me to try a different approach, or would you like to look
+at what went wrong yourself?"
+
+Only fall back to npm if Step 0 confirmed Node ≥ 18.17 IS available
+(rare on this code path, but possible if the binary install fails
+for a different reason on a Node-equipped machine).
+
+#### Trust the installer's auto-registration — do NOT manually edit MCP-client config files after
+
+The shell installer's step (3) calls `vaultpilot-mcp-setup --non-
+interactive --json` which detects every installed MCP client (Claude
+Desktop, Claude Code, Cursor) and registers vaultpilot-mcp with each
+in their canonical config location:
+
+- Claude Code (CLI) — `~/.claude.json` MCP-server entry
+- Claude Desktop — `claude_desktop_config.json`
+  (`%APPDATA%\Claude\` on Windows, `~/Library/Application Support/Claude/` on macOS)
+- Cursor — `~/.cursor/mcp.json`
+
+If the InstallEnvelope reports `clients_registered` non-empty, the
+registration is **done**. Do NOT then run `claude mcp add` or
+manually edit the user's `settings.json` or create a project-scoped
+`.mcp.json` — those are different config surfaces and stacking
+them creates the broken-setup-with-zero-working-registration mode
+caught above. The installer's `clients_registered` list is
+authoritative; relay it to the user verbatim and tell them to
+restart the named clients.
+
+If the InstallEnvelope reports `clients_not_detected` non-empty for
+the client the user actually uses (e.g. Claude Code Desktop) AND
+`clients_registered` doesn't include it, that's the case for
+manually adding the config. Check [INSTALL.md](./INSTALL.md) for the
+exact path to edit on the user's platform; do **not** improvise.
+
 ## What to tell the user BEFORE running the install
 
 Get explicit consent. Tell the user:
