@@ -47,15 +47,16 @@ export const getPnlSummaryInput = z.object({
         "history into the PnL.",
     ),
   period: z
-    .enum(["24h", "7d", "30d", "ytd", "inception"])
+    .enum(["24h", "7d", "30d", "mtd", "ytd", "inception"])
     .default("30d")
     .describe(
-      'Time window. "24h" / "7d" / "30d" are rolling; "ytd" is calendar-' +
-        'year-to-date (UTC); "inception" is a 365-day rolling window in v1 — ' +
-        '"since wallet creation" is approximated, not literal, to keep the ' +
-        "history fetch bounded. Periods longer than ~30d may under-count flows " +
-        "because the underlying history fetcher caps at ~50 items per chain; " +
-        "the response surfaces `truncated: true` when this happens.",
+      'Time window. "24h" / "7d" / "30d" are rolling; "mtd" is calendar-' +
+        'month-to-date (UTC, from the 1st of the current month); "ytd" is ' +
+        'calendar-year-to-date (UTC); "inception" is a 365-day rolling window ' +
+        'in v1 — "since wallet creation" is approximated, not literal, to keep ' +
+        "the history fetch bounded. Periods longer than ~30d may under-count " +
+        "flows because the underlying history fetcher caps at ~50 items per " +
+        "chain; the response surfaces `truncated: true` when this happens.",
     ),
 });
 
@@ -115,7 +116,7 @@ export interface PnlChainSlice {
  * any other intra-wallet effects).
  */
 export interface PnlSummary {
-  period: "24h" | "7d" | "30d" | "ytd" | "inception";
+  period: "24h" | "7d" | "30d" | "mtd" | "ytd" | "inception";
   periodStartIso: string;
   periodEndIso: string;
 

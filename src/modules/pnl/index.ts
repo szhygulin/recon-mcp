@@ -55,6 +55,11 @@ function resolvePeriod(period: GetPnlSummaryArgs["period"]): {
     case "30d":
       startMs = endMs - 30 * 86_400_000;
       break;
+    case "mtd": {
+      const now = new Date(endMs);
+      startMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+      break;
+    }
     case "ytd":
       startMs = Date.UTC(new Date(endMs).getUTCFullYear(), 0, 1);
       break;

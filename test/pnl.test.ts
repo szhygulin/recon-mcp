@@ -381,6 +381,29 @@ describe("getPnlSummary — inception period", () => {
   });
 });
 
+describe("getPnlSummary — mtd period", () => {
+  it("resolves mtd to the 1st of the current UTC month at 00:00:00", async () => {
+    const { getPnlSummary } = await import("../src/modules/pnl/index.ts");
+    const r = await getPnlSummary({ wallet: WALLET, period: "mtd" });
+    const startMs = new Date(r.periodStartIso).getTime();
+    const now = new Date();
+    const expectedStartMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+    expect(startMs).toBe(expectedStartMs);
+    // Sanity: ISO must end with "T00:00:00.000Z" — UTC midnight.
+    expect(r.periodStartIso).toMatch(/T00:00:00\.000Z$/);
+  });
+
+  it("yields a window strictly shorter than 31 days (caps at month length)", async () => {
+    const { getPnlSummary } = await import("../src/modules/pnl/index.ts");
+    const r = await getPnlSummary({ wallet: WALLET, period: "mtd" });
+    const startMs = new Date(r.periodStartIso).getTime();
+    const endMs = new Date(r.periodEndIso).getTime();
+    const spanDays = (endMs - startMs) / 86_400_000;
+    expect(spanDays).toBeGreaterThanOrEqual(0);
+    expect(spanDays).toBeLessThan(31);
+  });
+});
+
 describe("getPnlSummary — notes carry v1 caveats", () => {
   it("surfaces DeFi-exclusion and gas-exclusion caveats", async () => {
     const { getPnlSummary } = await import("../src/modules/pnl/index.ts");
