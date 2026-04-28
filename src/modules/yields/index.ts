@@ -70,12 +70,14 @@ const DEFERRED_PROTOCOLS: ReadonlyArray<{
   {
     protocol: "eigenlayer",
     chain: "ethereum",
-    reason: "EigenLayer restaking yield is operator/AVS-dependent — needs a separate plan, not a single APR.",
+    reason:
+      "EigenLayer restaking yield has no single APR — it's fragmented across operators × AVS reward tokens, and DefiLlama publishes no `eigenlayer` project. As a practical proxy, the LRT issuers (Renzo, Kelp, ether.fi, Swell) bundle restaking yield into a tradable token and DO have DefiLlama coverage; they're the realistic answer to \"where do I park ETH for restaking yield\". Native EigenLayer per-operator + per-AVS row shape is deferred until usage data justifies the AVS reward-token pricing infrastructure.",
   },
   {
     protocol: "native-stake",
     chain: "solana",
-    reason: "Solana native-stake yield is validator-commission-dependent — needs separate plan to avoid misleading single-rate quote.",
+    reason:
+      "Solana native-stake yield depends on validator selection (commission + MEV-enabled flag) — a single network-wide APR misleads. Marinade (`marinade-liquid-staking`) and Jito (`jito-liquid-staking`) are the practical substitutes already covered by `compare_yields`: both LSTs delegate to a curated validator set and surface the realized post-commission yield as one row, with no validator-selection cognitive load on the user. Per-validator row shape is deferred until usage data justifies the validators.app / Stakewiz integration.",
   },
 ];
 
