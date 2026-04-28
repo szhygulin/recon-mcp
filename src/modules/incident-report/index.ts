@@ -37,7 +37,7 @@ import { redactEnvelope, type RedactionMode } from "./redact.js";
  * a specific release. Static import (vs reading package.json at
  * runtime) keeps the snapshot consistent with the build artifact.
  */
-const SERVER_VERSION = "0.12.1";
+const SERVER_VERSION = "0.13.0";
 
 interface PairingSummary {
   chain: "solana" | "tron" | "bitcoin" | "litecoin";
