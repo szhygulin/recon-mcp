@@ -70,3 +70,21 @@
 - **DO NOT confuse with device-layer architectural** (e.g. Ledger blind-sign). Different escalation path (vendor, not model/UI safety).
 - Closing template: brief comment naming the architectural gap, citing #536 (canonical case) + vaultpilot-mcp-smoke-test#21 (methodology issue proposing Role A scope reframing), with a one-line recap of why skill rules don't help and where the real defenses live.
 - Cooperating-agent guidance with an explicit honest scope label is acceptable (skill v0.7.0 / vaultpilot-security-skill PR #20 is the canonical pattern). The rule above forbids shipping such guidance dressed up as a defense against the rogue case it isn't actually defending — that's security theater. If skill rules go in, the scope label "this guides cooperating agents; it does NOT defend against a rogue agent that ignores it" must be in the rule body, not just the PR description.
+
+## Security Documentation Vocabulary
+- **In user-facing docs (PR descriptions, SECURITY.md, README threat-model sections, issue-close comments framing threat-model decisions), use established security-engineering vocabulary — not informal framings like "honest threat model" / "honest security model" / "honest scope label".** Professional readers parse "honest" as a credibility claim, not a technical property — it reads as marketing rather than analysis. Pick the term that names the property you actually mean.
+- Concrete substitutions when you catch yourself reaching for "honest":
+  - "Honest about what we can't defend" → **"residual risk"**, or a **"Limitations" / "Known risks"** section.
+  - "Honest scope label" → **"explicit scope statement"** / **"explicit assumptions"** (with in-scope vs. out-of-scope named).
+  - "Honest threat model" → pick the dimension: **"comprehensive threat model"** (covers the full attack surface), **"rigorous threat model"** (systematic methodology — STRIDE / PASTA / attack trees), or **"documented threat model"** (written down, reviewable).
+  - "When the agent / MCP is honest" → **"cooperating agent"** / **"honest-MCP threat model"** when contrasted with a compromised one. The umbrella concept is the **compromise model** — what each component does when attacker-controlled (the Role A/B/C scoping in this repo is a compromise model).
+- Vocabulary cheatsheet for write-ups in this repo:
+  - **Trust boundary** / **security boundary** — line between components with different trust assumptions (agent ↔ MCP ↔ Ledger is the canonical split here).
+  - **Defense in depth** — multiple independent layers, each catching attacks the others miss (Inv #1 decode + Inv #2 hash recompute + Ledger on-device match is exactly this — name it, don't just describe it).
+  - **Fail-safe defaults** — uncertainty / failure defaults to denial (the `STOP / REFUSE` branches in skill invariants).
+  - **Attack surface** — points an attacker could exploit; reducing it is a goal.
+  - **Threat actor** / **adversary model** — the hypothetical attacker the design defends against (script kiddie vs. nation-state are very different scopes; specifying matters).
+  - **Tamper-evident** / **-resistant** / **-proof** — increasing modification defense (Ledger is tamper-resistant; the skill-pin SHA gives tamper-evidence).
+  - **Cryptographic integrity** — data unaltered since signed/hashed (`payloadFingerprint`, skill-pin SHA, BIP-143 sighashes — call this out by name).
+- Scope: user-facing docs only. Internal `claude-work/` plans, memory entries, chat replies, and commit messages can stay informal — vocabulary discipline lives where the audience is professional reviewers.
+- **Don't open a PR to bulk find-and-replace existing "honest" usages** (SECURITY.md, prior PR bodies, closed-issue comments still carry them). Migrate the wording opportunistically when you're already editing the surrounding text for another reason.
