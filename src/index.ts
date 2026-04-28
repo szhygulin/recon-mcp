@@ -230,6 +230,8 @@ import {
   prepareLidoWrap,
   prepareLidoUnwrap,
   prepareEigenLayerDeposit,
+  prepareRocketPoolStake,
+  prepareRocketPoolUnstake,
   prepareNativeSend,
   prepareWethUnwrap,
   prepareTokenSend,
@@ -331,6 +333,8 @@ import {
   prepareLidoWrapInput,
   prepareLidoUnwrapInput,
   prepareEigenLayerDepositInput,
+  prepareRocketPoolStakeInput,
+  prepareRocketPoolUnstakeInput,
   prepareNativeSendInput,
   prepareWethUnwrapInput,
   prepareTokenSendInput,
@@ -3743,6 +3747,26 @@ async function main() {
       inputSchema: prepareEigenLayerDepositInput.shape,
     },
     txHandler("prepare_eigenlayer_deposit", prepareEigenLayerDeposit)
+  );
+
+  registerTool(server,
+    "prepare_rocketpool_stake",
+    {
+      description:
+        "Build an unsigned Rocket Pool stake transaction (RocketDepositPool.deposit() payable, mints rETH at the current exchange rate). Ethereum mainnet only — rETH on L2s is bridged and cannot be deposit-and-mint. Preflights `getMaximumDepositAmount()` to refuse if the deposit pool is paused or at capacity.",
+      inputSchema: prepareRocketPoolStakeInput.shape,
+    },
+    txHandler("prepare_rocketpool_stake", prepareRocketPoolStake)
+  );
+
+  registerTool(server,
+    "prepare_rocketpool_unstake",
+    {
+      description:
+        "Build an unsigned Rocket Pool unstake transaction (rETH.burn(uint256), redeems rETH for ETH from on-protocol collateral). No approval needed — burn operates on caller's balance. Preflights wallet rETH balance and rETH contract collateral; if collateral is insufficient, refuses with a hint to unwind via the rETH/ETH Uniswap V3 pool instead.",
+      inputSchema: prepareRocketPoolUnstakeInput.shape,
+    },
+    txHandler("prepare_rocketpool_unstake", prepareRocketPoolUnstake)
   );
 
   registerTool(server, 

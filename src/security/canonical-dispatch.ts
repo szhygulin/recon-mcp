@@ -84,6 +84,12 @@ const EXPECTED_TARGETS: Record<string, Partial<Record<SupportedChain, Set<string
   prepare_eigenlayer_deposit: chainSet({
     ethereum: [CONTRACTS.ethereum.eigenlayer.strategyManager],
   }),
+  prepare_rocketpool_stake: chainSet({
+    ethereum: [CONTRACTS.ethereum.rocketpool.depositPool],
+  }),
+  prepare_rocketpool_unstake: chainSet({
+    ethereum: [CONTRACTS.ethereum.rocketpool.rETH],
+  }),
 };
 
 function chainSet(

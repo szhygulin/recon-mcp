@@ -32,6 +32,22 @@ export const CONTRACTS = {
       // re-validates address checksums and will throw InvalidAddressError otherwise.
       delegationManager: "0x39053D51B77DC0d36036Fc1fCc8Cb819df8Ef37A",
     },
+    /**
+     * Rocket Pool — rETH liquid-staking. Mainnet only; the rETH bridged
+     * representations on L2s (Arbitrum/Optimism/Base/Polygon) are not
+     * deposit-and-mint capable, so stake/unstake live exclusively on L1.
+     * Source: official Rocket Pool docs repo
+     * `docs/en/protocol/contracts-integrations.md`. RocketDepositPool was
+     * upgraded once (v1.0 → v1.1 → v1.2 Atlas); the address below is the
+     * current Atlas deployment. rETH itself has been at the same address
+     * since launch — its upgrade path is via RocketStorage proxy lookup, so
+     * the on-chain address is effectively stable.
+     */
+    rocketpool: {
+      depositPool: "0xDD3f50F8A6CafbE9b31a427582963f465E745AF8",
+      rETH: "0xae78736Cd615f374D3085123A210448E74Fc6393",
+      storage: "0x1d8f8f00cfa6758d7bE78336684788Fb0ee0Fa46",
+    },
     // Common ERC-20 tokens used for portfolio summary.
     tokens: {
       USDC: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
