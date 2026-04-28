@@ -163,23 +163,72 @@ export async function buildMorphoRepay(p: PrepareMorphoRepayArgs): Promise<Unsig
   const morpho = morphoAddress(chain);
   const params = await resolveMarketParams(chain, p.marketId as `0x${string}`);
   const meta = await resolveTokenMeta(chain, params.loanToken);
+
+  // Issue #437 — `amount: "max"` repays the user's entire debt by
+  // submitting in shares-mode. Morpho's `repay(params, assets, shares,
+  // onBehalf, data)` enforces exactly one of `assets` / `shares` is
+  // non-zero; passing `assets = type(uint256).max` (Aave's pattern)
+  // would NOT cap to user debt — Morpho takes `assets` as the literal
+  // transferFrom amount. Shares-mode lets Morpho compute the exact
+  // assets from `position(marketId, user).borrowShares` at execution
+  // time, so the close is exact regardless of interest accrued
+  // between sign and broadcast.
+  let assetsArg: bigint;
+  let sharesArg: bigint;
+  let neededForApproval: bigint;
+  let displayAmount = p.amount;
   if (p.amount === "max") {
-    throw new Error(
-      `"max" is not supported for Morpho repay — read borrowShares and pass an explicit amount.`
-    );
+    const client = getClient(chain);
+    const position = (await client.readContract({
+      address: morpho,
+      abi: morphoBlueAbi,
+      functionName: "position",
+      args: [p.marketId as `0x${string}`, wallet],
+    })) as readonly [bigint, bigint, bigint];
+    const borrowShares = position[1];
+    if (borrowShares === 0n) {
+      throw new Error(
+        `No outstanding debt for marketId ${p.marketId} on Morpho Blue ${chain} — nothing to repay.`,
+      );
+    }
+    const market = (await client.readContract({
+      address: morpho,
+      abi: morphoBlueAbi,
+      functionName: "market",
+      args: [p.marketId as `0x${string}`],
+    })) as readonly [bigint, bigint, bigint, bigint, bigint, bigint];
+    const totalBorrowAssets = market[2];
+    const totalBorrowShares = market[3];
+    // Round-up assets-from-shares: ceil(shares * (totalAssets+1) / (totalShares+1)).
+    // The +1 virtual offsets approximate Morpho's `toAssetsUp` shape; the 1%
+    // buffer below absorbs the residual virtual-shares math difference plus
+    // any interest accrued between prepare and broadcast (matches Aave repay
+    // pattern at modules/positions/actions.ts:273).
+    const denom = totalBorrowShares + 1n;
+    const numer = borrowShares * (totalBorrowAssets + 1n) + denom - 1n;
+    const approxAssets = numer / denom;
+    neededForApproval = (approxAssets * 101n) / 100n;
+    assetsArg = 0n;
+    sharesArg = borrowShares;
+    displayAmount = "max";
+  } else {
+    const amountWei = parseUnits(p.amount, meta.decimals);
+    assetsArg = amountWei;
+    sharesArg = 0n;
+    neededForApproval = amountWei;
   }
-  const amountWei = parseUnits(p.amount, meta.decimals);
+
   const { approvalAmount, display } = resolveApprovalCap(
     p.approvalCap,
-    amountWei,
-    meta.decimals
+    neededForApproval,
+    meta.decimals,
   );
   const approval = await buildApprovalTx({
     chain,
     wallet,
     asset: params.loanToken,
     spender: morpho,
-    amountWei,
+    amountWei: neededForApproval,
     approvalAmount,
     approvalDisplay: display,
     symbol: meta.symbol,
@@ -191,14 +240,17 @@ export async function buildMorphoRepay(p: PrepareMorphoRepayArgs): Promise<Unsig
     data: encodeFunctionData({
       abi: morphoBlueAbi,
       functionName: "repay",
-      args: [paramsTuple(params), amountWei, 0n, wallet, "0x"],
+      args: [paramsTuple(params), assetsArg, sharesArg, wallet, "0x"],
     }),
     value: "0",
     from: wallet,
-    description: `Repay ${p.amount} ${meta.symbol} to Morpho Blue market ${p.marketId} on ${chain}`,
+    description:
+      p.amount === "max"
+        ? `Repay all ${meta.symbol} to Morpho Blue market ${p.marketId} on ${chain}`
+        : `Repay ${p.amount} ${meta.symbol} to Morpho Blue market ${p.marketId} on ${chain}`,
     decoded: {
       functionName: "repay",
-      args: { marketId: p.marketId, amount: p.amount, onBehalf: wallet },
+      args: { marketId: p.marketId, amount: displayAmount, onBehalf: wallet },
     },
   };
   return chainApproval(approval, repayTx);
