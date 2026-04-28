@@ -12,6 +12,7 @@ import {
   isConditionallyGatedTool,
   isBroadcastTool,
   alwaysGatedRefusalMessage,
+  applyDemoCliFlag,
   defaultModeRefusalMessage,
   buildSimulationEnvelope,
   renderSimulationEnvelopeBlock,
@@ -1347,6 +1348,12 @@ async function main() {
   // + env-var inspection, no chain reads or transport open. Static import
   // (not dynamic) so the binary path stays compatible — issue #330 noted
   // dynamic imports at startup throw under pkg's snapshot.
+  // `--demo` CLI alias — sets VAULTPILOT_DEMO=true so the env-var
+  // gate fires identically to the `--env VAULTPILOT_DEMO=true` path.
+  // Must run before `parseDoctorFlags` (so `--check` sees demo mode
+  // on) and before `initDemoMode` (which reads the env var).
+  applyDemoCliFlag(process.argv);
+
   const doctorFlags = parseDoctorFlags(process.argv);
   if (doctorFlags.enabled) {
     const report = runDoctor();

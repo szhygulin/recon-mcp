@@ -314,6 +314,44 @@ describe("renderSimulationEnvelopeBlock — markdown narrative", () => {
   });
 });
 
+describe("applyDemoCliFlag — --demo CLI alias", () => {
+  let originalEnv: string | undefined;
+  beforeEach(() => {
+    originalEnv = process.env.VAULTPILOT_DEMO;
+    delete process.env.VAULTPILOT_DEMO;
+  });
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.VAULTPILOT_DEMO;
+    else process.env.VAULTPILOT_DEMO = originalEnv;
+  });
+
+  it("sets VAULTPILOT_DEMO=true when --demo present and env unset", async () => {
+    const { applyDemoCliFlag } = await import("../src/demo/index.js");
+    applyDemoCliFlag(["node", "vaultpilot-mcp", "--demo"]);
+    expect(process.env.VAULTPILOT_DEMO).toBe("true");
+  });
+
+  it("does NOT overwrite an explicit env opt-out (--demo + VAULTPILOT_DEMO=false)", async () => {
+    const { applyDemoCliFlag } = await import("../src/demo/index.js");
+    process.env.VAULTPILOT_DEMO = "false";
+    applyDemoCliFlag(["node", "vaultpilot-mcp", "--demo"]);
+    expect(process.env.VAULTPILOT_DEMO).toBe("false");
+  });
+
+  it("does NOT overwrite an explicit env enable (already true)", async () => {
+    const { applyDemoCliFlag } = await import("../src/demo/index.js");
+    process.env.VAULTPILOT_DEMO = "true";
+    applyDemoCliFlag(["node", "vaultpilot-mcp", "--demo"]);
+    expect(process.env.VAULTPILOT_DEMO).toBe("true");
+  });
+
+  it("is a no-op when --demo absent", async () => {
+    const { applyDemoCliFlag } = await import("../src/demo/index.js");
+    applyDemoCliFlag(["node", "vaultpilot-mcp", "--check"]);
+    expect(process.env.VAULTPILOT_DEMO).toBeUndefined();
+  });
+});
+
 describe("Live-mode state mgmt — persona / custom / clear", () => {
   beforeEach(async () => {
     const { _resetLiveWalletForTests } = await import("../src/demo/live-mode.js");

@@ -206,11 +206,15 @@ Environment variables always override the config file.
 
 ## Demo mode
 
-For try-before-install exploration without RPC keys, Ledger pairing, or running the wizard, set `VAULTPILOT_DEMO=true`:
+For try-before-install exploration without RPC keys, Ledger pairing, or running the wizard, set `VAULTPILOT_DEMO=true` (or pass `--demo`):
 
 ```bash
 claude mcp add vaultpilot-mcp --env VAULTPILOT_DEMO=true -- npx -y vaultpilot-mcp
+# or, equivalently:
+claude mcp add vaultpilot-mcp -- npx -y vaultpilot-mcp --demo
 ```
+
+`--demo` is a thin alias that sets `VAULTPILOT_DEMO=true` before initialization. An explicit env value (including `VAULTPILOT_DEMO=false`) wins over the flag — useful when scripted invocations need a deterministic opt-out.
 
 What demo mode does:
 

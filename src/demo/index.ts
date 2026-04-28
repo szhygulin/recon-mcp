@@ -82,6 +82,25 @@ export function initDemoMode(): void {
 }
 
 /**
+ * `--demo` CLI alias. Lets users write `npx vaultpilot-mcp --demo`
+ * instead of `claude mcp add ... --env VAULTPILOT_DEMO=true -- ...`.
+ * MUST be called BEFORE `initDemoMode()` so the env mutation is
+ * visible to `getDemoModeEnvState()`.
+ *
+ * Idempotency rules:
+ *   - If `VAULTPILOT_DEMO` is already set (any value, including
+ *     `"false"`), the explicit env wins. A `--demo` + `VAULTPILOT_DEMO=
+ *     false` combination is ambiguous, so we honor the explicit opt-out
+ *     rather than silently overriding it.
+ *   - If `--demo` is absent, no-op.
+ */
+export function applyDemoCliFlag(argv: readonly string[]): void {
+  if (!argv.includes("--demo")) return;
+  if (process.env.VAULTPILOT_DEMO !== undefined) return;
+  process.env.VAULTPILOT_DEMO = "true";
+}
+
+/**
  * Test-only: reset the latch so different test cases can simulate
  * different boot states. Production code MUST NOT call this.
  */
