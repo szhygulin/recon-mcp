@@ -524,6 +524,7 @@ import type {
 import type { SendTransactionArgs } from "./modules/execution/schemas.js";
 
 import { readUserConfig } from "./config/user-config.js";
+import { isToolEnabled } from "./config/scope.js";
 import { safeErrorMessage } from "./shared/error-message.js";
 
 /**
@@ -1034,7 +1035,12 @@ function registerTool(
   opts: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   realHandler: (args: any) => Promise<{ content: unknown[]; isError?: boolean }> | { content: unknown[]; isError?: boolean },
-): ReturnType<InstanceType<typeof McpServer>["registerTool"]> {
+): ReturnType<InstanceType<typeof McpServer>["registerTool"]> | undefined {
+  // Conditional scope gating (plan: claude-work/plan-conditional-chain-context-loading.md).
+  // When the user has narrowed the chain-family / protocol surface via env
+  // var, tools outside the scope skip registration entirely — saving the
+  // per-turn token cost of carrying their description + JSON schema.
+  if (!isToolEnabled(name)) return undefined;
   const alwaysGated = isAlwaysGatedTool(name);
   const conditionallyGated = isConditionallyGatedTool(name);
   const broadcastTool = isBroadcastTool(name);

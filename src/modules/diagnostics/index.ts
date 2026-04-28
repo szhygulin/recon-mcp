@@ -28,6 +28,7 @@ import {
   type SetupHint,
 } from "../../data/rate-limit-tracker.js";
 import { isDemoMode, getLiveWallet, isLiveMode } from "../../demo/index.js";
+import { getEnabledFamilies, getEnabledProtocols } from "../../config/scope.js";
 import { getRuntimeSolanaRpc } from "../../data/runtime-rpc-overrides.js";
 
 type EvmRpcSource =
@@ -170,6 +171,24 @@ interface VaultPilotConfigStatus {
         bitcoin: string[] | null;
       } | null;
     };
+  };
+  /**
+   * Active tool-surface scope (plan: claude-work/plan-conditional-chain-context-loading.md).
+   *
+   *   - `families`: which chain families' tools were registered this
+   *     session. Matches `VAULTPILOT_CHAIN_FAMILIES` env var (default = all
+   *     five). When narrower than all-five, the corresponding chains' tools
+   *     don't appear in this MCP's surface — saving the per-turn token cost
+   *     of carrying their description + JSON schema.
+   *   - `protocols`: when set, narrows the EVM/Solana protocol-specific
+   *     tools further. `null` = all protocols enabled (default).
+   *
+   * Surface as informational — agents don't need to act on it, but the
+   * user does, when troubleshooting "why don't I see prepare_compound_*?".
+   */
+  scope: {
+    families: string[];
+    protocols: string[] | null;
   };
 }
 
@@ -322,6 +341,10 @@ export function getVaultPilotConfigStatus(_args: Record<string, never> = {}): Va
         personaId: getLiveWallet()?.personaId ?? null,
         addresses: getLiveWallet()?.addresses ?? null,
       },
+    },
+    scope: {
+      families: [...getEnabledFamilies()].sort(),
+      protocols: getEnabledProtocols() ? [...getEnabledProtocols()!].sort() : null,
     },
   };
 }
