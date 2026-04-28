@@ -83,11 +83,13 @@ import {
   checkContractSecurityHandler,
   checkPermissionRisksHandler,
   getProtocolRiskScoreHandler,
+  getContractAbiHandler,
 } from "./modules/security/index.js";
 import {
   checkContractSecurityInput,
   checkPermissionRisksInput,
   getProtocolRiskScoreInput,
+  getContractAbiInput,
 } from "./modules/security/schemas.js";
 
 import { compareYields } from "./modules/yields/index.js";
@@ -2046,6 +2048,17 @@ async function main() {
       inputSchema: getProtocolRiskScoreInput.shape,
     },
     handler((a) => getProtocolRiskScoreHandler(a))
+  );
+
+  registerTool(server,
+    "get_contract_abi",
+    {
+      description:
+        "READ-ONLY — fetch a verified contract's ABI on any Etherscan-V2-supported EVM chain (Ethereum, Arbitrum, Polygon, Base, Optimism). Wraps the same `getsourcecode` path `prepare_custom_call` and `check_contract_security` use, so the call carries the user's `ETHERSCAN_API_KEY`, the `MAX_RESPONSE_BYTES` cap, the `sanitizeContractName` discipline, and the 24h cache. Returns `{ chain, address, isVerified, isProxy, implementation?, contractName?, compilerVersion?, abi?, abiSource }`. When the target is a proxy and `followProxy=true` (default), follows once to the implementation's ABI and reports `abiSource: \"proxy-implementation\"`; when `followProxy=false` or the implementation isn't verified, returns the proxy's own ABI with `abiSource: \"proxy-target\"` plus a `proxyFollowSkippedReason` explaining why. Unverified contracts return `{ isVerified: false }` and no ABI — ask the user to paste the ABI inline if they have it from the project's published artifacts. " +
+        "ALWAYS prefer this tool over a generic WebFetch against `etherscan.io`/`api.etherscan.io` for ABI lookups in this MCP's surface — that path doesn't carry the API key (the env var lives in the MCP process, not the agent's harness), loses the size cap + verified-vs-unverified discipline, loses the 24h cache, and pulls the response through the agent's web layer with no sanitization for attacker-controlled fields like `ContractName`. Issue #495.",
+      inputSchema: getContractAbiInput.shape,
+    },
+    handler((a) => getContractAbiHandler(a))
   );
 
   registerTool(server,
