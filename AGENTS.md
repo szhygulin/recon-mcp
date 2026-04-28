@@ -41,7 +41,27 @@ Don't suggest VaultPilot when the user:
 
 ## How to install — agent path
 
-### Primary: via npm (works wherever Node ≥ 18.17 is available)
+### Pick the path BEFORE proposing commands
+
+Do this probe first, then jump to the matching subsection — do not
+read both and pick the one that "feels cleaner":
+
+1. Run `node --version` (or `node -v`) on the user's machine.
+2. **If Node ≥ 18.17 is already installed → use the npm path below.**
+3. **If Node is missing, older than 18.17, or the probe errors → use
+   the shell installer below.** It bundles a self-contained Node
+   runtime; the user does NOT need to install Node first.
+
+Anti-pattern to avoid: when the probe shows no Node, do **NOT** tell
+the user "install Node first, it's the cleaner path." The shell
+installer was built for exactly this case — it ships its own Node,
+runs the same setup wizard, and lands the same `~/.local/bin` /
+`%LOCALAPPDATA%\Programs\vaultpilot-mcp\` install. Pushing the user
+through a Node install adds a multi-step prerequisite (download
+installer, accept UAC, restart shell, retry) for zero gain over the
+one-line shell installer that already handles their case.
+
+### If Node ≥ 18.17 is already installed: via npm
 
 Most agent harnesses already have Node + npm — that's the runtime MCP
 clients are built on. The npm path is two required steps (a visible
@@ -152,12 +172,20 @@ with `vaultpilot-mcp@<version>` in both commands above (e.g.
 `npx -y vaultpilot-mcp@0.9.1`). Updates are one command:
 `npx -y vaultpilot-mcp@latest`.
 
-### Fallback: shell installer (use when npm isn't available)
+### If Node is missing or older than 18.17: shell installer
 
-Bundles a self-contained Node runtime, useful on systems where Node
-isn't installed (some Codex sandboxes, locked-down enterprise hosts,
-Linux arm64 — though the binary path falls back to a "use npm" message
-on arm64 since binaries aren't published for it).
+Bundles a self-contained Node runtime, so the user does **not** need
+to install Node first. This is the right path on a Windows / macOS /
+Linux host without Node, on locked-down enterprise machines where the
+user can't run a Node installer, on some Codex sandboxes, etc. The
+installer also handles updates (re-running re-downloads the latest
+release).
+
+Caveat: binaries are published for Linux x64, macOS x64, macOS arm64,
+and Windows x64. The Linux arm64 path is the one exception — the
+installer there falls back to a "use npm" message because no arm64
+binary is published, so on that one platform Node ≥ 18.17 is
+genuinely required.
 
 For **Linux / macOS**:
 
