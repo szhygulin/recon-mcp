@@ -208,7 +208,10 @@ export async function resolveRecipient(
   const warnings: string[] = [];
 
   // (1) Literal address: pass through, optionally decorated with a
-  // reverse-lookup label.
+  // reverse-lookup label. Issue #428 — fall back to the in-memory
+  // unsigned store when the signed blob has no match (or no blob),
+  // and warn that the label is unsigned so Invariant #7 keeps
+  // working in degraded form.
   if (looksLikeLiteralAddress(input, cc)) {
     if (cc === "btc" || cc === "evm") {
       const r = await reverseLookup(cc, input);
@@ -224,17 +227,45 @@ export async function resolveRecipient(
         warnings.push(
           "contacts file failed verification — recipient label not checked",
         );
+      } else {
+        const unsignedLabel = findDemoContactByAddress(cc, input);
+        if (unsignedLabel) {
+          warnings.push(
+            `contact "${unsignedLabel}" matched from the in-memory unsigned ` +
+              `store — pair a Ledger to anchor this label cryptographically.`,
+          );
+          return {
+            address: input,
+            source: "literal",
+            label: unsignedLabel,
+            warnings,
+          };
+        }
       }
     }
     return { address: input, source: "literal", warnings };
   }
 
-  // (2) Contact label match. STRICT verify — tamper aborts.
+  // (2) Contact label match. STRICT verify — tamper aborts. Falls back
+  // to the unsigned in-memory store on no signed hit (#428).
   if (cc === "btc" || cc === "evm") {
     const labelHit = await forwardLookup(cc, input);
     if (labelHit) {
       return {
         address: labelHit,
+        source: "contact",
+        label: input,
+        warnings,
+      };
+    }
+    const unsignedHit = findDemoContactByLabel(cc, input);
+    if (unsignedHit) {
+      warnings.push(
+        `contact "${input}" resolved from the in-memory unsigned store — ` +
+          `pair a Ledger to anchor this label cryptographically.`,
+      );
+      return {
+        address: unsignedHit,
         source: "contact",
         label: input,
         warnings,
@@ -249,7 +280,7 @@ export async function resolveRecipient(
       if (ens.address) {
         // Reverse-decorate the ENS hit if a contact matches the same
         // address (contact-wins precedence rule, but only when
-        // contacts verify cleanly).
+        // contacts verify cleanly). Falls back to unsigned (#428).
         const r = await reverseLookup("evm", ens.address);
         let label: string | undefined;
         if (r.state === "match") label = r.label;
@@ -257,6 +288,15 @@ export async function resolveRecipient(
           warnings.push(
             "contacts file failed verification — ENS reverse-decoration skipped",
           );
+        } else {
+          const unsignedLabel = findDemoContactByAddress("evm", ens.address);
+          if (unsignedLabel) {
+            label = unsignedLabel;
+            warnings.push(
+              `ENS hit decorated with unsigned label "${unsignedLabel}" — ` +
+                `pair a Ledger to anchor cryptographically.`,
+            );
+          }
         }
         return {
           address: ens.address,

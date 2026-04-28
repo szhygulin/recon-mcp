@@ -272,31 +272,49 @@ describe("demo-mode address book — resolveRecipient", () => {
   });
 });
 
-describe("demo store isolation from production", () => {
-  it("does NOT touch disk — demo entries don't appear in the production-mode list", async () => {
+describe("demo store / in-memory overlay across modes", () => {
+  it("does NOT touch disk — demo entries are never written to ~/.vaultpilot-mcp/contacts.json", async () => {
     const { addContact } = await import("../src/contacts/index.js");
     await addContact({
       chain: "evm",
       label: "DemoMom",
       address: "0xabcdef0123456789ABCDEF0123456789aBcDeF01",
     });
-    // Switch out of demo mode and try the production reader. The
-    // production path reads from disk via `readContactsStrict`; the
-    // demo-only entry was never written there, so it should be absent.
-    delete process.env.VAULTPILOT_DEMO;
-    const { listContacts } = await import("../src/contacts/index.js");
-    // Production path will throw on no-file or return an empty list
-    // depending on storage state. Either way, "DemoMom" must NOT be
-    // present.
-    try {
-      const list = await listContacts({});
-      const labels = list.contacts.map((c) => c.label);
-      expect(labels).not.toContain("DemoMom");
-    } catch (err) {
-      // Production-mode read may throw because no contacts file exists
-      // in the test environment — that's also a valid "demo entry not
-      // leaked" outcome.
-      expect((err as Error).message).not.toContain("DemoMom");
-    }
+    // Disk surface — readContactsStrict only sees what was persisted.
+    // Demo-mode adds never touch disk, so the strict read must not
+    // know about DemoMom regardless of subsequent mode.
+    const { readContactsStrict } = await import(
+      "../src/contacts/storage.js"
+    );
+    const file = readContactsStrict();
+    const entries = file.chains.evm?.entries ?? [];
+    expect(entries.some((e) => e.label === "DemoMom")).toBe(false);
   });
+
+  it(
+    "issue #428: demo entries surface in non-demo listContacts as the unsigned " +
+      "overlay (process-local, never persisted) — flagged unsigned: true",
+    async () => {
+      const { addContact } = await import("../src/contacts/index.js");
+      await addContact({
+        chain: "evm",
+        label: "DemoMom",
+        address: "0xabcdef0123456789ABCDEF0123456789aBcDeF01",
+      });
+      // Drop demo mode and read again. Pre-#428 the in-memory store was
+      // demo-mode-only and DemoMom would have been invisible. Post-#428
+      // the same store backs the unsigned overlay used by non-demo no-
+      // Ledger users — DemoMom appears with `unsigned: true` so the
+      // agent surfaces "(unsigned)" in the verification block.
+      delete process.env.VAULTPILOT_DEMO;
+      const { listContacts } = await import("../src/contacts/index.js");
+      const list = await listContacts({});
+      const demoMom = list.contacts.find((c) => c.label === "DemoMom");
+      expect(demoMom).toBeDefined();
+      expect(demoMom?.unsigned).toBe(true);
+      expect(demoMom?.addresses.evm).toBe(
+        "0xabcdef0123456789ABCDEF0123456789aBcDeF01",
+      );
+    },
+  );
 });

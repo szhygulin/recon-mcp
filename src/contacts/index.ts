@@ -109,6 +109,25 @@ async function pickAnchorForChain(
   return pickEvmAnchor();
 }
 
+/**
+ * Issue #428 — variant that returns `null` instead of throwing when no
+ * Ledger is paired, so write paths can fall through to the unsigned
+ * in-memory store. Other failures (BTC anchor present but taproot-only,
+ * etc.) still throw so the user sees the real error rather than a
+ * silent demotion to unsigned.
+ */
+async function tryPickAnchorForChain(
+  chain: "btc" | "evm",
+): Promise<BtcAnchor | EvmAnchor | null> {
+  try {
+    return await pickAnchorForChain(chain);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.startsWith(ContactsError.LedgerNotPaired)) return null;
+    throw e;
+  }
+}
+
 async function signBlobForChain(args: {
   chain: "btc" | "evm";
   preimage: string;
@@ -195,6 +214,14 @@ export async function addContact(args: AddContactArgs): Promise<{
   address: string;
   version: number;
   anchorAddress: string;
+  /**
+   * `true` when the contact was stored unsigned (demo mode OR non-demo
+   * with no paired Ledger — issue #428). Persistence is process-local
+   * in both cases; the agent should surface "(unsigned)" alongside the
+   * label so the user knows the address is not anchored to a hardware
+   * key. Pair a Ledger and re-add the contact to upgrade to signed.
+   */
+  unsigned?: boolean;
 }> {
   // Demo mode: route to the in-memory store, no Ledger interaction.
   // `version` and `anchorAddress` are placeholders so the response shape
@@ -214,6 +241,7 @@ export async function addContact(args: AddContactArgs): Promise<{
       address: args.address,
       version: 0,
       anchorAddress: "DEMO_ANCHOR",
+      unsigned: true,
     };
   }
   rejectIfNotV1(args.chain);
@@ -224,6 +252,32 @@ export async function addContact(args: AddContactArgs): Promise<{
       `${ContactsError.AddressFormatMismatch}: address "${args.address}" does not ` +
         `match the expected format for chain "${args.chain}".`,
     );
+  }
+
+  // Issue #428 — when no Ledger is paired, fall through to the same
+  // in-memory store demo mode uses, return `unsigned: true`. Lets first-
+  // run / accountant-share users label addresses without entering demo
+  // mode (which intercepts broadcasts) or pairing a Ledger they don't
+  // own. Persistence is process-local; the deferred state machine in
+  // `claude-work/plan-contacts-unsigned-state-machine.md` adds disk
+  // persistence + sign-on-pair upgrade.
+  const anchor = await tryPickAnchorForChain(chain);
+  if (anchor === null) {
+    addDemoContact({
+      chain: args.chain,
+      label: args.label,
+      address: args.address,
+      ...(args.notes !== undefined ? { notes: args.notes } : {}),
+      ...(args.tags !== undefined ? { tags: args.tags } : {}),
+    });
+    return {
+      chain: args.chain,
+      label: args.label,
+      address: args.address,
+      version: 0,
+      anchorAddress: "UNSIGNED_NO_LEDGER",
+      unsigned: true,
+    };
   }
 
   const file = readContactsFile();
@@ -247,7 +301,6 @@ export async function addContact(args: AddContactArgs): Promise<{
     }
   }
 
-  const anchor = await pickAnchorForChain(chain);
   // Build the new entries: replace if same label, append otherwise.
   const oldEntries: SignedContactEntry[] = existingBlob?.entries ?? [];
   const filtered = oldEntries.filter((e) => e.label !== args.label);
@@ -313,7 +366,12 @@ export async function addContact(args: AddContactArgs): Promise<{
 }
 
 export async function removeContact(args: RemoveContactArgs): Promise<{
-  removed: Array<{ chain: ContactChain; address: string; version: number }>;
+  removed: Array<{
+    chain: ContactChain;
+    address: string;
+    version: number;
+    unsigned?: boolean;
+  }>;
 }> {
   if (isDemoMode()) {
     const removed = removeDemoContact({
@@ -326,14 +384,28 @@ export async function removeContact(args: RemoveContactArgs): Promise<{
           `on ${args.chain ? `chain ${args.chain}` : "any chain"}.`,
       );
     }
-    return { removed: removed.map((r) => ({ ...r, version: 0 })) };
+    return {
+      removed: removed.map((r) => ({ ...r, version: 0, unsigned: true })),
+    };
   }
+  // Issue #428 — also clear matching entries from the in-memory unsigned
+  // store. Unsigned removals don't need a Ledger; signed removals still
+  // do, and fall through to the existing path below.
+  const unsignedRemoved = removeDemoContact({
+    label: args.label,
+    ...(args.chain !== undefined ? { chain: args.chain } : {}),
+  });
   const file = readContactsFile();
   const chains: Array<"btc" | "evm"> = args.chain
     ? (rejectIfNotV1(args.chain), [args.chain as "btc" | "evm"])
     : ["btc", "evm"];
 
-  const removed: Array<{ chain: ContactChain; address: string; version: number }> = [];
+  const removed: Array<{
+    chain: ContactChain;
+    address: string;
+    version: number;
+    unsigned?: boolean;
+  }> = unsignedRemoved.map((r) => ({ ...r, version: 0, unsigned: true }));
   let next = file;
   for (const chain of chains) {
     const blob = next.chains[chain];
@@ -387,7 +459,10 @@ export async function removeContact(args: RemoveContactArgs): Promise<{
         `on ${args.chain ? `chain ${args.chain}` : "any chain"}.`,
     );
   }
-  writeContactsFile(next);
+  // Only persist if signed removals actually changed the disk file.
+  // Pure unsigned removals (issue #428) leave the on-disk blob untouched.
+  const signedRemovals = removed.some((r) => !r.unsigned);
+  if (signedRemovals) writeContactsFile(next);
   return { removed };
 }
 
@@ -399,7 +474,8 @@ export async function listContacts(
       ...(args.chain !== undefined ? { chain: args.chain } : {}),
       ...(args.label !== undefined ? { label: args.label } : {}),
     });
-    // Join by label across chains — same shape as production.
+    // Join by label across chains — same shape as production. Every
+    // demo entry is unsigned; flag accordingly.
     const byLabel = new Map<string, ListedContact>();
     for (const row of rows) {
       const existing = byLabel.get(row.label);
@@ -419,6 +495,7 @@ export async function listContacts(
             ? { tags: existing.tags }
             : {}),
         addedAt: earlierAddedAt,
+        unsigned: true,
       });
     }
     const contacts = Array.from(byLabel.values()).sort((a, b) =>
@@ -464,6 +541,49 @@ export async function listContacts(
         addedAt: earlierAddedAt,
       });
     }
+  }
+
+  // Issue #428 — also fold in any unsigned entries from the in-memory
+  // store so a non-demo user who added contacts before pairing a Ledger
+  // can still see them. A label that has BOTH signed and unsigned
+  // entries gets `unsigned: true` so the agent surfaces "(unsigned)"
+  // in the verification block — the safety property is "never claim
+  // a label is verified when any chain is unsigned."
+  const unsignedRows = listDemoContacts({
+    ...(args.chain !== undefined ? { chain: args.chain } : {}),
+    ...(args.label !== undefined ? { label: args.label } : {}),
+  });
+  for (const row of unsignedRows) {
+    const existing = byLabel.get(row.label);
+    const earlierAddedAt =
+      existing && existing.addedAt < row.addedAt
+        ? existing.addedAt
+        : row.addedAt;
+    const newAddresses = {
+      ...(existing?.addresses ?? {}),
+      // In-memory wins ONLY for chains the disk doesn't already cover —
+      // signed disk entries are the source of truth for any chain they
+      // populate. The unsigned overlay just fills gaps.
+      ...(existing?.addresses && existing.addresses[row.chain]
+        ? {}
+        : { [row.chain]: row.address }),
+    };
+    byLabel.set(row.label, {
+      label: row.label,
+      addresses: newAddresses,
+      ...(row.notes !== undefined
+        ? { notes: row.notes }
+        : existing?.notes !== undefined
+          ? { notes: existing.notes }
+          : {}),
+      ...(row.tags !== undefined
+        ? { tags: row.tags }
+        : existing?.tags !== undefined
+          ? { tags: existing.tags }
+          : {}),
+      addedAt: earlierAddedAt,
+      unsigned: true,
+    });
   }
 
   const contacts = Array.from(byLabel.values()).sort((a, b) =>
@@ -524,11 +644,29 @@ export async function verifyContacts(
   const targets: Array<"btc" | "evm"> = args.chain
     ? (rejectIfNotV1(args.chain), [args.chain as "btc" | "evm"])
     : ["btc", "evm"];
+  // Issue #428 — count unsigned in-memory entries per chain so each
+  // VerifyResult can carry `unsignedEntryCount`. A chain with NO signed
+  // blob but ≥1 unsigned entry returns `ok: false, reason: "no signed
+  // entries on this chain", unsignedEntryCount: N` so the agent
+  // surfaces the unsigned overlay rather than silently dropping it.
+  const unsignedCounts = new Map<ContactChain, number>();
+  for (const r of listDemoContacts()) {
+    unsignedCounts.set(r.chain, (unsignedCounts.get(r.chain) ?? 0) + 1);
+  }
   const results: VerifyResult[] = [];
   for (const chain of targets) {
+    const unsignedN = unsignedCounts.get(chain) ?? 0;
     const blob = file.chains[chain];
     if (!blob) {
-      results.push({ chain, ok: false, reason: "no entries on this chain" });
+      results.push({
+        chain,
+        ok: false,
+        reason:
+          unsignedN > 0
+            ? "no signed entries on this chain (unsigned-only)"
+            : "no entries on this chain",
+        ...(unsignedN > 0 ? { unsignedEntryCount: unsignedN } : {}),
+      });
       continue;
     }
     try {
@@ -539,12 +677,18 @@ export async function verifyContacts(
         anchorAddress: blob.anchorAddress,
         version: blob.version,
         entryCount: blob.entries.length,
+        ...(unsignedN > 0 ? { unsignedEntryCount: unsignedN } : {}),
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       // Surface the matching CONTACTS_* error code.
       const code = msg.split(":")[0];
-      results.push({ chain, ok: false, reason: code });
+      results.push({
+        chain,
+        ok: false,
+        reason: code,
+        ...(unsignedN > 0 ? { unsignedEntryCount: unsignedN } : {}),
+      });
     }
   }
   return { results };

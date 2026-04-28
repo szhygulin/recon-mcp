@@ -121,6 +121,7 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 
 - **Server-integrated second-agent verification** — MCP calls an independent LLM directly on high-value sends and blocks on disagreement. Structurally closes the coordinated-agent gap that today's copy-paste `get_verification_artifact` flow only narrows.
 - **PreToolUse hook for mechanical hash enforcement** — host-side code that recomputes the pre-sign hash and blocks the MCP tool call on divergence, making the check mechanical rather than prose-based. Ships as a separate `vaultpilot-hook` repo.
+- **Contacts unsigned/verified state machine** (follow-up to [#428](https://github.com/szhygulin/vaultpilot-mcp/issues/428)) — persistent on-disk unsigned entries + `promote_unsigned_contacts` sign-on-pair upgrade flow + tamper-aware merge between signed and unsigned overlays. Today's #428 fix covers the user-visible "first-run users can label addresses without a Ledger" gap with a process-local in-memory store; the deferred state machine adds restart-survivable persistence and the upgrade-on-pair semantics. ([plan](./claude-work/plan-contacts-unsigned-state-machine.md))
 
 **Recently shipped** (previously on this list)
 

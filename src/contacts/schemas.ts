@@ -195,8 +195,11 @@ export type VerifyContactsArgs = z.infer<typeof verifyContactsInput>;
 
 /**
  * One row returned by `list_contacts` — a single label joined across
- * chains, with addresses keyed by chain. Every address has been
- * signature-verified before this row is built.
+ * chains, with addresses keyed by chain. Issue #428: `unsigned` rows
+ * exist when the user added a contact without a paired Ledger (the
+ * in-memory fall-through path). Signed rows are signature-verified
+ * before this row is built; unsigned rows have only address-format
+ * validation and process-local persistence.
  */
 export interface ListedContact {
   label: string;
@@ -210,6 +213,13 @@ export interface ListedContact {
   tags?: string[];
   /** Earliest `addedAt` across the joined chain entries. */
   addedAt: string;
+  /**
+   * `true` when at least one of the joined chain entries is unsigned
+   * (in-memory only, no Ledger signature). Implies process-local
+   * persistence (lost on restart) until #428's deferred state machine
+   * lands a sign-on-pair upgrade flow.
+   */
+  unsigned?: boolean;
 }
 
 export interface VerifyResult {
@@ -223,6 +233,13 @@ export interface VerifyResult {
   entryCount?: number;
   /** Reason for ok=false. Filled with the matching CONTACTS_* error code. */
   reason?: string;
+  /**
+   * Issue #428 — count of unsigned (in-memory) entries on this chain
+   * that exist alongside (or instead of) the signed blob. Surfaced
+   * separately so the agent can label them as not-anchored even when
+   * the signed blob is empty or absent. Omitted when zero.
+   */
+  unsignedEntryCount?: number;
 }
 
 /** Stable error codes. Mirror the plan's named error symbols. */
