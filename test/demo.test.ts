@@ -199,6 +199,119 @@ describe("buildSimulationEnvelope — broadcast intercept shape", () => {
     });
     expect(a.simulatedTxHash).not.toBe(b.simulatedTxHash);
   });
+
+  it("envelope echoes toolName + handle so the markdown renderer can use them", async () => {
+    const { buildSimulationEnvelope } = await import("../src/demo/index.js");
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-xyz",
+      simulationResult: null,
+    });
+    expect(env.toolName).toBe("send_transaction");
+    expect(env.unsignedTxHandle).toBe("h-xyz");
+  });
+});
+
+describe("renderSimulationEnvelopeBlock — markdown narrative", () => {
+  it("includes tool, handle, simulated hash, and the not-on-chain caveat", async () => {
+    const { buildSimulationEnvelope, renderSimulationEnvelopeBlock } = await import(
+      "../src/demo/index.js"
+    );
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-abc-123",
+      simulationResult: { ok: true },
+    });
+    const md = renderSimulationEnvelopeBlock(env);
+    expect(md).toContain("[VAULTPILOT_DEMO]");
+    expect(md).toContain("nothing on-chain");
+    expect(md).toContain("`send_transaction`");
+    expect(md).toContain("`h-abc-123`");
+    expect(md).toContain(env.simulatedTxHash);
+    // Action paragraph the agent should relay verbatim.
+    expect(md).toContain("unset `VAULTPILOT_DEMO`");
+  });
+
+  it("summarizes a successful viem-shape simulation as 'would succeed'", async () => {
+    const { buildSimulationEnvelope, renderSimulationEnvelopeBlock } = await import(
+      "../src/demo/index.js"
+    );
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-1",
+      simulationResult: { status: "success" },
+    });
+    expect(renderSimulationEnvelopeBlock(env)).toContain("would succeed");
+  });
+
+  it("summarizes a reverted simulation with the revert reason", async () => {
+    const { buildSimulationEnvelope, renderSimulationEnvelopeBlock } = await import(
+      "../src/demo/index.js"
+    );
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-2",
+      simulationResult: { status: "reverted", revertReason: "insufficient allowance" },
+    });
+    const md = renderSimulationEnvelopeBlock(env);
+    expect(md).toContain("would revert");
+    expect(md).toContain("insufficient allowance");
+  });
+
+  it("summarizes the Solana deferred-to-preview shape", async () => {
+    const { buildSimulationEnvelope, renderSimulationEnvelopeBlock } = await import(
+      "../src/demo/index.js"
+    );
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-sol",
+      simulationResult: { simulationDeferredToPreview: true, chain: "solana" },
+    });
+    expect(renderSimulationEnvelopeBlock(env)).toContain("preview_solana_send");
+  });
+
+  it("summarizes the simulationFailed shape with reason", async () => {
+    const { buildSimulationEnvelope, renderSimulationEnvelopeBlock } = await import(
+      "../src/demo/index.js"
+    );
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-fail",
+      simulationResult: { simulationFailed: true, reason: "RPC timeout" },
+    });
+    const md = renderSimulationEnvelopeBlock(env);
+    expect(md).toContain("failed");
+    expect(md).toContain("RPC timeout");
+  });
+
+  it("summarizes the simulationSkipped shape", async () => {
+    const { buildSimulationEnvelope, renderSimulationEnvelopeBlock } = await import(
+      "../src/demo/index.js"
+    );
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-skip",
+      simulationResult: {
+        simulationSkipped: true,
+        reason: "Handle not found in tx-store",
+      },
+    });
+    const md = renderSimulationEnvelopeBlock(env);
+    expect(md).toContain("skipped");
+    expect(md).toContain("Handle not found");
+  });
+
+  it("falls back to 'see simulation field' for unrecognized shapes", async () => {
+    const { buildSimulationEnvelope, renderSimulationEnvelopeBlock } = await import(
+      "../src/demo/index.js"
+    );
+    const env = buildSimulationEnvelope({
+      toolName: "send_transaction",
+      unsignedTxHandle: "h-unknown",
+      simulationResult: { somethingWeird: 42 },
+    });
+    expect(renderSimulationEnvelopeBlock(env)).toContain("see `simulation` field");
+  });
 });
 
 describe("Live-mode state mgmt — persona / custom / clear", () => {

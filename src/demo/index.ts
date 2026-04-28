@@ -476,23 +476,29 @@ export function defaultModeRefusalMessage(toolName: string): string {
  * unsigned tx and passing the result in — keeping the envelope construction
  * pure makes it easy to test independently of the simulation surface.
  */
+export interface SimulationEnvelope {
+  demo: true;
+  outcome: "simulated";
+  toolName: string;
+  unsignedTxHandle: string;
+  simulatedTxHash: string;
+  simulation: unknown;
+  preview: unknown;
+  message: string;
+}
+
 export function buildSimulationEnvelope(args: {
   toolName: string;
   unsignedTxHandle: string;
   simulationResult: unknown;
   pinnedPreview?: unknown;
-}): {
-  demo: true;
-  outcome: "simulated";
-  simulatedTxHash: string;
-  simulation: unknown;
-  preview: unknown;
-  message: string;
-} {
+}): SimulationEnvelope {
   const simulatedTxHash = makeSimulatedTxHash(args.unsignedTxHandle);
   return {
     demo: true,
     outcome: "simulated",
+    toolName: args.toolName,
+    unsignedTxHandle: args.unsignedTxHandle,
     simulatedTxHash,
     simulation: args.simulationResult,
     preview: args.pinnedPreview ?? null,
@@ -504,6 +510,70 @@ export function buildSimulationEnvelope(args: {
       `any block explorer. To execute for real: unset VAULTPILOT_DEMO, restart the MCP ` +
       `server with a real Ledger paired, then re-run the prepare → preview → send flow.`,
   };
+}
+
+/**
+ * Markdown narrative for the simulation envelope. Mirrors the
+ * `renderVerificationBlock` / `renderPrepareReceiptBlock` pattern used
+ * by the real broadcast path: agents need a verbatim-relayable
+ * paragraph they can show the user without re-decoding the JSON
+ * `simulation` field. Best-effort summary of the simulation outcome —
+ * `simulation` is `unknown` because different chains return different
+ * shapes (viem's `{ status }`, our `{ simulationDeferredToPreview }`
+ * for Solana, our `{ simulationFailed | simulationSkipped, reason }`
+ * for the unhandled-handle paths). The renderer pattern-matches the
+ * shapes we know and falls back to "see `simulation` field" otherwise.
+ */
+export function renderSimulationEnvelopeBlock(envelope: SimulationEnvelope): string {
+  const status = summarizeSimulationStatus(envelope.simulation);
+  const lines: string[] = [];
+  lines.push("**[VAULTPILOT_DEMO] Simulated broadcast — nothing on-chain**");
+  lines.push("");
+  lines.push(`- **Tool:** \`${envelope.toolName}\``);
+  lines.push(`- **Handle:** \`${envelope.unsignedTxHandle}\``);
+  lines.push(
+    `- **Placeholder hash:** \`${envelope.simulatedTxHash}\` (not real — block explorers return "unknown")`,
+  );
+  lines.push(`- **Simulation:** ${status}`);
+  lines.push("");
+  lines.push(
+    "To execute for real: unset `VAULTPILOT_DEMO`, restart the MCP server with a real Ledger paired, then re-run the prepare → preview → send flow.",
+  );
+  return lines.join("\n");
+}
+
+function summarizeSimulationStatus(simulation: unknown): string {
+  if (simulation === null || simulation === undefined) {
+    return "no simulation result attached";
+  }
+  if (typeof simulation !== "object") {
+    return `see \`simulation\` field (raw: ${typeof simulation})`;
+  }
+  const obj = simulation as Record<string, unknown>;
+  if (obj.simulationDeferredToPreview === true) {
+    return "validated at `preview_solana_send` time (Solana pre-sign sim)";
+  }
+  if (obj.simulationFailed === true) {
+    return `failed — ${formatReason(obj.reason)}`;
+  }
+  if (obj.simulationSkipped === true) {
+    return `skipped — ${formatReason(obj.reason)}`;
+  }
+  if (obj.status === "success" || obj.ok === true) {
+    return "would succeed";
+  }
+  if (obj.status === "reverted" || obj.status === "failure") {
+    const reason = obj.revertReason ?? obj.error ?? obj.reason;
+    return `would revert${reason ? ` — ${formatReason(reason)}` : ""}`;
+  }
+  return "see `simulation` field for details";
+}
+
+function formatReason(reason: unknown): string {
+  if (typeof reason === "string") {
+    return reason.length > 200 ? reason.slice(0, 197) + "..." : reason;
+  }
+  return "see `simulation` field";
 }
 
 /**

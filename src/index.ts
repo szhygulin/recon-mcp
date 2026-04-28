@@ -14,6 +14,7 @@ import {
   alwaysGatedRefusalMessage,
   defaultModeRefusalMessage,
   buildSimulationEnvelope,
+  renderSimulationEnvelopeBlock,
   buildGetDemoWalletResponse,
   demoStatePreconditionHint,
   getDemoModeReason,
@@ -1126,6 +1127,7 @@ async function broadcastSimulationDispatch(
   });
   return {
     content: [
+      { type: "text" as const, text: renderSimulationEnvelopeBlock(envelope) },
       { type: "text" as const, text: JSON.stringify(envelope, bigintReplacer, 2) },
     ],
   };
