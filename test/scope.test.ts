@@ -72,6 +72,7 @@ describe("getToolScope — prefix-derived mapping", () => {
     ["get_solana_setup_status", "solana"],
     ["prepare_native_stake_delegate", "solana"],
     ["set_helius_api_key", "solana"],
+    ["list_solana_validators", "solana"],
     // Tron
     ["prepare_tron_native_send", "tron"],
     ["prepare_tron_freeze", "tron"],

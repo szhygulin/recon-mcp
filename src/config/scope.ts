@@ -184,7 +184,8 @@ export function getToolScope(name: string): { family?: ChainFamily; protocol?: P
     name.startsWith("prepare_native_stake_") ||
     name === "preview_solana_send" ||
     name === "pair_ledger_solana" ||
-    name === "set_helius_api_key"
+    name === "set_helius_api_key" ||
+    name === "list_solana_validators"
   )
     return { family: "solana" };
 

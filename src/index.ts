@@ -395,6 +395,11 @@ import {
 import { getTronStaking } from "./modules/tron/staking.js";
 import { listTronWitnesses } from "./modules/tron/witnesses.js";
 import {
+  listSolanaValidators,
+  listSolanaValidatorsInput,
+  type ListSolanaValidatorsArgs,
+} from "./modules/solana/validators.js";
+import {
   buildTronNativeSend,
   buildTronTokenSend,
   buildTronTrc20Approve,
@@ -2556,7 +2561,32 @@ async function main() {
     handler(prepareMarinadeUnstakeImmediate)
   );
 
-  registerTool(server, 
+  registerTool(server,
+    "list_solana_validators",
+    {
+      description:
+        "Read-only validator-ranking helper for `prepare_native_stake_delegate`. Pulls the " +
+        "stakewiz.com public feed (no API key required) and returns a filtered + sorted list of " +
+        "Solana validators with the columns most relevant to delegation: composite quality score " +
+        "(`wizScore`), commission, MEV (Jito) status + commission, total APY estimate (inflation + " +
+        "MEV), activated stake, delinquent flag, superminority penalty flag, skip rate, uptime, " +
+        "version, country, and a per-validator stakewiz.com profile URL the user can open in a " +
+        "browser to verify independently. Default filters: excludeDelinquent=true. Default sort: " +
+        "wizScore descending. Default limit: 25 (max 100). USE THIS BEFORE `prepare_native_stake_delegate` " +
+        "so the agent can surface a small ranked menu instead of forcing the user to leave for " +
+        "stakewiz / validators.app and paste back a vote pubkey. INVARIANT #14 NOTE: this is a " +
+        "HELPER — the MCP is NOT the source of truth. Before delegating, the user MUST (1) open " +
+        "the chosen validator's `stakewizUrl` in a browser to re-verify activated stake / " +
+        "commission / delinquent status against an authority outside the MCP enumeration, and " +
+        "(2) byte-equality-check the `votePubkey` in the `prepare_native_stake_delegate` response " +
+        "against the one confirmed in step 1. The response's `notes[]` field surfaces these " +
+        "instructions verbatim — pass them through to the user.",
+      inputSchema: listSolanaValidatorsInput.shape,
+    },
+    handler((args: ListSolanaValidatorsArgs) => listSolanaValidators(args))
+  );
+
+  registerTool(server,
     "prepare_native_stake_delegate",
     {
       description:
@@ -2568,7 +2598,8 @@ async function main() {
         "— no separate authority handoff is supported in this server. DURABLE NONCE REQUIRED. " +
         "Refuses if a stake account already exists at the deterministic address (the user " +
         "almost certainly meant prepare_native_stake_deactivate / withdraw on the existing " +
-        "position). BLIND-SIGN on Ledger by default — match the Message Hash on-device.",
+        "position). BLIND-SIGN on Ledger by default — match the Message Hash on-device. To pick " +
+        "a validator, call `list_solana_validators` first.",
       inputSchema: prepareNativeStakeDelegateInput.shape,
     },
     handler(prepareNativeStakeDelegate)
