@@ -22,9 +22,9 @@ pairing, update, uninstall, troubleshooting) apply to all four paths.
 ## One-line install (for agents and power users)
 
 This is exactly what Path A does, scripted: detect OS + arch, download
-the matching server + setup binaries from the latest GitHub release,
-place them in `~/.local/bin` (or `%LOCALAPPDATA%\Programs\vaultpilot-mcp\`
-on Windows), then run `vaultpilot-mcp-setup --non-interactive --json`.
+the unified `vaultpilot-mcp` binary from the latest GitHub release,
+place it in `~/.local/bin` (or `%LOCALAPPDATA%\Programs\vaultpilot-mcp\`
+on Windows), then run `vaultpilot-mcp setup --non-interactive --json`.
 
 **Linux / macOS** (bash or zsh):
 
@@ -42,9 +42,9 @@ What happens:
 1. OS + arch detected. Linux x64, macOS x64/arm64, and Windows x64 are
    supported. (Linux arm64 isn't published as a binary — falls back to a
    helpful "use Path B (npm)" message.)
-2. Two binaries downloaded: `vaultpilot-mcp` (the MCP server) and
-   `vaultpilot-mcp-setup` (the wizard). Atomic write so a network drop
-   never leaves a corrupt binary at the final path.
+2. Single `vaultpilot-mcp` binary downloaded — the wizard is invoked
+   via `vaultpilot-mcp setup`. Atomic write so a network drop never
+   leaves a corrupt binary at the final path.
 3. macOS: Gatekeeper quarantine xattr is stripped automatically.
 4. PATH is checked. If your install dir isn't on `$PATH`, the script
    prints the one-line `export PATH="..."` you can append to your shell
@@ -65,7 +65,7 @@ on a configured machine emits `status: "already_installed"`.
 **Zero-config**: no API keys are collected. The runtime falls back to
 free public RPC endpoints (PublicNode for EVM, etc.). When you're ready
 to add provider keys (Infura/Alchemy/Helius/TronGrid/Etherscan/1inch),
-run `vaultpilot-mcp-setup` interactively — it prompts per-key.
+run `vaultpilot-mcp setup` interactively — it prompts per-key.
 
 **Customization** via env vars (rarely needed):
 
@@ -84,20 +84,22 @@ pair your Ledger (the user does that interactively when ready).
 
 ## Path A — Bundled binary
 
-### A1. Download the binaries for your OS
+### A1. Download the binary for your OS
 
 Open the [latest release page](https://github.com/szhygulin/vaultpilot-mcp/releases/latest)
-and download **two** files for your platform:
+and download the file for your platform:
 
-| Platform | Server binary | Setup wizard |
-|---|---|---|
-| Linux x64 | `vaultpilot-mcp-linux-x64-server` | `vaultpilot-mcp-linux-x64-setup` |
-| macOS Apple silicon (M1/M2/M3) | `vaultpilot-mcp-macos-arm64-server` | `vaultpilot-mcp-macos-arm64-setup` |
-| macOS Intel | `vaultpilot-mcp-macos-x64-server` | `vaultpilot-mcp-macos-x64-setup` |
-| Windows x64 | `vaultpilot-mcp-windows-x64-server.exe` | `vaultpilot-mcp-windows-x64-setup.exe` |
+| Platform | Binary |
+|---|---|
+| Linux x64 | `vaultpilot-mcp-linux-x64-server` |
+| macOS Apple silicon (M1/M2/M3) | `vaultpilot-mcp-macos-arm64-server` |
+| macOS Intel | `vaultpilot-mcp-macos-x64-server` |
+| Windows x64 | `vaultpilot-mcp-windows-x64-server.exe` |
 
-Move both files into a stable location — somewhere they will live
-permanently and your MCP client can reach them. Suggested paths:
+The setup wizard is invoked as a subcommand: `vaultpilot-mcp setup`. v0.13.0+ ships one unified binary per platform (prior releases shipped a separate `*-setup` binary; not needed any more).
+
+Move the file into a stable location — somewhere it will live
+permanently and your MCP client can reach it. Suggested paths:
 
 - **macOS / Linux**: `~/.local/bin/`
 - **Windows**: `%LOCALAPPDATA%\Programs\vaultpilot-mcp\`
@@ -105,7 +107,7 @@ permanently and your MCP client can reach them. Suggested paths:
 Create the directory first if it doesn't exist (`mkdir -p ~/.local/bin`
 on Unix; right-click → New folder on Windows).
 
-### A2. Make the binaries runnable
+### A2. Make the binary runnable
 
 ### macOS
 
@@ -122,8 +124,8 @@ xattr -d com.apple.quarantine ~/.local/bin/vaultpilot-mcp-macos-* 2>/dev/null
 **Option B — Finder right-click → Open**
 
 Right-click the file in Finder, choose **Open**, click **Open** in the
-"unidentified developer" dialog. Repeat for both files. macOS remembers
-your choice; you only do this once per file.
+"unidentified developer" dialog. macOS remembers your choice; you only
+do this once per file.
 
 If you see *"Apple could not verify ... is free of malware"*, that's
 Gatekeeper warning you. The binaries are built in our public CI from
@@ -146,7 +148,7 @@ if they're missing.
 ### Windows
 
 Windows SmartScreen will warn when you run an unsigned binary. Click
-**More info** → **Run anyway** the first time you launch each binary.
+**More info** → **Run anyway** the first time you launch the binary.
 
 Now skip to **section 3 — Run the setup wizard**.
 
@@ -165,10 +167,10 @@ permission errors).
 npm install -g vaultpilot-mcp
 ```
 
-This places two executables on your PATH:
-
-- `vaultpilot-mcp` — the MCP server
-- `vaultpilot-mcp-setup` — the setup wizard
+This places `vaultpilot-mcp` on your PATH. The setup wizard is invoked
+as `vaultpilot-mcp setup`. (For backward compat, the npm install also
+keeps a `vaultpilot-mcp-setup` shim that does the same thing — either
+form works on the npm path.)
 
 Linux: if you also want TRON / Solana hardware-signing, install the
 build toolchain so `node-hid` can compile during install:
@@ -219,7 +221,8 @@ npm run setup      # setup wizard
 
 # Option 2: link globally so you can call from anywhere
 npm link
-# Then `vaultpilot-mcp` and `vaultpilot-mcp-setup` work from any directory.
+# Then `vaultpilot-mcp` (and `vaultpilot-mcp setup` for the wizard)
+# work from any directory.
 ```
 
 `npm link` is reversible: `npm unlink -g vaultpilot-mcp` removes the
@@ -247,13 +250,13 @@ How you invoke the wizard depends on which install path you used:
 
 ```bash
 # Path A — bundled binary (macOS / Linux)
-~/.local/bin/vaultpilot-mcp-<platform>-<arch>-setup
+~/.local/bin/vaultpilot-mcp-<platform>-<arch>-server setup
 
 # Path A — bundled binary (Windows, PowerShell)
-& "$env:LOCALAPPDATA\Programs\vaultpilot-mcp\vaultpilot-mcp-windows-x64-setup.exe"
+& "$env:LOCALAPPDATA\Programs\vaultpilot-mcp\vaultpilot-mcp-windows-x64-server.exe" setup
 
 # Path B — installed via npm
-vaultpilot-mcp-setup
+vaultpilot-mcp setup
 
 # Path C — from source
 npm run setup

@@ -13,13 +13,17 @@
 #
 # What it does:
 #   1. Detect OS + arch.
-#   2. Download the matching server + setup binaries from the latest
+#   2. Download the unified `vaultpilot-mcp` binary from the latest
 #      GitHub Release into ~/.local/bin (or $VAULTPILOT_INSTALL_DIR).
-#   3. Run `vaultpilot-mcp-setup --non-interactive --json`, which
+#   3. Run `vaultpilot-mcp setup --non-interactive --json`, which
 #      registers MCP clients (Claude Desktop / Claude Code / Cursor)
 #      and clones the companion skills.
 #   4. Print the setup wizard's JSON envelope so the calling agent
 #      can parse `next_steps` and relay them to the user.
+#
+# Prior shape (≤ v0.12.0): two separate binaries (`*-server` and
+# `*-setup`) per platform. Unified into one in v0.13.0 — the setup
+# wizard is now `vaultpilot-mcp setup`.
 #
 # What it does NOT do:
 #   - Collect API keys (zero-config defaults — PublicNode RPC).
@@ -109,7 +113,6 @@ detect_target() {
   TARGET_OS="$os"
   TARGET_ARCH="$arch"
   SERVER_ASSET="vaultpilot-mcp-${os}-${arch}-server"
-  SETUP_ASSET="vaultpilot-mcp-${os}-${arch}-setup"
 }
 
 # ----------------------------------------------------------------------
@@ -153,28 +156,20 @@ install_binaries() {
   mkdir -p "$INSTALL_DIR"
 
   local server_path="$INSTALL_DIR/vaultpilot-mcp"
-  local setup_path="$INSTALL_DIR/vaultpilot-mcp-setup"
 
-  log "Downloading server binary…"
+  log "Downloading vaultpilot-mcp binary…"
   log "  $(dim "$RELEASE_BASE_URL/$SERVER_ASSET")"
   download "$RELEASE_BASE_URL/$SERVER_ASSET" "$server_path"
   chmod +x "$server_path"
-
-  log "Downloading setup wizard binary…"
-  log "  $(dim "$RELEASE_BASE_URL/$SETUP_ASSET")"
-  download "$RELEASE_BASE_URL/$SETUP_ASSET" "$setup_path"
-  chmod +x "$setup_path"
 
   # macOS: strip the quarantine xattr so Gatekeeper doesn't refuse to
   # run the unsigned binary on first launch. `xattr -d` exits non-zero
   # if the attribute isn't there — that's fine, we silence it.
   if [ "$TARGET_OS" = "macos" ] && command -v xattr >/dev/null 2>&1; then
     xattr -d com.apple.quarantine "$server_path" 2>/dev/null || true
-    xattr -d com.apple.quarantine "$setup_path"  2>/dev/null || true
   fi
 
-  ok "Installed binaries to $INSTALL_DIR"
-  SETUP_PATH="$setup_path"
+  ok "Installed binary to $INSTALL_DIR"
   SERVER_PATH="$server_path"
 }
 
@@ -211,8 +206,9 @@ run_setup() {
   log "Running setup wizard (non-interactive, JSON output)…"
   printf "\n"
   # The wizard emits the InstallEnvelope on stdout. We pass it through
-  # verbatim so the calling agent can parse it.
-  if "$SETUP_PATH" --non-interactive --json; then
+  # verbatim so the calling agent can parse it. `setup` subcommand
+  # routes into the wizard inside the unified binary.
+  if "$SERVER_PATH" setup --non-interactive --json; then
     printf "\n"
     ok "Setup completed."
   else
@@ -241,7 +237,7 @@ main() {
   log "Done. The JSON envelope above lists which MCP clients were registered (or"
   log "already-present), and a \`next_steps\` array — usually 'restart your MCP"
   log "client' so vaultpilot-mcp's tools become visible. To pair your Ledger or"
-  log "set provider API keys, run \`vaultpilot-mcp-setup\` interactively."
+  log "set provider API keys, run \`vaultpilot-mcp setup\` interactively."
 }
 
 main "$@"

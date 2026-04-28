@@ -43,37 +43,30 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Each platform produces TWO binaries — one for the MCP server
-        # (entry: dist/index.js) and one for the setup wizard (entry:
-        # dist/setup.js). @yao-pkg/pkg bundles only a single entry per
-        # binary, and the setup wizard has side-effectful top-level code
-        # that can't be reliably merged into the server entry via
-        # dynamic import under pkg's ESM→CJS transformer. Two binaries
-        # keeps both users (MCP runtime, first-run wizard) on the
-        # zero-node-install path with no fragile dispatching.
-        # Asset names follow `vaultpilot-mcp-<platform>-<arch>-<role>` so
-        # the GitHub Releases page (which sorts assets alphabetically)
-        # shows the server + setup binaries for each platform adjacent
-        # to each other rather than scattered. The previous shape put
-        # `setup` BETWEEN platforms when sorted, which made the page
-        # harder to scan for users picking one platform.
+        # ONE binary per platform — `vaultpilot-mcp` runs the MCP server
+        # by default; `vaultpilot-mcp setup` dispatches to the wizard.
+        # Subcommand routing is in `src/index.ts`'s `main()` (statically
+        # imports `runSetup` from `./setup.js` to stay compatible with
+        # pkg's snapshot constraints — issue #330 noted dynamic imports
+        # at startup throw under pkg).
+        # Prior shape (PR #486 and earlier): two binaries per platform,
+        # `*-server` + `*-setup`. Cut to halve binary count + bandwidth
+        # + flaky-runner exposure (the macos-x64-setup leg was the most
+        # frequent post-release blocker). The `*-server` asset name is
+        # preserved for backward compat with old install.sh URLs.
         include:
           - target: node22-linux-x64
             runner: ubuntu-latest
             server_asset: vaultpilot-mcp-linux-x64-server
-            setup_asset: vaultpilot-mcp-linux-x64-setup
           - target: node22-macos-x64
             runner: macos-13
             server_asset: vaultpilot-mcp-macos-x64-server
-            setup_asset: vaultpilot-mcp-macos-x64-setup
           - target: node22-macos-arm64
             runner: macos-14
             server_asset: vaultpilot-mcp-macos-arm64-server
-            setup_asset: vaultpilot-mcp-macos-arm64-setup
           - target: node22-win-x64
             runner: windows-latest
             server_asset: vaultpilot-mcp-windows-x64-server.exe
-            setup_asset: vaultpilot-mcp-windows-x64-setup.exe
 
     steps:
       - name: Checkout
@@ -134,14 +127,6 @@ jobs:
         env:
           CI: "true"
 
-      - name: Bundle setup binary
-        # Direct entrypoint here is fine — setup.js doesn't import any
-        # subpath exports from CJS-fallback packages, so the resolution
-        # bug above doesn't apply.
-        run: npx --package=@yao-pkg/pkg pkg dist/setup.js --target ${{ matrix.target }} --output release/${{ matrix.setup_asset }}
-        env:
-          CI: "true"
-
       - name: Mark server binary executable (non-Windows)
         if: runner.os != 'Windows'
         run: chmod +x ./release/${{ matrix.server_asset }}
@@ -175,7 +160,6 @@ jobs:
           set -euo pipefail
           ASSETS=(
             "release/${{ matrix.server_asset }}"
-            "release/${{ matrix.setup_asset }}"
           )
           for asset in "${ASSETS[@]}"; do
             for attempt in 1 2 3; do

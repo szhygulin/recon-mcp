@@ -827,7 +827,7 @@ async function runNonInteractive(opts: {
   for (const s of envelope.next_steps) console.log(`  - ${s}`);
 }
 
-async function main() {
+export async function runSetup(): Promise<void> {
   // Demo mode is a try-before-install switch — the server runs against
   // fixture data and never touches a real Ledger or RPC. Running the
   // setup wizard while VAULTPILOT_DEMO is active would write real config
@@ -934,7 +934,7 @@ const invokedDirectly = (() => {
 })();
 
 if (invokedDirectly) {
-  main().then(() => {
+  runSetup().then(() => {
     // WalletConnect's SignClient keeps websocket/relay handles open that prevent
     // a natural event-loop exit. Force-exit so the CLI returns control to the
     // shell; process.exitCode (set on error) is honored.

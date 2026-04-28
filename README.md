@@ -152,7 +152,7 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 - `get_tron_staking`, `list_tron_witnesses` — TRON staking state + SR list
 - `get_solana_setup_status` — cheap probe of a wallet's Solana setup PDAs (nonce + MarginFi account existence)
 - `get_solana_staking_positions` — Marinade mSOL + Jito jitoSOL + native stake-account enumeration with activation status and SOL-equivalent valuation via on-chain exchange rates
-- `get_vaultpilot_config_status` — diagnostic snapshot of the local server config (RPC source per chain, API-key presence per service, paired-account counts, WC session-topic suffix, preflight-skill state). Strict no-secrets contract — booleans / counts / source enums / topic suffix only, never values. Use to triage "why isn't my balance read working" before suggesting `vaultpilot-mcp-setup`.
+- `get_vaultpilot_config_status` — diagnostic snapshot of the local server config (RPC source per chain, API-key presence per service, paired-account counts, WC session-topic suffix, preflight-skill state). Strict no-secrets contract — booleans / counts / source enums / topic suffix only, never values. Use to triage "why isn't my balance read working" before suggesting `vaultpilot-mcp setup`.
 - `get_ledger_device_info` — probe the connected Ledger over USB HID and report which app is currently open (name + version + dashboard flag) plus an actionable hint. Uses the dashboard-level `GET_APP_AND_VERSION` APDU so it works whether the device is on the dashboard or inside any chain app. Returns `deviceConnected: false` cleanly with a hint when no device is plugged in or udev rules are missing on Linux. Call BEFORE `pair_ledger_solana` / `pair_ledger_tron` so you can replace generic "open the Solana app" guidance with a state-aware instruction.
 - `resolve_ens_name`, `reverse_resolve_ens` — ENS forward/reverse
 - `get_swap_quote` (LiFi, EVM), `get_solana_swap_quote` (Jupiter v6)
@@ -185,9 +185,9 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 
 - Node.js >= 18.17
 - **Zero-config path (portfolio reads):** no API keys needed. The server falls back to PublicNode (EVM) and Solana public mainnet when nothing is configured — rate-limited, but enough for first-contact and light use.
-- **For real use:** set your own RPC provider (Infura / Alchemy / custom) for EVM chains and a Solana RPC (Helius / QuickNode / Triton) when the public endpoints rate-limit you. One env var per chain (`ETHEREUM_RPC_URL`, `SOLANA_RPC_URL`, …) or `vaultpilot-mcp-setup`.
+- **For real use:** set your own RPC provider (Infura / Alchemy / custom) for EVM chains and a Solana RPC (Helius / QuickNode / Triton) when the public endpoints rate-limit you. One env var per chain (`ETHEREUM_RPC_URL`, `SOLANA_RPC_URL`, …) or `vaultpilot-mcp setup`.
 - **Optional (prompted on demand):** Etherscan API key, 1inch API key (enables swap-quote comparison), WalletConnect project ID (required for EVM Ledger signing), TronGrid API key (raises the ~15 req/min anonymous cap).
-- **For TRON/Solana signing:** USB HID access to a Ledger with the **Tron** / **Solana** app installed. On Linux, install Ledger's [udev rules](https://github.com/LedgerHQ/udev-rules) — `vaultpilot-mcp-setup` prints the exact one-liner if they're missing. `node-hid` compiles natively so Debian/Ubuntu needs `sudo apt install libudev-dev build-essential`. For SPL/MarginFi/Jupiter flows, enable **Allow blind signing** in the Solana app's on-device Settings. SOL native transfers clear-sign and do not need this.
+- **For TRON/Solana signing:** USB HID access to a Ledger with the **Tron** / **Solana** app installed. On Linux, install Ledger's [udev rules](https://github.com/LedgerHQ/udev-rules) — `vaultpilot-mcp setup` prints the exact one-liner if they're missing. `node-hid` compiles natively so Debian/Ubuntu needs `sudo apt install libudev-dev build-essential`. For SPL/MarginFi/Jupiter flows, enable **Allow blind signing** in the Solana app's on-device Settings. SOL native transfers clear-sign and do not need this.
 
 ## Install
 
@@ -195,8 +195,8 @@ Three paths — full step-by-step instructions, MCP-client wiring, Gatekeeper / 
 
 | Path | TL;DR |
 |---|---|
-| **Bundled binary** (no Node.js needed) | Download the matching pair for your OS from the [latest release page](https://github.com/szhygulin/vaultpilot-mcp/releases/latest), `chmod +x`, run setup. |
-| **From npm** | `npm install -g vaultpilot-mcp && vaultpilot-mcp-setup` |
+| **Bundled binary** (no Node.js needed) | Download the binary for your OS from the [latest release page](https://github.com/szhygulin/vaultpilot-mcp/releases/latest), `chmod +x`, run `<binary> setup`. |
+| **From npm** | `npm install -g vaultpilot-mcp && vaultpilot-mcp setup` |
 | **From source** | `git clone https://github.com/szhygulin/vaultpilot-mcp.git && cd vaultpilot-mcp && npm install --legacy-peer-deps && npm run build && npm run setup` |
 
 ## Setup
@@ -244,11 +244,11 @@ Leaving demo:
 Caveats:
 
 - Demo state is process-local and ephemeral; restart loses persona selection.
-- Demo is a scaffold for first-contact, not a sandbox — there is no virtual chain overlay. Permanent setup is what `vaultpilot-mcp-setup` is for.
+- Demo is a scaffold for first-contact, not a sandbox — there is no virtual chain overlay. Permanent setup is what `vaultpilot-mcp setup` is for.
 
 ## Use with Claude Desktop / Claude Code / Cursor
 
-`vaultpilot-mcp-setup` detects which agent clients you have installed and offers to add a `vaultpilot-mcp` entry to each one's MCP-server config automatically. Each existing config is backed up to `<file>.vaultpilot.bak` before any change. Detected client paths:
+`vaultpilot-mcp setup` detects which agent clients you have installed and offers to add a `vaultpilot-mcp` entry to each one's MCP-server config automatically. Each existing config is backed up to `<file>.vaultpilot.bak` before any change. Detected client paths:
 
 - Claude Desktop (macOS): `~/Library/Application Support/Claude/claude_desktop_config.json`
 - Claude Desktop (Windows): `%APPDATA%\Claude\claude_desktop_config.json`

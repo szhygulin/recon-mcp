@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { parseDoctorFlags, runDoctor, formatDoctorReport } from "./check.js";
+import { runSetup } from "./setup.js";
 import {
   isDemoMode,
   isAlwaysGatedTool,
@@ -1413,13 +1414,26 @@ function bigintReplacer(_key: string, value: unknown): unknown {
 }
 
 async function main() {
+  // `setup` subcommand — when invoked as `vaultpilot-mcp setup [...flags]`,
+  // dispatch to the setup wizard's main loop and exit before any MCP server
+  // initialization. Unifies what was previously two separate binaries
+  // (`vaultpilot-mcp` + `vaultpilot-mcp-setup`) into one. The wizard parses
+  // its own `--non-interactive` / `--json` / `--idempotent` flags off
+  // process.argv. Static import of `runSetup` per issue #330 (dynamic
+  // imports at startup throw under pkg's snapshot).
+  if (process.argv.includes("setup")) {
+    await runSetup();
+    // WalletConnect's SignClient keeps websocket/relay handles open that
+    // prevent a natural event-loop exit. Force-exit so the CLI returns
+    // control to the shell; process.exitCode (set on error) is honored.
+    process.exit();
+  }
+
   // Issue #359 — pre-restart install validation. `--check` / `--doctor` /
   // `--health` runs the doctor and exits without touching the MCP server,
   // so a user (or assisting agent) can verify the install BEFORE incurring
   // a Claude Code restart. The doctor is purely local: filesystem reads
-  // + env-var inspection, no chain reads or transport open. Static import
-  // (not dynamic) so the binary path stays compatible — issue #330 noted
-  // dynamic imports at startup throw under pkg's snapshot.
+  // + env-var inspection, no chain reads or transport open.
   // `--demo` CLI alias — sets VAULTPILOT_DEMO=true so the env-var
   // gate fires identically to the `--env VAULTPILOT_DEMO=true` path.
   // Must run before `parseDoctorFlags` (so `--check` sees demo mode

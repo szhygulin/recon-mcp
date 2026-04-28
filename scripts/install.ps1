@@ -12,14 +12,18 @@
 # What it does:
 #   1. Detect arch (x64 only at the moment — the release pipeline
 #      doesn't ship Windows arm64 yet).
-#   2. Download the matching server.exe + setup.exe binaries from the
-#      latest GitHub Release into %LOCALAPPDATA%\Programs\vaultpilot-mcp\
+#   2. Download the unified vaultpilot-mcp.exe from the latest GitHub
+#      Release into %LOCALAPPDATA%\Programs\vaultpilot-mcp\
 #      (or $env:VAULTPILOT_INSTALL_DIR).
-#   3. Run `vaultpilot-mcp-setup --non-interactive --json` which
+#   3. Run `vaultpilot-mcp setup --non-interactive --json` which
 #      registers MCP clients (Claude Desktop / Claude Code / Cursor)
 #      and clones the companion skills.
 #   4. Print the setup wizard's JSON envelope so the calling agent
 #      can parse `next_steps` and relay them to the user.
+#
+# Prior shape (≤ v0.12.0): two separate .exe binaries (`*-server.exe`
+# and `*-setup.exe`). Unified into one in v0.13.0 — the setup wizard
+# is now `vaultpilot-mcp setup`.
 #
 # What it does NOT do:
 #   - Collect API keys (zero-config defaults — PublicNode RPC).
@@ -83,7 +87,6 @@ function Detect-Target {
     Fatal "Unsupported Windows arch '$arch'. Only x64 is published; install from npm: ``npm i -g vaultpilot-mcp`` (requires Node 22+)."
   }
   $script:ServerAsset = 'vaultpilot-mcp-windows-x64-server.exe'
-  $script:SetupAsset  = 'vaultpilot-mcp-windows-x64-setup.exe'
   $script:TargetArch  = 'x64'
 }
 
@@ -117,18 +120,12 @@ function Install-Binaries {
   }
 
   $serverPath = Join-Path $InstallDir 'vaultpilot-mcp.exe'
-  $setupPath  = Join-Path $InstallDir 'vaultpilot-mcp-setup.exe'
 
-  Log "Downloading server binary..."
+  Log "Downloading vaultpilot-mcp binary..."
   Log "  $ReleaseBaseUrl/$ServerAsset"
   Download-File -Url "$ReleaseBaseUrl/$ServerAsset" -Dest $serverPath
 
-  Log "Downloading setup wizard binary..."
-  Log "  $ReleaseBaseUrl/$SetupAsset"
-  Download-File -Url "$ReleaseBaseUrl/$SetupAsset" -Dest $setupPath
-
-  Ok "Installed binaries to $InstallDir"
-  $script:SetupPath  = $setupPath
+  Ok "Installed binary to $InstallDir"
   $script:ServerPath = $serverPath
 }
 
@@ -169,8 +166,9 @@ function Run-Setup {
   Log "Running setup wizard (non-interactive, JSON output)..."
   Write-Host ""
   # Invoke directly via the absolute path so we don't depend on the
-  # PATH advisory branch having succeeded.
-  & $SetupPath '--non-interactive' '--json'
+  # PATH advisory branch having succeeded. `setup` subcommand routes
+  # into the wizard inside the unified binary.
+  & $ServerPath 'setup' '--non-interactive' '--json'
   $exitCode = $LASTEXITCODE
   Write-Host ""
   if ($exitCode -ne 0) {
@@ -198,4 +196,4 @@ Write-Host ""
 Log "Done. The JSON envelope above lists which MCP clients were registered (or"
 Log "already-present), and a 'next_steps' array — usually 'restart your MCP"
 Log "client' so vaultpilot-mcp's tools become visible. To pair your Ledger or"
-Log "set provider API keys, run 'vaultpilot-mcp-setup' interactively."
+Log "set provider API keys, run 'vaultpilot-mcp setup' interactively."
