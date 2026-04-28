@@ -161,7 +161,13 @@ function formatDecoder(v: TxVerification): string {
 export function renderVerificationBlock(
   tx: Pick<
     UnsignedTx,
-    "chain" | "to" | "value" | "data" | "recipient" | "tokenClass"
+    | "chain"
+    | "to"
+    | "value"
+    | "data"
+    | "recipient"
+    | "tokenClass"
+    | "secondLlmRequired"
   > & {
     verification: TxVerification;
   },
@@ -199,6 +205,22 @@ export function renderVerificationBlock(
   // different treatment per class.
   for (const w of tx.tokenClass?.warnings ?? []) {
     lines.push(`  ⚠ ${w}`);
+  }
+  // Inv #12.5 hard-trigger ops (issue #501) — second-LLM check is a
+  // precondition of `confirmed: true`, not opt-in. The renderer
+  // surfaces a single mandatory line; the agent reads it and is
+  // expected to call `get_verification_artifact({ handle })` and
+  // relay the `pasteableBlock` BEFORE asking the user to reply
+  // 'send'. Producers (e.g. future `prepare_eip7702_authorization`
+  // / Permit2 batch / opaque-facet bridges) set the flag at build
+  // time. Today no producer wires it — pure scaffold for when
+  // hard-trigger op classes ship.
+  if (tx.secondLlmRequired === true) {
+    lines.push(
+      "  ⚠ SECOND-LLM CHECK REQUIRED — call get_verification_artifact(handle) " +
+        "and relay the pasteableBlock to the user BEFORE 'send' (Inv #12.5 " +
+        "hard-trigger op).",
+    );
   }
   return lines.join("\n");
 }
