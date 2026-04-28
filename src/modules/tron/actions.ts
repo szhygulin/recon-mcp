@@ -17,16 +17,16 @@ import type { UnsignedTronTx } from "../../types/index.js";
  * Ledger Live / Tronlink default and far above typical energy burn for a
  * USDT-TRC20 transfer (~15 TRX at current mainnet energy price).
  */
-const DEFAULT_FEE_LIMIT_SUN = 100_000_000n;
+export const DEFAULT_FEE_LIMIT_SUN = 100_000_000n;
 
 /** Hardcoded TRC-20 decimals for canonical stablecoins (same as balances.ts). */
-const TOKEN_DECIMALS: Record<keyof typeof TRON_TOKENS, number> = {
+export const TOKEN_DECIMALS: Record<keyof typeof TRON_TOKENS, number> = {
   USDT: 6,
   USDC: 6,
   USDD: 18,
   TUSD: 18,
 };
-const SYMBOL_BY_CONTRACT: Record<string, keyof typeof TRON_TOKENS> = Object.fromEntries(
+export const SYMBOL_BY_CONTRACT: Record<string, keyof typeof TRON_TOKENS> = Object.fromEntries(
   (Object.entries(TRON_TOKENS) as [keyof typeof TRON_TOKENS, string][]).map(
     ([symbol, addr]) => [addr, symbol]
   )
@@ -37,7 +37,7 @@ const SYMBOL_BY_CONTRACT: Record<string, keyof typeof TRON_TOKENS> = Object.from
  * Mirrors viem's `parseUnits` but doesn't import viem (keeps the TRON
  * path free of EVM-only helpers).
  */
-function parseUnits(value: string, decimals: number): bigint {
+export function parseUnits(value: string, decimals: number): bigint {
   if (!/^\d+(\.\d+)?$/.test(value)) {
     throw new Error(`Invalid amount "${value}" — expected a positive decimal number.`);
   }
@@ -51,7 +51,7 @@ function parseUnits(value: string, decimals: number): bigint {
   return BigInt(whole + padded);
 }
 
-async function trongridPost<T>(
+export async function trongridPost<T>(
   path: string,
   body: Record<string, unknown>,
   apiKey: string | undefined
@@ -129,7 +129,7 @@ interface TrongridBandwidthResourceResponse {
  * Called after the tx is built (we need `rawDataHex` for size) but before
  * the handle is issued, so the error surfaces at prepare time.
  */
-async function assertBandwidthSufficient(
+export async function assertBandwidthSufficient(
   from: string,
   rawDataHex: string,
   apiKey: string | undefined
@@ -213,7 +213,7 @@ interface TrongridDirectTx {
   visible?: boolean;
 }
 
-interface TrongridTriggerResponse {
+export interface TrongridTriggerResponse {
   result?: { result?: boolean; message?: string; code?: string };
   transaction?: {
     txID?: string;
@@ -223,7 +223,7 @@ interface TrongridTriggerResponse {
   };
 }
 
-interface TrongridConstantResponse {
+export interface TrongridConstantResponse {
   result?: { result?: boolean; message?: string; code?: string };
   energy_used?: number;
   constant_result?: string[];
@@ -237,7 +237,7 @@ interface TrongridConstantResponse {
  * /wallet/getchainparameters is possible but not worth the extra round-trip
  * for a preview-only number.
  */
-const ENERGY_PRICE_SUN = 420n;
+export const ENERGY_PRICE_SUN = 420n;
 
 /** Well-known solidity revert selector: Error(string) = 0x08c379a0. */
 const ERROR_STRING_SELECTOR = "08c379a0";
@@ -275,7 +275,7 @@ function decodeRevertString(constantResult: string[] | undefined): string | unde
  * that would revert on-chain (insufficient balance, paused token, blocked
  * recipient). Returns the energy estimate for the preview.
  */
-async function preflightConstantContract(
+export async function preflightConstantContract(
   body: Record<string, unknown>,
   apiKey: string | undefined
 ): Promise<{ energyUsed: bigint }> {

@@ -174,6 +174,7 @@ import {
   prepareNativeStakeWithdraw,
   prepareSolanaLifiSwap,
   prepareTronLifiSwap,
+  prepareTronSunswapSwap,
   prepareKaminoInitUser,
   prepareKaminoSupply,
   prepareKaminoBorrow,
@@ -271,6 +272,7 @@ import {
   prepareNativeStakeWithdrawInput,
   prepareSolanaLifiSwapInput,
   prepareTronLifiSwapInput,
+  prepareTronSunswapSwapInput,
   prepareKaminoInitUserInput,
   prepareKaminoSupplyInput,
   prepareKaminoBorrowInput,
@@ -3347,7 +3349,36 @@ async function main() {
     handler(prepareTronLifiSwap, { toolName: "prepare_tron_lifi_swap" })
   );
 
-  registerTool(server, 
+  registerTool(server,
+    "prepare_sunswap_swap",
+    {
+      description:
+        "Build an unsigned SunSwap V2 same-chain swap on TRON. SunSwap V2 is a Uniswap-V2 fork; " +
+        "this tool routes through the V2 router (TNJVzGqKBWkJxJB5XYSqGAwUTV15U24pPq) using the " +
+        "standard `swapExactETHForTokens` / `swapExactTokensForETH` / `swapExactTokensForTokens` " +
+        "selectors based on which side is native TRX. Path encoding: TRX→TRC20 = [WTRX, toToken]; " +
+        "TRC20→TRX = [fromToken, WTRX]; TRC20→TRC20 = [fromToken, WTRX, toToken]. The builder " +
+        "(1) calls getAmountsOut on the router via /triggerconstantcontract to compute the " +
+        "expected output, (2) derives minOut as quotedOut * (10000 - slippageBps) / 10000, " +
+        "(3) for TRC-20 sources, reads `allowance(wallet, router)` and refuses with a recovery " +
+        "hint if insufficient — the user must run prepare_tron_trc20_approve(token, " +
+        "spender=router, amount) first, broadcast it, wait ~3s for it to land, then retry. " +
+        "(4) hand-rolls ABI calldata for the swap call (no SDK), (5) hits TronGrid " +
+        "/triggersmartcontract to build the tx, (6) verifies the returned raw_data_hex matches " +
+        "exactly what we asked for (selector + parameter + call_value + fee_limit) and refuses " +
+        "any drift. BLIND-SIGN on Ledger TRON app — the SunSwap router is not in the device's " +
+        "clear-sign allowlist. Enable \"Allow blind signing\" in the on-device TRON app Settings; " +
+        "the device shows the txID, which the user matches against the txID in the prepare " +
+        "receipt. Pair the Ledger via `pair_ledger_tron` first. Smart Router (V1+V2+V3+PSM " +
+        "aggregator) is intentionally not used — V2 router only — because Smart Router's mainnet " +
+        "address has not been published officially and its multi-version path encoding is a " +
+        "different ABI shape.",
+      inputSchema: prepareTronSunswapSwapInput.shape,
+    },
+    handler(prepareTronSunswapSwap, { toolName: "prepare_sunswap_swap" })
+  );
+
+  registerTool(server,
     "get_solana_setup_status",
     {
       description:

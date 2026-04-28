@@ -174,7 +174,20 @@ export type TronRawDataExpectation =
       resource: "bandwidth" | "energy";
     }
   | { kind: "withdraw_expire_unfreeze"; from: string }
-  | { kind: "claim_rewards"; from: string };
+  | { kind: "claim_rewards"; from: string }
+  | {
+      // SunSwap V2 router same-chain swap. We pin selector + parameter
+      // so a TronGrid swap-with-different-path or different-amount
+      // substitution is rejected on the prepare path, not at on-chain
+      // revert time.
+      kind: "sunswap_swap";
+      from: string;
+      contract: string;
+      selector: string;
+      parameterHex: string;
+      callValue: bigint;
+      feeLimitSun?: bigint;
+    };
 
 // --- Main entry point ------------------------------------------------------
 
@@ -263,6 +276,8 @@ export function assertTronRawDataMatches(
         expected.from,
         "WithdrawBalanceContract"
       );
+    case "sunswap_swap":
+      return verifySunswapSwap(type, inner, expected, feeLimit);
   }
 }
 
@@ -351,6 +366,49 @@ function verifyTriggerSmartContract(
     throw new Error(
       `TRON rawData verify: fee_limit mismatch — raw_data_hex has ${actualFeeLimit} sun, ` +
         `we asked for ${e.feeLimitSun} sun.`
+    );
+  }
+}
+
+function verifySunswapSwap(
+  type: number,
+  inner: FieldMap,
+  e: Extract<TronRawDataExpectation, { kind: "sunswap_swap" }>,
+  actualFeeLimit: bigint,
+): void {
+  expectType(type, CONTRACT_TYPE.TriggerSmartContract, "TriggerSmartContract");
+  expectAddress(
+    requireBytes(inner, 1, "TriggerSmartContract.owner_address"),
+    e.from,
+    "owner_address",
+  );
+  expectAddress(
+    requireBytes(inner, 2, "TriggerSmartContract.contract_address"),
+    e.contract,
+    "contract_address",
+  );
+  const callValue = optionalVarint(inner, 3);
+  if (callValue !== e.callValue) {
+    throw new Error(
+      `TRON rawData verify: call_value mismatch on SunSwap swap — raw_data_hex has ${callValue}, ` +
+        `we asked for ${e.callValue}. (This is the TRX amount sent with the call; mismatch means ` +
+        `TronGrid built a different-value tx than the swap parameters specified.)`,
+    );
+  }
+  const dataBytes = optionalBytes(inner, 4) ?? new Uint8Array();
+  const dataHex = toHex(dataBytes).toLowerCase();
+  const expectedFullData = (e.selector + e.parameterHex).toLowerCase();
+  if (dataHex !== expectedFullData) {
+    throw new Error(
+      `TRON rawData verify: SunSwap router data mismatch — got 0x${dataHex}, ` +
+        `expected 0x${expectedFullData}. Either the function selector or the encoded ` +
+        `(amountOutMin, path, to, deadline) tuple drifted from what we computed. Refusing to sign.`,
+    );
+  }
+  if (e.feeLimitSun !== undefined && actualFeeLimit !== e.feeLimitSun) {
+    throw new Error(
+      `TRON rawData verify: fee_limit mismatch on SunSwap swap — raw_data_hex has ${actualFeeLimit} sun, ` +
+        `we asked for ${e.feeLimitSun} sun.`,
     );
   }
 }

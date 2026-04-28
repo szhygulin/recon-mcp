@@ -35,6 +35,32 @@ export const TRX_DECIMALS = 6;
 export const TRX_SYMBOL = "TRX";
 
 /**
+ * SunSwap V2 router on TRON mainnet — the canonical Uniswap-V2-fork DEX
+ * for same-chain TRX↔TRC20 swaps. Address per the SunSwap team's own
+ * deployment record at github.com/sunswapteam/sunswap2.0-contracts (verified
+ * 2026-04-28). Pinned as a constant rather than fetched from a registry
+ * because (a) router addresses are immutable on V2 and (b) a swap to the
+ * wrong contract loses funds — we want the address-correctness boundary
+ * checked against the source code, not an external lookup.
+ *
+ * Smart Router (which aggregates V1/V2/V3/PSM/SunCurve) is intentionally
+ * NOT used here — its only published address (TCFNp179...) is testnet-only
+ * per the sun-protocol/smart-exchange-router README, and its ABI is a
+ * different shape (multi-version path encoding, SwapData struct). Sticking
+ * to V2-router-only keeps the calldata encoding simple and the trust
+ * surface small. See issue #432.
+ */
+export const SUNSWAP_V2_ROUTER_TRON = "TNJVzGqKBWkJxJB5XYSqGAwUTV15U24pPq";
+
+/**
+ * Wrapped TRX (WTRX) on TRON mainnet. Used as the WETH-equivalent in
+ * SunSwap V2 paths — TRX → TRC20 routes have path = [WTRX, toToken];
+ * TRC20 → TRC20 routes use [fromToken, WTRX, toToken] when there's no
+ * direct pool. Verified via Bitquery on-chain explorer 2026-04-28.
+ */
+export const WTRX_TRON = "TNUC9Qb1rRpS5CbWLmNMxXBjyFoydXjWFR";
+
+/**
  * Validate a TRON mainnet base58 address. Mainnet addresses are 34 chars and
  * start with `T` (the mainnet prefix byte 0x41 encodes to `T...` in base58check).
  *

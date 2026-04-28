@@ -912,7 +912,8 @@ export interface UnsignedTronTx {
     | "unfreeze"
     | "withdraw_expire_unfreeze"
     | "vote"
-    | "lifi_swap";
+    | "lifi_swap"
+    | "sunswap_swap";
   /** Base58 owner address (prefix T). */
   from: string;
   /** TronGrid-returned transaction ID (sha256 of raw_data_hex, hex string). */

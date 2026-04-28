@@ -585,6 +585,103 @@ export const prepareTronLifiSwapInput = z.object({
 });
 
 /**
+ * SunSwap V2 same-chain swap on TRON. User signs a TRON tx via Ledger
+ * over USB; the swap settles atomically through the V2 router contract.
+ *
+ * BLIND-SIGN on Ledger — the SunSwap router is not in the TRON app's
+ * clear-sign allowlist. User must enable "Allow blind signing" in the
+ * on-device Settings; the device shows the txID (sha256 of raw_data_hex),
+ * which the user matches against the txID in the prepare receipt. TRC-20
+ * source flows require a prior approve to the V2 router — this builder
+ * verifies allowance up-front and refuses with a recovery hint if missing.
+ */
+export const prepareTronSunswapSwapInput = z.object({
+  wallet: z
+    .string()
+    .regex(TRON_ADDRESS)
+    .describe(
+      "TRON base58 wallet (T-prefixed, 34 chars) — funds the swap and signs " +
+        "the source tx on Ledger via USB. Pair via `pair_ledger_tron` first.",
+    ),
+  fromToken: z
+    .string()
+    .max(50)
+    .describe(
+      "Source token. Either the literal string \"TRX\" for native TRX, OR a " +
+        "T-prefixed TRC-20 contract address. TRC-20 source REQUIRES a prior " +
+        "approve to the SunSwap V2 router (TNJVzGqKBWkJxJB5XYSqGAwUTV15U24pPq) — " +
+        "this tool checks allowance up-front and refuses with a recovery hint if " +
+        "insufficient.",
+    ),
+  toToken: z
+    .string()
+    .max(50)
+    .describe(
+      "Destination token. Either the literal \"TRX\" or a T-prefixed TRC-20 " +
+        "contract address. Cannot equal fromToken.",
+    ),
+  amount: z
+    .string()
+    .max(50)
+    .describe(
+      "Human-readable amount of fromToken (e.g. \"100\" for 100 TRX, \"10.5\" " +
+        "for 10.5 USDT). Decimals are resolved from the canonical TRC-20 set " +
+        "(USDT/USDC/USDD/TUSD) or from `fromTokenDecimals` for non-canonical " +
+        "tokens.",
+    ),
+  slippageBps: z
+    .number()
+    .int()
+    .min(0)
+    .max(10_000)
+    .optional()
+    .describe(
+      "Slippage tolerance in basis points (50 = 0.5%). Default 50.",
+    ),
+  deadlineSeconds: z
+    .number()
+    .int()
+    .positive()
+    .max(86_400)
+    .optional()
+    .describe(
+      "Deadline window in seconds from now. Default 1200 (20 min). The router " +
+        "rejects the swap if it hasn't landed by then.",
+    ),
+  fromTokenDecimals: z
+    .number()
+    .int()
+    .min(0)
+    .max(36)
+    .optional()
+    .describe(
+      "REQUIRED when fromToken is a non-canonical TRC-20 (i.e. not USDT/USDC/" +
+        "USDD/TUSD or \"TRX\"). We refuse to guess decimals on a swap because an " +
+        "off-by-power-of-ten amountIn silently exposes the user to ~10^N-fold " +
+        "larger slippage than intended.",
+    ),
+  toTokenDecimals: z
+    .number()
+    .int()
+    .min(0)
+    .max(36)
+    .optional()
+    .describe(
+      "REQUIRED when toToken is a non-canonical TRC-20. Same reasoning as " +
+        "`fromTokenDecimals`.",
+    ),
+  feeLimitTrx: z
+    .string()
+    .regex(/^\d+(\.\d+)?$/)
+    .optional()
+    .describe(
+      "Override the energy fee_limit cap (default 100 TRX). Pass a human-readable " +
+        "TRX amount (e.g. \"50\"). Energy estimate is reported separately in " +
+        "`estimatedEnergyCostSun`.",
+    ),
+});
+
+/**
  * No args — `get_vaultpilot_config_status` returns a structured snapshot of
  * the local server config, intended for diagnostic / onboarding flows.
  * The output deliberately never echoes any secret values (API keys, RPC
@@ -1149,6 +1246,7 @@ export type GetSolanaStakingPositionsArgs = z.infer<typeof getSolanaStakingPosit
 export type GetSolanaSetupStatusArgs = z.infer<typeof getSolanaSetupStatusInput>;
 export type PrepareSolanaLifiSwapArgs = z.infer<typeof prepareSolanaLifiSwapInput>;
 export type PrepareTronLifiSwapArgs = z.infer<typeof prepareTronLifiSwapInput>;
+export type PrepareTronSunswapSwapArgs = z.infer<typeof prepareTronSunswapSwapInput>;
 
 /**
  * Kamino lending — first-time setup. Creates the user lookup table +

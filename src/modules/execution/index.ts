@@ -159,6 +159,7 @@ import type {
   PrepareNativeStakeWithdrawArgs,
   PrepareSolanaLifiSwapArgs,
   PrepareTronLifiSwapArgs,
+  PrepareTronSunswapSwapArgs,
   PrepareKaminoInitUserArgs,
   PrepareKaminoSupplyArgs,
   PrepareKaminoBorrowArgs,
@@ -700,6 +701,29 @@ export async function prepareTronLifiSwap(
     toToken: args.toToken,
     toAddress: args.toAddress,
     ...(slippage !== undefined ? { slippage } : {}),
+  });
+}
+
+export async function prepareTronSunswapSwap(
+  args: PrepareTronSunswapSwapArgs,
+): Promise<UnsignedTronTx> {
+  const { buildTronSunswapSwap } = await import("../tron/sunswap-swap.js");
+  return buildTronSunswapSwap({
+    wallet: args.wallet,
+    fromToken: args.fromToken,
+    toToken: args.toToken,
+    amount: args.amount,
+    ...(args.slippageBps !== undefined ? { slippageBps: args.slippageBps } : {}),
+    ...(args.deadlineSeconds !== undefined
+      ? { deadlineSeconds: args.deadlineSeconds }
+      : {}),
+    ...(args.fromTokenDecimals !== undefined
+      ? { fromTokenDecimals: args.fromTokenDecimals }
+      : {}),
+    ...(args.toTokenDecimals !== undefined
+      ? { toTokenDecimals: args.toTokenDecimals }
+      : {}),
+    ...(args.feeLimitTrx !== undefined ? { feeLimitTrx: args.feeLimitTrx } : {}),
   });
 }
 
