@@ -226,6 +226,8 @@ import {
   prepareUniswapV3Rebalance,
   prepareLidoStake,
   prepareLidoUnstake,
+  prepareLidoWrap,
+  prepareLidoUnwrap,
   prepareEigenLayerDeposit,
   prepareNativeSend,
   prepareWethUnwrap,
@@ -325,6 +327,8 @@ import {
   prepareUniswapV3RebalanceInput,
   prepareLidoStakeInput,
   prepareLidoUnstakeInput,
+  prepareLidoWrapInput,
+  prepareLidoUnwrapInput,
   prepareEigenLayerDepositInput,
   prepareNativeSendInput,
   prepareWethUnwrapInput,
@@ -3621,7 +3625,7 @@ async function main() {
     txHandler("prepare_lido_stake", prepareLidoStake)
   );
 
-  registerTool(server, 
+  registerTool(server,
     "prepare_lido_unstake",
     {
       description:
@@ -3631,7 +3635,27 @@ async function main() {
     txHandler("prepare_lido_unstake", prepareLidoUnstake)
   );
 
-  registerTool(server, 
+  registerTool(server,
+    "prepare_lido_wrap",
+    {
+      description:
+        "Build an unsigned wstETH.wrap transaction that converts stETH (rebasing) into wstETH (non-rebasing). 1:1 by share count, no DEX fee. Includes an stETH approve step to the wstETH contract if needed.",
+      inputSchema: prepareLidoWrapInput.shape,
+    },
+    txHandler("prepare_lido_wrap", prepareLidoWrap)
+  );
+
+  registerTool(server,
+    "prepare_lido_unwrap",
+    {
+      description:
+        "Build an unsigned wstETH.unwrap transaction that converts wstETH (non-rebasing) back into stETH (rebasing). No approval needed — burns wstETH from the caller's balance.",
+      inputSchema: prepareLidoUnwrapInput.shape,
+    },
+    txHandler("prepare_lido_unwrap", prepareLidoUnwrap)
+  );
+
+  registerTool(server,
     "prepare_eigenlayer_deposit",
     {
       description:

@@ -1,5 +1,5 @@
 import { encodeFunctionData, parseEther, parseUnits, zeroAddress } from "viem";
-import { stETHAbi, lidoWithdrawalQueueAbi } from "../../abis/lido.js";
+import { stETHAbi, wstETHAbi, lidoWithdrawalQueueAbi } from "../../abis/lido.js";
 import { eigenStrategyManagerAbi } from "../../abis/eigenlayer-strategy-manager.js";
 import { CONTRACTS } from "../../config/contracts.js";
 import { buildApprovalTx, chainApproval, resolveApprovalCap } from "../shared/approval.js";
@@ -66,6 +66,70 @@ export async function buildLidoUnstake(p: LidoUnstakeParams): Promise<UnsignedTx
   };
 
   return chainApproval(approve, unstakeTx);
+}
+
+export interface LidoWrapParams {
+  wallet: `0x${string}`;
+  amountStETH: string;
+  approvalCap?: string;
+}
+
+export async function buildLidoWrap(p: LidoWrapParams): Promise<UnsignedTx> {
+  const amountWei = parseEther(p.amountStETH);
+  const stETH = CONTRACTS.ethereum.lido.stETH as `0x${string}`;
+  const wstETH = CONTRACTS.ethereum.lido.wstETH as `0x${string}`;
+
+  const { approvalAmount, display } = resolveApprovalCap(p.approvalCap, amountWei, 18);
+  const approve = await buildApprovalTx({
+    chain: "ethereum",
+    wallet: p.wallet,
+    asset: stETH,
+    spender: wstETH,
+    amountWei,
+    approvalAmount,
+    approvalDisplay: display,
+    symbol: "stETH",
+    spenderLabel: "Lido wstETH",
+  });
+
+  const wrapTx: UnsignedTx = {
+    chain: "ethereum",
+    to: wstETH,
+    data: encodeFunctionData({
+      abi: wstETHAbi,
+      functionName: "wrap",
+      args: [amountWei],
+    }),
+    value: "0",
+    from: p.wallet,
+    description: `Wrap ${p.amountStETH} stETH into wstETH`,
+    decoded: { functionName: "wrap", args: { amount: p.amountStETH + " stETH" } },
+  };
+
+  return chainApproval(approve, wrapTx);
+}
+
+export interface LidoUnwrapParams {
+  wallet: `0x${string}`;
+  amountWstETH: string;
+}
+
+export function buildLidoUnwrap(p: LidoUnwrapParams): UnsignedTx {
+  const amountWei = parseEther(p.amountWstETH);
+  const wstETH = CONTRACTS.ethereum.lido.wstETH as `0x${string}`;
+  return {
+    chain: "ethereum",
+    to: wstETH,
+    data: encodeFunctionData({
+      abi: wstETHAbi,
+      functionName: "unwrap",
+      args: [amountWei],
+    }),
+    value: "0",
+    from: p.wallet,
+    description: `Unwrap ${p.amountWstETH} wstETH into stETH`,
+    decoded: { functionName: "unwrap", args: { amount: p.amountWstETH + " wstETH" } },
+  };
 }
 
 export interface EigenDepositParams {

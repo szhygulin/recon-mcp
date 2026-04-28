@@ -723,6 +723,25 @@ export const prepareLidoUnstakeInput = z.object({
     ),
   approvalCap: approvalCapSchema,
 });
+export const prepareLidoWrapInput = z.object({
+  wallet: walletSchema,
+  amountStETH: z
+    .string()
+    .max(50)
+    .describe(
+      'Human-readable stETH amount to wrap into wstETH, NOT raw wei. Example: "0.5" for 0.5 stETH (18 decimals).'
+    ),
+  approvalCap: approvalCapSchema,
+});
+export const prepareLidoUnwrapInput = z.object({
+  wallet: walletSchema,
+  amountWstETH: z
+    .string()
+    .max(50)
+    .describe(
+      'Human-readable wstETH amount to unwrap into stETH, NOT raw wei. Example: "0.5" for 0.5 wstETH (18 decimals).'
+    ),
+});
 
 export const prepareEigenLayerDepositInput = z.object({
   wallet: walletSchema,
@@ -992,6 +1011,8 @@ export type PrepareAaveBorrowArgs = z.infer<typeof prepareAaveBorrowInput>;
 export type PrepareAaveRepayArgs = z.infer<typeof prepareAaveRepayInput>;
 export type PrepareLidoStakeArgs = z.infer<typeof prepareLidoStakeInput>;
 export type PrepareLidoUnstakeArgs = z.infer<typeof prepareLidoUnstakeInput>;
+export type PrepareLidoWrapArgs = z.infer<typeof prepareLidoWrapInput>;
+export type PrepareLidoUnwrapArgs = z.infer<typeof prepareLidoUnwrapInput>;
 export type PrepareEigenLayerDepositArgs = z.infer<typeof prepareEigenLayerDepositInput>;
 export type PrepareNativeSendArgs = z.infer<typeof prepareNativeSendInput>;
 export type PrepareWethUnwrapArgs = z.infer<typeof prepareWethUnwrapInput>;

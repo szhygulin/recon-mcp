@@ -105,6 +105,8 @@ import {
 import {
   buildLidoStake,
   buildLidoUnstake,
+  buildLidoWrap,
+  buildLidoUnwrap,
   buildEigenLayerDeposit,
 } from "../staking/actions.js";
 import { buildWethUnwrap } from "../weth/actions.js";
@@ -125,6 +127,8 @@ import type {
   PrepareUniswapV3RebalanceArgs,
   PrepareLidoStakeArgs,
   PrepareLidoUnstakeArgs,
+  PrepareLidoWrapArgs,
+  PrepareLidoUnwrapArgs,
   PrepareEigenLayerDepositArgs,
   PrepareNativeSendArgs,
   PrepareWethUnwrapArgs,
@@ -2395,6 +2399,25 @@ export async function prepareLidoUnstake(args: PrepareLidoUnstakeArgs): Promise<
       wallet: args.wallet as `0x${string}`,
       amountStETH: args.amountStETH,
       approvalCap: args.approvalCap,
+    })
+  );
+}
+
+export async function prepareLidoWrap(args: PrepareLidoWrapArgs): Promise<UnsignedTx> {
+  return enrichTx(
+    await buildLidoWrap({
+      wallet: args.wallet as `0x${string}`,
+      amountStETH: args.amountStETH,
+      approvalCap: args.approvalCap,
+    })
+  );
+}
+
+export async function prepareLidoUnwrap(args: PrepareLidoUnwrapArgs): Promise<UnsignedTx> {
+  return enrichTx(
+    buildLidoUnwrap({
+      wallet: args.wallet as `0x${string}`,
+      amountWstETH: args.amountWstETH,
     })
   );
 }

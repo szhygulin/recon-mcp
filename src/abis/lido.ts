@@ -45,6 +45,20 @@ export const wstETHAbi = [
     inputs: [{ name: "wstETHAmount", type: "uint256" }],
     outputs: [{ type: "uint256" }],
   },
+  {
+    type: "function",
+    name: "wrap",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "_stETHAmount", type: "uint256" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "unwrap",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "_wstETHAmount", type: "uint256" }],
+    outputs: [{ type: "uint256" }],
+  },
 ] as const;
 
 export const lidoWithdrawalQueueAbi = [
