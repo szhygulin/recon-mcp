@@ -40,16 +40,6 @@ claude mcp add vaultpilot-mcp-dev --env VAULTPILOT_DEMO=true -- node /absolute/p
 
 Useful when changing `src/demo/`, the `prepare_*` refusal/simulation paths, or `buildSimulationEnvelope` — unit tests cover contract correctness, but the agent-UX class of regressions (persona drift, simulation envelope readability, nudge timing) only surface in a live walkthrough.
 
-## Issue triage
-
-New issues are auto-triaged by an agent ([`.github/workflows/triage-issue.yml`](./.github/workflows/triage-issue.yml)) that reads the issue, classifies it, and either:
-
-- Implements small / well-scoped fixes as a draft PR (typo, copy update, missing field, single-file off-by-one).
-- Comments a written plan for issues needing maintainer design input — that's the cue to discuss before code lands.
-- Skips spam / off-topic / discussion-only issues with a brief reason.
-
-To opt out per-issue: open with the `no-triage` label set. To re-trigger after editing: add the `retriage` label.
-
 ## Reporting security issues
 
 Do **not** open a public issue for vulnerabilities. See [SECURITY.md](./SECURITY.md) for the disclosure process.
