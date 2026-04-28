@@ -449,7 +449,7 @@ To prepare and sign a transaction, the typical flow is:
    user confirms — broadcasts and returns the txid.
 4. `get_transaction_status(txHash, chain)` to monitor confirmation.
 
-Read [SECURITY.md](./SECURITY.md) for the full layered-defenses model
+Read [SECURITY.md](./SECURITY.md) for the full defense-in-depth model
 and the reasoning behind each check.
 
 ## Key resources
