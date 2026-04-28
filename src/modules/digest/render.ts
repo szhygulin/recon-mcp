@@ -69,8 +69,9 @@ export function renderBriefingNarrative(briefing: DailyBriefing): string {
         `lending position(s) below health-factor ${briefing.healthAlerts.threshold}:`,
     );
     for (const a of briefing.healthAlerts.atRisk) {
+      const label = formatProtocolLabel(a.protocol, a.chain);
       lines.push(
-        `- Aave on ${a.chain}: HF ${a.healthFactor.toFixed(2)} ` +
+        `- ${label}: HF ${a.healthFactor.toFixed(2)} ` +
           `(collateral ${formatUsd(a.collateralUsd)} / debt ${formatUsd(a.debtUsd)}, ` +
           `${a.marginToLiquidation.toFixed(1)}% margin to liquidation)`,
       );
@@ -143,6 +144,23 @@ function formatPeriod(p: "24h" | "7d" | "30d"): string {
 
 function formatPeriodTail(p: "24h" | "7d" | "30d"): string {
   return p === "24h" ? "last 24h" : p === "7d" ? "past week" : "past month";
+}
+
+function formatProtocolLabel(protocol: string, chain: string): string {
+  switch (protocol) {
+    case "aave-v3":
+      return `Aave V3 on ${chain}`;
+    case "compound-v3":
+      return `Compound V3 on ${chain}`;
+    case "morpho-blue":
+      return `Morpho Blue on ${chain}`;
+    case "marginfi":
+      return "MarginFi on Solana";
+    case "kamino":
+      return "Kamino on Solana";
+    default:
+      return `${protocol} on ${chain}`;
+  }
 }
 
 function formatUsd(n: number): string {

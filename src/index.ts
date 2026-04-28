@@ -1847,11 +1847,21 @@ async function main() {
     handler(getLpPositions)
   );
 
-  registerTool(server, 
+  registerTool(server,
     "get_health_alerts",
     {
       description:
-        "Check for Aave V3 lending positions approaching liquidation. Returns positions whose health factor is below the given threshold (default 1.5).",
+        "READ-ONLY — across-protocol liquidation-risk check. Fans out in parallel to Aave V3 / " +
+        "Compound V3 / Morpho Blue (EVM, via `wallet`) and MarginFi / Kamino (Solana, via " +
+        "`solanaWallet`); returns every position whose health factor is below `threshold` " +
+        "(default 1.5). Each row carries `protocol` (discriminator), `chain`, `market` " +
+        "(market addr / marketId / MarginfiAccount / obligation; null for Aave's per-chain " +
+        "aggregation), `healthFactor`, `collateralUsd`, `debtUsd`, and `marginToLiquidation` " +
+        "(% HF would need to drop to hit 1.0). At least one of `wallet` / `solanaWallet` is " +
+        "required. Per-protocol failures (RPC down, MarginFi SDK IDL drift) are captured in " +
+        "the optional `notes[]` field rather than failing the whole call — a partial result " +
+        "still surfaces, and the absence of a protocol from the at-risk list is never " +
+        "silently wrong. Issue #427 (was Aave-V3-only despite generic name).",
       inputSchema: getHealthAlertsInput.shape,
     },
     handler(getHealthAlerts)
