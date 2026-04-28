@@ -275,6 +275,36 @@ describe("compareYields composer", () => {
     expect(protocols.has("jito")).toBe(false);
   });
 
+  it("appends a notes[] warning to rows whose riskScore resolved to null (issue #542)", async () => {
+    const { compareYields } = await withMocks({
+      aave: {
+        rows: [
+          { protocol: "aave-v3", chain: "ethereum", market: "USDC", supplyApr: 0.05, supplyApy: 0.051, tvl: null, riskScore: null },
+        ],
+      },
+      compound: {
+        rows: [
+          { protocol: "compound-v3", chain: "ethereum", market: "cUSDCv3", supplyApr: 0.06, supplyApy: 0.062, tvl: null, riskScore: null, notes: ["paused actions: supply"] },
+        ],
+      },
+      // aave-v3 has no risk score (DefiLlama miss); compound-v3 does.
+      riskScores: { "compound-v3": 80 },
+    });
+    const out = await compareYields({ asset: "USDC" });
+    const aave = out.rows.find((r: any) => r.protocol === "aave-v3");
+    const compound = out.rows.find((r: any) => r.protocol === "compound-v3");
+    expect(aave?.riskScore).toBeNull();
+    expect(aave?.notes ?? []).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("risk score unavailable"),
+      ]),
+    );
+    // Populated riskScore → note NOT appended; adapter-emitted notes
+    // (e.g. "paused actions: supply") are preserved verbatim.
+    expect(compound?.riskScore).toBe(80);
+    expect(compound?.notes).toEqual(["paused actions: supply"]);
+  });
+
   it("expands 'stables' into USDC + USDT and queries adapters for both", async () => {
     const { compareYields } = await withMocks({
       compound: {

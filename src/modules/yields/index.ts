@@ -153,6 +153,18 @@ async function compareYieldsImpl(args: CompareYieldsArgs): Promise<CompareYields
   );
   for (const row of allRows) {
     row.riskScore = riskByProtocol.get(row.protocol) ?? null;
+    if (row.riskScore === null) {
+      // Issue #542: an honest MCP normally has a risk score for every row
+      // (the protocol slug enum is closed and DefiLlama covers all of
+      // them). A null score means an upstream lookup failed — surface it
+      // so the agent can flag the row instead of relaying it as benign.
+      // Pairs with the skill-side allowlist check that catches fabricated
+      // protocol slugs from a rogue MCP.
+      row.notes = [
+        ...(row.notes ?? []),
+        "risk score unavailable — verify protocol legitimacy independently before recommending",
+      ];
+    }
   }
 
   // Filter: minTvlUsd. Rows with `tvl: null` are not filtered out
