@@ -223,10 +223,26 @@ export async function addContact(args: AddContactArgs): Promise<{
    */
   unsigned?: boolean;
 }> {
+  // Issue #482 — `intendedChains` is meaningful only for EVM, where the
+  // single `evm` blob covers ethereum/arbitrum/polygon/base/optimism and
+  // the resolver has no other signal to fire CONTACT-CHAIN MISMATCH on.
+  // Reject early (before the demo / no-Ledger branches) so the rejection
+  // is consistent across all three storage paths.
+  if (args.intendedChains !== undefined && args.chain !== "evm") {
+    throw new Error(
+      `${ContactsError.IntendedChainsEvmOnly}: intendedChains is EVM-only ` +
+        `(issue #482); contacts on chain "${args.chain}" cannot carry it. ` +
+        `Drop the field or save the contact under chain="evm".`,
+    );
+  }
   // Demo mode: route to the in-memory store, no Ledger interaction.
   // `version` and `anchorAddress` are placeholders so the response shape
   // matches the production tool — agents that branch on those fields
   // see a sentinel ("DEMO_ANCHOR") rather than a missing key.
+  // NOTE: the demo store does not currently track `intendedChains`; the
+  // tag is silently dropped in demo mode, matching demo's documented
+  // less-secure-by-design trust model (the simulation envelope intercept
+  // is the address-poisoning defense, not crypto chain consistency).
   if (isDemoMode()) {
     addDemoContact({
       chain: args.chain,
@@ -309,6 +325,9 @@ export async function addContact(args: AddContactArgs): Promise<{
     address: args.address,
     addedAt:
       oldEntries.find((e) => e.label === args.label)?.addedAt ?? nowIso(),
+    ...(args.intendedChains !== undefined
+      ? { intendedChains: args.intendedChains }
+      : {}),
   };
   const nextEntries = [...filtered, newEntry];
   const nextVersion = (existingBlob?.version ?? 0) + 1;

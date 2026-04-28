@@ -83,15 +83,17 @@ function looksLikeLiteralAddress(input: string, chain: ContactChain): boolean {
 }
 
 /**
- * Reverse-lookup outcome. Three states:
+ * Reverse-lookup outcome. Four states:
  *   - `match`: blob verified AND a saved entry matched the address.
+ *     Also returns `intendedChains` (issue #482) when set on the
+ *     entry, so the caller can fire CONTACT-CHAIN MISMATCH.
  *   - `noMatch`: blob verified, but no saved entry matched.
  *   - `tampered`: blob present on disk but failed verification —
  *     the caller hoists a warning instead of silently skipping.
  *   - `noBlob`: no blob persisted yet — silently skip (no decoration).
  */
 type ReverseLookupResult =
-  | { state: "match"; label: string }
+  | { state: "match"; label: string; intendedChains?: string[] }
   | { state: "noMatch" }
   | { state: "tampered" }
   | { state: "noBlob" };
@@ -118,20 +120,30 @@ async function reverseLookup(
   const target = chain === "evm" ? addr.toLowerCase() : addr;
   for (const entry of blob.entries) {
     const candidate = chain === "evm" ? entry.address.toLowerCase() : entry.address;
-    if (candidate === target) return { state: "match", label: entry.label };
+    if (candidate === target) {
+      return {
+        state: "match",
+        label: entry.label,
+        ...(entry.intendedChains !== undefined
+          ? { intendedChains: [...entry.intendedChains] }
+          : {}),
+      };
+    }
   }
   return { state: "noMatch" };
 }
 
 /**
  * Forward-lookup: scan the verified blob for `entry.label === label`.
- * Throws CONTACTS_TAMPERED via the inner verifier when the file is
- * tampered (NOT silent — this is the abort path).
+ * Returns the address + the entry's `intendedChains` (issue #482) when
+ * set, so the caller can fire CONTACT-CHAIN MISMATCH alongside the
+ * resolved address. Throws CONTACTS_TAMPERED via the inner verifier
+ * when the file is tampered (NOT silent — this is the abort path).
  */
 async function forwardLookup(
   chain: "btc" | "evm",
   label: string,
-): Promise<string | null> {
+): Promise<{ address: string; intendedChains?: string[] } | null> {
   // Use a STRICT read here so tamper aborts (matches the plan).
   // tryReadVerifiedBlob silently returns null on tamper, which is
   // the wrong shape for label resolution — we want to know.
@@ -150,7 +162,37 @@ async function forwardLookup(
     );
   }
   const hit = blob.entries.find((e) => e.label === label);
-  return hit ? hit.address : null;
+  if (!hit) return null;
+  return {
+    address: hit.address,
+    ...(hit.intendedChains !== undefined
+      ? { intendedChains: [...hit.intendedChains] }
+      : {}),
+  };
+}
+
+/**
+ * Issue #482 — emit a `CONTACT-CHAIN MISMATCH` warning when the
+ * contact has an `intendedChains` tag and the prepare's `chain` arg
+ * isn't in the list. No-op when the contact is untagged (legacy) or
+ * when `chain` matches. Returns the warning string to push, or null
+ * for no-op. Centralized so the forward + reverse + ENS-decorate
+ * paths produce identical wording.
+ */
+function chainMismatchWarning(
+  label: string,
+  chain: string,
+  intendedChains: ReadonlyArray<string> | undefined,
+): string | null {
+  if (intendedChains === undefined || intendedChains.length === 0) return null;
+  if (intendedChains.includes(chain)) return null;
+  const list = intendedChains.join(", ");
+  return (
+    `CONTACT-CHAIN MISMATCH: contact "${label}" is tagged for [${list}] but ` +
+    `you're sending on ${chain}. Verify the recipient is correct on this ` +
+    `chain — the same address on a different EVM chain may go to the wrong ` +
+    `account or a contract you don't control.`
+  );
 }
 
 export async function resolveRecipient(
@@ -216,6 +258,8 @@ export async function resolveRecipient(
     if (cc === "btc" || cc === "evm") {
       const r = await reverseLookup(cc, input);
       if (r.state === "match") {
+        const w = chainMismatchWarning(r.label, chain, r.intendedChains);
+        if (w) warnings.push(w);
         return {
           address: input,
           source: "literal",
@@ -251,8 +295,10 @@ export async function resolveRecipient(
   if (cc === "btc" || cc === "evm") {
     const labelHit = await forwardLookup(cc, input);
     if (labelHit) {
+      const w = chainMismatchWarning(input, chain, labelHit.intendedChains);
+      if (w) warnings.push(w);
       return {
-        address: labelHit,
+        address: labelHit.address,
         source: "contact",
         label: input,
         warnings,
@@ -283,8 +329,11 @@ export async function resolveRecipient(
         // contacts verify cleanly). Falls back to unsigned (#428).
         const r = await reverseLookup("evm", ens.address);
         let label: string | undefined;
-        if (r.state === "match") label = r.label;
-        else if (r.state === "tampered") {
+        if (r.state === "match") {
+          label = r.label;
+          const w = chainMismatchWarning(r.label, chain, r.intendedChains);
+          if (w) warnings.push(w);
+        } else if (r.state === "tampered") {
           warnings.push(
             "contacts file failed verification — ENS reverse-decoration skipped",
           );

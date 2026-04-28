@@ -28,6 +28,24 @@ import {
 export const ContactChain = z.enum(["btc", "evm", "solana", "tron"]);
 export type ContactChain = z.infer<typeof ContactChain>;
 
+/**
+ * Per-EVM-chain tag set on EVM contacts (issue #482). Optional —
+ * absent means "any EVM chain", legacy behavior. The contacts file
+ * is per-chain-family (one `evm` blob), so without this tag the
+ * resolver has no schema-level signal to fire `CONTACT-CHAIN
+ * MISMATCH` on the smoke-test scenario (Carol-on-Arbitrum sent on
+ * Ethereum). Listed via the same SupportedChain literals the
+ * prepare flows pass to the resolver.
+ */
+export const EvmChainTag = z.enum([
+  "ethereum",
+  "arbitrum",
+  "polygon",
+  "base",
+  "optimism",
+]);
+export type EvmChainTag = z.infer<typeof EvmChainTag>;
+
 /** Per-chain anchor address types. EVM is just an address; BTC has format. */
 export const BtcAnchorAddressType = z.enum([
   "legacy",
@@ -41,6 +59,16 @@ export const SignedContactEntry = z.object({
   label: z.string().min(1).max(64),
   address: z.string().min(1).max(80),
   addedAt: z.string().datetime(),
+  /**
+   * Per-EVM-chain tag (issue #482). Optional — absent means "any
+   * EVM chain" (legacy behavior; existing signed blobs without the
+   * field verify unchanged because the canonical preimage omits
+   * absent fields). Only meaningful on `evm` entries; rejected at
+   * the `add_contact` API layer for btc/solana/tron contacts. When
+   * set, the resolver emits a `CONTACT-CHAIN MISMATCH` warning if
+   * the prepare's `chain` arg isn't in the list.
+   */
+  intendedChains: z.array(EvmChainTag).min(1).optional(),
 });
 export type SignedContactEntry = z.infer<typeof SignedContactEntry>;
 
@@ -153,6 +181,18 @@ export const addContactInput = z.object({
       "Free-form tags ('family', 'cex-deposit', etc.). Like notes — " +
         "stored in the unsigned metadata sidecar.",
     ),
+  intendedChains: z
+    .array(EvmChainTag)
+    .min(1)
+    .optional()
+    .describe(
+      "EVM-only (issue #482). Tag the contact for specific EVM chains so " +
+        "`preview_send` emits a `CONTACT-CHAIN MISMATCH` warning when a " +
+        "prepare's chain isn't in this list (defense-in-depth for the " +
+        "Carol-on-Arbitrum-sent-on-Ethereum class of mistake). Omit for " +
+        "legacy 'any EVM chain' behavior. Rejected with a clear error " +
+        "for btc/solana/tron contacts.",
+    ),
 });
 export type AddContactArgs = z.infer<typeof addContactInput>;
 
@@ -253,6 +293,7 @@ export const ContactsError = {
   VersionRollback: "CONTACTS_VERSION_ROLLBACK",
   AddressFormatMismatch: "CONTACTS_ADDRESS_FORMAT_MISMATCH",
   LabelNotFound: "CONTACTS_LABEL_NOT_FOUND",
+  IntendedChainsEvmOnly: "CONTACTS_INTENDED_CHAINS_EVM_ONLY",
 } as const;
 
 /** Address-shape regexes per chain — used to validate `add_contact` inputs. */

@@ -561,6 +561,165 @@ describe("resolveRecipient", () => {
   });
 });
 
+// ---------- intendedChains tag (issue #482) ----------
+
+describe("intendedChains (issue #482)", () => {
+  it("addContact accepts intendedChains on EVM and the entry round-trips through verify", async () => {
+    const { addContact, verifyContacts, listContacts } = await import(
+      "../src/contacts/index.js"
+    );
+    await addContact({
+      chain: "evm",
+      label: "Carol",
+      address: "0xCAfE000000000000000000000000000000000000",
+      intendedChains: ["arbitrum"],
+    });
+    const verified = await verifyContacts({ chain: "evm" });
+    expect(verified.results[0].ok).toBe(true);
+    // listContacts joins by label; the intendedChains tag lives on the
+    // signed entry — confirm it round-tripped to disk by reading the
+    // raw blob back.
+    const out = await listContacts({});
+    expect(out.contacts).toHaveLength(1);
+    expect(out.contacts[0].label).toBe("Carol");
+    const { contactsPath } = await import("../src/contacts/storage.js");
+    const file = JSON.parse(readFileSync(contactsPath(), "utf8"));
+    expect(file.chains.evm.entries[0].intendedChains).toEqual(["arbitrum"]);
+  });
+
+  it("addContact rejects intendedChains on BTC with CONTACTS_INTENDED_CHAINS_EVM_ONLY", async () => {
+    const { addContact } = await import("../src/contacts/index.js");
+    await expect(
+      addContact({
+        chain: "btc",
+        label: "Carol",
+        address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+        // @ts-expect-error — intendedChains shouldn't be passed for btc;
+        // schema-layer types narrow this, but the runtime guard is the
+        // load-bearing rule under JS callers and demo-mode fallthroughs.
+        intendedChains: ["ethereum"],
+      }),
+    ).rejects.toThrow(/CONTACTS_INTENDED_CHAINS_EVM_ONLY/);
+  });
+
+  it("forward label resolution: tagged contact + matching chain → no warning", async () => {
+    const { addContact } = await import("../src/contacts/index.js");
+    await addContact({
+      chain: "evm",
+      label: "Carol",
+      address: "0xCAfE000000000000000000000000000000000000",
+      intendedChains: ["arbitrum"],
+    });
+    const { resolveRecipient } = await import("../src/contacts/resolver.js");
+    const out = await resolveRecipient("Carol", "arbitrum");
+    expect(out.source).toBe("contact");
+    expect(out.label).toBe("Carol");
+    expect(out.warnings).not.toContainEqual(
+      expect.stringMatching(/CONTACT-CHAIN MISMATCH/),
+    );
+  });
+
+  it("forward label resolution: tagged contact + non-matching chain → CONTACT-CHAIN MISMATCH warning", async () => {
+    const { addContact } = await import("../src/contacts/index.js");
+    await addContact({
+      chain: "evm",
+      label: "Carol",
+      address: "0xCAfE000000000000000000000000000000000000",
+      intendedChains: ["arbitrum"],
+    });
+    const { resolveRecipient } = await import("../src/contacts/resolver.js");
+    const out = await resolveRecipient("Carol", "ethereum");
+    expect(out.source).toBe("contact");
+    expect(out.label).toBe("Carol");
+    expect(out.warnings).toContainEqual(
+      expect.stringMatching(/CONTACT-CHAIN MISMATCH.*Carol.*arbitrum.*ethereum/),
+    );
+  });
+
+  it("legacy contact (no intendedChains) on any EVM chain → no warning (backward compat)", async () => {
+    const { addContact } = await import("../src/contacts/index.js");
+    await addContact({
+      chain: "evm",
+      label: "Mom",
+      address: "0xdEAD000000000000000000000000000000000000",
+    });
+    const { resolveRecipient } = await import("../src/contacts/resolver.js");
+    for (const c of ["ethereum", "arbitrum", "polygon", "base", "optimism"]) {
+      const out = await resolveRecipient("Mom", c);
+      expect(out.warnings).not.toContainEqual(
+        expect.stringMatching(/CONTACT-CHAIN MISMATCH/),
+      );
+    }
+  });
+
+  it("reverse-decoration on a literal address: tagged contact + non-matching chain → warning fires", async () => {
+    const { addContact } = await import("../src/contacts/index.js");
+    await addContact({
+      chain: "evm",
+      label: "Carol",
+      address: "0xCAfE000000000000000000000000000000000000",
+      intendedChains: ["arbitrum", "polygon"],
+    });
+    const { resolveRecipient } = await import("../src/contacts/resolver.js");
+    const out = await resolveRecipient(
+      "0xcafe000000000000000000000000000000000000",
+      "base",
+    );
+    expect(out.source).toBe("literal");
+    expect(out.label).toBe("Carol");
+    expect(out.warnings).toContainEqual(
+      expect.stringMatching(/CONTACT-CHAIN MISMATCH.*Carol.*arbitrum, polygon.*base/),
+    );
+  });
+
+  it("preimage byte-equality: legacy entry produces the same canonical bytes as before #482", async () => {
+    // The fix only adds `intendedChains` to the preimage when SET on
+    // the source entry. Legacy entries (no field) must produce the
+    // exact same canonical JSON as the pre-#482 code path so existing
+    // signed blobs verify unchanged.
+    const { canonicalize, buildSigningPreimage } = await import(
+      "../src/contacts/canonicalize.js"
+    );
+    const legacyPreimage = canonicalize(
+      buildSigningPreimage({
+        chainId: "evm",
+        version: 1,
+        anchorAddress: "0xanchor",
+        signedAt: "2026-04-28T00:00:00.000Z",
+        entries: [
+          {
+            label: "Mom",
+            address: "0xdEAD000000000000000000000000000000000000",
+            addedAt: "2026-04-28T00:00:00.000Z",
+          },
+        ],
+      }),
+    );
+    // Sentinel — what the pre-#482 code produced byte-for-byte.
+    expect(legacyPreimage).toBe(
+      '{"anchorAddress":"0xanchor","chainId":"evm","entries":[{"addedAt":"2026-04-28T00:00:00.000Z","address":"0xdEAD000000000000000000000000000000000000","label":"Mom"}],"signedAt":"2026-04-28T00:00:00.000Z","version":1}',
+    );
+    // Tagged entry adds `intendedChains` only on entries that carry it.
+    const taggedPreimage = canonicalize(
+      buildSigningPreimage({
+        chainId: "evm",
+        version: 1,
+        anchorAddress: "0xanchor",
+        signedAt: "2026-04-28T00:00:00.000Z",
+        entries: [
+          {
+            label: "Carol",
+            address: "0xCAfE000000000000000000000000000000000000",
+            addedAt: "2026-04-28T00:00:00.000Z",
+            intendedChains: ["arbitrum"],
+          },
+        ],
+      }),
+    );
+    expect(taggedPreimage).toContain('"intendedChains":["arbitrum"]');
+  });
+});
+
 // ---------- WC namespace expansion ----------
 
 describe("REQUIRED_NAMESPACES", () => {

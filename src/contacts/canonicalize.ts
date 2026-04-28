@@ -76,12 +76,27 @@ export function canonicalize(value: unknown): string {
  * sorted by `label` ascending so that two callers ending up with the
  * same logical contact set produce identical signatures.
  */
+/**
+ * Per-entry shape that flows into the signing preimage. `intendedChains`
+ * (issue #482) is optional — when absent on the source entry the field
+ * is OMITTED from the preimage entirely (not serialized as `null` or
+ * `[]`), so existing signed blobs without the field reproduce the same
+ * canonical bytes they signed and continue to verify. Adding the field
+ * is therefore additive: no schemaVersion bump, no migration.
+ */
+export interface PreimageEntry {
+  label: string;
+  address: string;
+  addedAt: string;
+  intendedChains?: ReadonlyArray<string>;
+}
+
 export interface SigningPreimage {
   chainId: string;
   version: number;
   anchorAddress: string;
   signedAt: string;
-  entries: ReadonlyArray<{ label: string; address: string; addedAt: string }>;
+  entries: ReadonlyArray<PreimageEntry>;
 }
 
 export function buildSigningPreimage(args: {
@@ -89,16 +104,28 @@ export function buildSigningPreimage(args: {
   version: number;
   anchorAddress: string;
   signedAt: string;
-  entries: ReadonlyArray<{ label: string; address: string; addedAt: string }>;
+  entries: ReadonlyArray<PreimageEntry>;
 }): SigningPreimage {
   const sorted = [...args.entries].sort((a, b) =>
     a.label < b.label ? -1 : a.label > b.label ? 1 : 0,
   );
+  // Spread `intendedChains` ONLY when set on the source entry —
+  // canonicalize() throws on undefined values, and we want byte-
+  // equality with pre-#482 preimages on entries that don't carry
+  // the tag.
+  const projected: PreimageEntry[] = sorted.map((e) => ({
+    label: e.label,
+    address: e.address,
+    addedAt: e.addedAt,
+    ...(e.intendedChains !== undefined
+      ? { intendedChains: e.intendedChains }
+      : {}),
+  }));
   return {
     chainId: args.chainId,
     version: args.version,
     anchorAddress: args.anchorAddress,
     signedAt: args.signedAt,
-    entries: sorted,
+    entries: projected,
   };
 }
