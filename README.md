@@ -91,6 +91,7 @@ Ledger Live's WalletConnect bridge does not honor the `tron:` namespace (verifie
 
 - **Bitcoin** via Ledger USB HID — native segwit + taproot sends, portfolio integration, mempool.space fee estimation, BIP-125 RBF by default. ([plan](./claude-work/plan-bitcoin-ledger-phase1.md))
 - **Hyperliquid L1** — full parity (perps + spot + vaults + staking + TWAP). Ledger-per-trade blind-sign signing; no API-wallet shortcut. ([plan](./claude-work/plan-hyperliquid-full-parity.md))
+- **Aptos + Sui** (Move-VM) — read first (balance + staking + Sui objects), then Ledger USB HID pair + native send + stake delegate per chain. WalletConnect doesn't carry Move namespaces, so signing follows the TRON / Solana USB precedent. Phase 1 (Aptos read-only) is the smallest unit. ([plan](./claude-work/plan-aptos-sui-chain-support.md))
 
 **More Solana protocols**
 
