@@ -12,6 +12,7 @@ import {
 } from "../../signing/decode-calldata.js";
 import { NON_EVM_RECEIVER_SENTINEL } from "../../abis/lifi-diamond.js";
 import { matchIntermediateChainBridge } from "./intermediate-chain-bridges.js";
+import { mevExposureNote } from "./mev-hint.js";
 import type { SupportedChain, UnsignedTx } from "../../types/index.js";
 
 /**
@@ -744,6 +745,20 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
     ? `Bridge ${fromDisplay} ${fromSym} from ${args.fromChain} to ${toDisplay} ${toSym} on ${args.toChain} via ${quote.tool}${routingNote}`
     : `Swap ${fromDisplay} ${fromSym} → ${toDisplay} ${toSym} on ${args.fromChain} via ${quote.tool}${routingNote}`;
 
+  // Sandwich-MEV hint — same-chain swaps on Ethereum mainnet only. Skipped
+  // on cross-chain routes because a bridge facet's output value isn't
+  // sandwich-extractable in the same way (slippage there bounds bridge
+  // delivery, not pool-state reordering).
+  const fromAmountForUsd = Number(quotedFromAmount);
+  const fromPriceUsdRaw = Number(quote.action.fromToken.priceUSD ?? NaN);
+  const fromAmountUsd =
+    Number.isFinite(fromAmountForUsd) && Number.isFinite(fromPriceUsdRaw)
+      ? fromAmountForUsd * fromPriceUsdRaw
+      : undefined;
+  const mevNote = !crossChain
+    ? mevExposureNote(chain, args.slippageBps ?? 50, fromAmountUsd)
+    : undefined;
+
   const swapTx: UnsignedTx = {
     chain,
     to: txRequest.to as `0x${string}`,
@@ -764,6 +779,7 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
               matchedRequestedExchanges: matchedFilter ? "yes" : "no",
             }
           : {}),
+        ...(mevNote ? { mev: mevNote } : {}),
       },
     },
     gasEstimate: txRequest.gasLimit ? BigInt(txRequest.gasLimit).toString() : undefined,

@@ -4,7 +4,9 @@ import { swapRouter02Abi } from "../../abis/uniswap-swap-router-02.js";
 import { quoterV2Abi } from "../../abis/uniswap-quoter-v2.js";
 import { CONTRACTS } from "../../config/contracts.js";
 import { getClient } from "../../data/rpc.js";
+import { getTokenPrice } from "../../data/prices.js";
 import { assertSlippageOk } from "../swap/index.js";
+import { mevExposureNote } from "../swap/mev-hint.js";
 import type { PrepareUniswapSwapArgs } from "./schemas.js";
 import type { SupportedChain, UnsignedTx } from "../../types/index.js";
 
@@ -297,6 +299,24 @@ export async function prepareUniswapSwap(
     `Swap ${fromDisplay} ${fromSym} -> ${toDisplay} ${toSym} on ${chain} via Uniswap V3 ` +
     `(SwapRouter02, ${feeLabel} pool${args.feeTier ? ", user-specified" : ", auto-selected"})`;
 
+  // Sandwich-MEV hint — Ethereum mainnet only. The fromAmount in human
+  // units is what an attacker can extract a slice of via reordering.
+  // Price fetch is best-effort; a failure falls through to the
+  // percentage-only message inside `mevExposureNote`.
+  const fromAmountHumanForUsd = Number(
+    formatUnits(isExactOut ? amountInMax : amountWei, fromDecimals),
+  );
+  let fromAmountUsd: number | undefined;
+  try {
+    const price = await getTokenPrice(chain, fromToken);
+    if (typeof price === "number" && Number.isFinite(price)) {
+      fromAmountUsd = fromAmountHumanForUsd * price;
+    }
+  } catch {
+    // Swallow — falls through to the no-USD branch in mevExposureNote.
+  }
+  const mevNote = mevExposureNote(chain, slippageBps, fromAmountUsd);
+
   const swapTx: UnsignedTx = {
     chain,
     to: swapRouter02,
@@ -314,6 +334,7 @@ export async function prepareUniswapSwap(
         minOut: isExactOut ? `${args.amount} ${toSym}` : `${minMaxHuman} ${toSym}`,
         maxIn: isExactOut ? `${minMaxHuman} ${fromSym}` : `${args.amount} ${fromSym}`,
         slippageBps: String(slippageBps),
+        ...(mevNote ? { mev: mevNote } : {}),
       },
     },
   };
