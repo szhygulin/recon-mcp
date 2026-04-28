@@ -62,6 +62,7 @@ describe("getToolScope — prefix-derived mapping", () => {
     ["compare_yields", "evm"],
     ["get_swap_quote", "evm"],
     ["check_contract_security", "evm"],
+    ["get_contract_abi", "evm"],
     ["get_nft_portfolio", "evm"],
     // Solana family-only
     ["prepare_solana_native_send", "solana"],

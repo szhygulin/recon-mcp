@@ -172,6 +172,7 @@ export function getToolScope(name: string): { family?: ChainFamily; protocol?: P
     name === "set_etherscan_api_key" ||
     name === "check_contract_security" ||
     name === "check_permission_risks" ||
+    name === "get_contract_abi" ||
     name.startsWith("get_nft_")
   )
     return { family: "evm" };
