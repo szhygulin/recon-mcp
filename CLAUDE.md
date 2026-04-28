@@ -37,3 +37,14 @@
 - Format for push-back: one sentence stating the mismatch + the two or three concrete alternative paths + a question about which to pursue. Keep it short — the goal is to unblock the user's decision, not lecture.
 - If the user explicitly says "do it anyway" after the push-back, proceed. The discipline is about surfacing the issue, not vetoing the user.
 - **Past incident (2026-04-27)**: user asked to retrigger release-binaries.yml against the v0.9.4 tag to recover a missing macos-arm64 binary upload. The tag was frozen at a commit that predated the size + retry fixes (#346 / #349 / #361) just merged into main, so the rerun would have produced the same broken-upload-prone 504MB binary. Caught the issue mid-response but executed the rerun anyway. Right move was to flag the frozen-tag problem first and recommend cutting v0.9.5 (with all fixes baked in) as the alternative.
+
+## Smallest-Solution Discipline
+- **When assessing a GitHub issue or implementing a plan entry, push back with the smallest solution that actually solves the stated problem.** Before writing code, ask: what is the minimum change that makes the failing case pass? Propose that first; only escalate to a heavier design if the minimum demonstrably doesn't cover the requirement. The plan or issue text is a description of the problem, not a license to build infrastructure around it.
+- Concrete tells that the proposed solution is too big:
+  - Caching, indexing, or persisting a dataset to "simulate" or "replay" one operation (e.g. keeping a private blockchain fork in memory to re-run a single transaction; building a request log to replay one API call). One-shot operations don't need persistence layers.
+  - Adding a new module, abstraction, or config surface when an inline change to the existing call site would do.
+  - Introducing a background worker, queue, or scheduler for an action that fires once per user request.
+  - Generalizing for hypothetical future callers when there is exactly one caller today.
+  - "While I'm here" refactors bundled into a fix PR.
+- Format for push-back: one sentence stating the smallest fix you see + one sentence on what the larger proposal adds beyond that + a question on which scope to pursue. If the issue/plan author already specified the heavy approach, surface the lighter alternative explicitly so the user can choose — don't silently downscope either.
+- If the user explicitly says the larger scope is intended, proceed. The discipline is about not defaulting to the heavy option, not vetoing it.
