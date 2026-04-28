@@ -1,0 +1,48 @@
+name: Verify demo personas
+
+# Out-of-tree watcher for src/demo/personas.ts cell drift. Personas
+# point at real public wallets that may go quiet or rotate over time;
+# this workflow runs cheap liveness checks via public chain APIs and
+# exits non-zero (failing the run) if any cell looks dead.
+#
+# Trigger: workflow_dispatch (manual) + weekly cron. Not blocking on
+# PRs — drift is caught after the fact, not at PR time. The intent is
+# that a maintainer reviews the failing run, refreshes the offending
+# cell in src/demo/personas.ts, and bumps verifiedAt.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Mondays 06:00 UTC. Picked off-peak so a flaky public-RPC
+    # response doesn't drown out CI alerts on weekday work hours.
+    - cron: "0 6 * * 1"
+
+jobs:
+  verify:
+    name: Liveness check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install
+        run: npm ci --legacy-peer-deps
+
+      - name: Build (provides dist/demo/personas.js)
+        run: npm run build
+
+      - name: Verify personas
+        id: verify
+        run: node scripts/verify-personas.mjs | tee verify-personas.report.md
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-personas-report
+          path: verify-personas.report.md
+          retention-days: 30

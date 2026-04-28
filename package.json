@@ -22,6 +22,7 @@
     "setup": "node dist/setup.js",
     "test": "vitest run",
     "test:watch": "vitest",
+    "verify-personas": "node scripts/verify-personas.mjs",
     "bundle": "pkg .",
     "prepare": "patch-package"
   },
