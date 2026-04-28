@@ -205,21 +205,26 @@ async function readHealthAlerts(
   args: GetDailyBriefingArgs,
   notes: string[],
 ): Promise<{ threshold: number; atRisk: HealthAlertRow[] } | null> {
-  // Health alerts are EVM/Aave-only today. Without an EVM wallet,
-  // there's nothing to check — return empty rather than a note (the
-  // user simply has no EVM exposure).
-  if (!args.wallet) {
+  // Issue #427: digest now mirrors the cross-protocol coverage in
+  // `getHealthAlerts` (Aave / Compound V3 / Morpho / MarginFi / Kamino).
+  // Without ANY wallet address (EVM or Solana) there's nothing to check —
+  // return empty rather than a note (the user simply has no exposure).
+  if (!args.wallet && !args.solanaAddress) {
     return { threshold: HEALTH_FACTOR_THRESHOLD, atRisk: [] };
   }
   try {
     const r = await getHealthAlerts({
       wallet: args.wallet,
+      solanaWallet: args.solanaAddress,
       threshold: HEALTH_FACTOR_THRESHOLD,
     });
+    if (r.notes && r.notes.length > 0) notes.push(...r.notes);
     return {
       threshold: r.threshold,
       atRisk: r.atRisk.map((a) => ({
+        protocol: a.protocol,
         chain: a.chain,
+        market: a.market,
         healthFactor: a.healthFactor,
         collateralUsd: a.collateralUsd,
         debtUsd: a.debtUsd,

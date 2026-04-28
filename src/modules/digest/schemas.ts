@@ -106,10 +106,16 @@ export interface TopMover {
 /**
  * Lending-position alert row. Mirrors `getHealthAlerts` output one-to-one
  * — re-exporting the shape here so digest-only callers don't need to
- * import the positions module's types.
+ * import the positions module's types. Issue #427 added the `protocol`
+ * discriminator + `market` handle so the digest line can label the
+ * specific protocol the user is at risk on (Aave / Compound V3 / Morpho /
+ * MarginFi / Kamino) rather than always saying "Aave".
  */
 export interface HealthAlertRow {
+  protocol: "aave-v3" | "compound-v3" | "morpho-blue" | "marginfi" | "kamino";
   chain: string;
+  /** Protocol-specific market handle; null for Aave (per-chain aggregation). */
+  market: string | null;
   healthFactor: number;
   collateralUsd: number;
   debtUsd: number;

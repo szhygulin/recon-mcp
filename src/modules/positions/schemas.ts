@@ -1,9 +1,12 @@
 import { z } from "zod";
 import { SUPPORTED_CHAINS } from "../../types/index.js";
-import { EVM_ADDRESS } from "../../shared/address-patterns.js";
+import { EVM_ADDRESS, SOLANA_ADDRESS } from "../../shared/address-patterns.js";
 
 const chainEnum = z.enum(SUPPORTED_CHAINS as unknown as [string, ...string[]]);
 const walletSchema = z.string().regex(EVM_ADDRESS, "must be a 0x-prefixed EVM address");
+const solanaWalletSchema = z
+  .string()
+  .regex(SOLANA_ADDRESS, "must be a base58 Solana address (43–44 chars)");
 
 export const getLendingPositionsInput = z.object({
   wallet: walletSchema,
@@ -16,7 +19,17 @@ export const getLpPositionsInput = z.object({
 });
 
 export const getHealthAlertsInput = z.object({
-  wallet: walletSchema,
+  /**
+   * EVM wallet (Aave V3 / Compound V3 / Morpho Blue coverage). Optional
+   * since a user may hold lending positions only on Solana — but at least
+   * one of `wallet` / `solanaWallet` MUST be provided.
+   */
+  wallet: walletSchema.optional(),
+  /**
+   * Solana wallet (MarginFi + Kamino coverage). Optional but mirrors the
+   * EVM wallet rule: at least one address must be supplied.
+   */
+  solanaWallet: solanaWalletSchema.optional(),
   threshold: z.number().min(1).max(10).optional().default(1.5),
 });
 
