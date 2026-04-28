@@ -400,6 +400,11 @@ import {
   type ListSolanaValidatorsArgs,
 } from "./modules/solana/validators.js";
 import {
+  resolveToken,
+  resolveTokenInput,
+  type ResolveTokenArgs,
+} from "./modules/tokens/resolve.js";
+import {
   buildTronNativeSend,
   buildTronTokenSend,
   buildTronTrc20Approve,
@@ -4273,10 +4278,22 @@ async function main() {
   );
 
   registerTool(server,
+    "resolve_token",
+    {
+      description:
+        "Resolve a `(chain, symbol)` pair to its canonical contract address + decimals from the curated registry. Supports EVM chains (ethereum, arbitrum, polygon, base, optimism), Solana, and TRON. Surfaces native-vs-bridged ambiguity verbatim — e.g. asking for `USDC` on Arbitrum returns the native Circle USDC contract AND a `hasBridgedVariant` warning with the `USDC.e` legacy-bridged contract in `alternatives[]`, so the agent can offer the user the actual choice instead of silently picking one. Asking for `USDC.e` directly returns the bridged contract with an `isBridgedVariant` warning + the native USDC alternative. Same shape on Polygon/Optimism (`USDC.e`) and Base (`USDbC` is the bridged form there). " +
+        "By design, this tool is canonical-registry-only — it does NOT probe on-chain to resolve unknown symbols, since an attacker can deploy a contract that returns \"USDC\" from `symbol()` and is wholly unrelated to the real Circle stablecoin. Unknown symbols throw with a list of registry hits on that chain so the agent can suggest the right one. " +
+        "USE THIS BEFORE `prepare_token_send` when the user names a token by symbol — surface any `warnings` to the user before passing the resolved contract through to `prepare_token_send`. If the desired token isn't in the registry, look up the contract on a block explorer and call `prepare_token_send` directly with the explicit address.",
+      inputSchema: resolveTokenInput.shape,
+    },
+    handler((args: ResolveTokenArgs) => resolveToken(args))
+  );
+
+  registerTool(server,
     "prepare_token_send",
     {
       description:
-        "Build an unsigned ERC-20 transfer transaction. Pass `amount: \"max\"` to send the full balance (resolved at build time).",
+        "Build an unsigned ERC-20 transfer transaction. Pass `amount: \"max\"` to send the full balance (resolved at build time). If the user named the token by symbol, call `resolve_token` first to disambiguate native-vs-bridged variants (USDC vs USDC.e on Arbitrum/Polygon/Optimism, USDC vs USDbC on Base) and surface the warning to the user before committing to a contract.",
       inputSchema: prepareTokenSendInput.shape,
     },
     txHandler("prepare_token_send", prepareTokenSend)

@@ -133,6 +133,7 @@ describe("getToolScope — prefix-derived mapping", () => {
     ["get_token_balance"],
     ["get_token_metadata"],
     ["get_token_price"],
+    ["resolve_token"],
     ["get_coin_price"],
     ["get_ledger_device_info"],
     ["get_ledger_status"],
