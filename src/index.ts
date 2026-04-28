@@ -478,6 +478,7 @@ import {
 } from "./shared/version-check.js";
 
 import { issueHandles } from "./signing/tx-store.js";
+import { assertCanonicalDispatchOnTxChain } from "./security/canonical-dispatch.js";
 import {
   EXPECTED_SKILL_SHA256,
   EXPECTED_SKILL_SENTINEL_A,
@@ -974,11 +975,22 @@ function handler<T, R>(
  * never passes raw calldata to the signing path — it calls send_transaction
  * with a handle, which closes the prompt-injection → arbitrary-calldata window.
  *
+ * Before issuing handles, the action leg's `to` is checked against the
+ * canonical-target allowlist (Invariant #1.a, MCP-side mirror). The action
+ * leg is the tail of the `next` chain — approval legs target the ERC-20
+ * token contract (never canonical) and live ahead of it. Tools outside the
+ * allowlist (sends, LiFi-routed swaps, Curve, Safe ops) hit a no-op in the
+ * helper, so the wiring is safe to apply uniformly here.
+ *
  * `toolName` is the registered MCP tool name; it's threaded through so the
  * prepare-receipt block can label which tool was called with which args.
  */
 function txHandler<T>(toolName: string, fn: (args: T) => Promise<UnsignedTx> | UnsignedTx) {
-  return handler(async (args: T) => issueHandles(await fn(args)), { toolName });
+  return handler(async (args: T) => {
+    const tx = await fn(args);
+    assertCanonicalDispatchOnTxChain(toolName, tx);
+    return issueHandles(tx);
+  }, { toolName });
 }
 
 /**

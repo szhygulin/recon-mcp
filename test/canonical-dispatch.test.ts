@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
   assertCanonicalDispatchTarget,
+  assertCanonicalDispatchOnTxChain,
   _enumerateAllowlistForTests,
 } from "../src/security/canonical-dispatch.js";
 import { CONTRACTS } from "../src/config/contracts.js";
+import type { UnsignedTx } from "../src/types/index.js";
 
 /**
  * These tests pin the MCP-side mirror of skill v8's Invariant #1.a.
@@ -164,6 +166,132 @@ describe("canonical-dispatch — Invariant #1.a MCP-side mirror", () => {
     ).not.toThrow();
     expect(() =>
       assertCanonicalDispatchTarget("prepare_solana_native_send", "ethereum", arbitrary),
+    ).not.toThrow();
+  });
+});
+
+describe("assertCanonicalDispatchOnTxChain — txHandler wiring shape (issue #483)", () => {
+  // The wiring inside `txHandler` (src/index.ts) walks the `next` chain to
+  // its tail, then calls `assertCanonicalDispatchTarget` against the tail's
+  // chain + to. These tests pin that contract end-to-end, exercising the
+  // exact helper `txHandler` calls — so a refactor that breaks the
+  // walk-to-tail step (or skips the assertion) fails here.
+
+  const aavePool = CONTRACTS.ethereum.aave.pool as `0x${string}`;
+  const usdc = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as `0x${string}`;
+  const stETH = CONTRACTS.ethereum.lido.stETH as `0x${string}`;
+  const npm = CONTRACTS.ethereum.uniswap.positionManager as `0x${string}`;
+  const swapRouter = CONTRACTS.ethereum.uniswap.swapRouter02 as `0x${string}`;
+  const cUSDCv3 = CONTRACTS.ethereum.compound.cUSDCv3 as `0x${string}`;
+  const morphoBlue = CONTRACTS.ethereum.morpho.blue as `0x${string}`;
+  const eigenSM = CONTRACTS.ethereum.eigenlayer.strategyManager as `0x${string}`;
+  const bogus = "0x000000000000000000000000000000000000dead" as `0x${string}`;
+
+  function leg(to: `0x${string}`, next?: UnsignedTx): UnsignedTx {
+    return {
+      chain: "ethereum",
+      to,
+      data: "0x",
+      value: "0",
+      description: "",
+      ...(next ? { next } : {}),
+    };
+  }
+
+  it("approve→action chain: tail-leg `to` outside allowlist throws INV_1A (Aave supply)", () => {
+    const chain = leg(usdc, leg(bogus));
+    expect(() => assertCanonicalDispatchOnTxChain("prepare_aave_supply", chain)).toThrow(
+      /INV_1A.*DISPATCH-TARGET MISMATCH/,
+    );
+  });
+
+  it("approve→action chain: canonical tail-leg `to` passes (token contract at head is ignored)", () => {
+    // Approval to USDC sits ahead of an Aave Pool action. The walk-to-tail
+    // skips the approval leg (token contract is never canonical) and
+    // checks the action leg against the allowlist.
+    const chain = leg(usdc, leg(aavePool));
+    expect(() => assertCanonicalDispatchOnTxChain("prepare_aave_supply", chain)).not.toThrow();
+  });
+
+  it("single-tx flows (no approval): canonical `to` passes, bogus throws (Lido stake)", () => {
+    expect(() => assertCanonicalDispatchOnTxChain("prepare_lido_stake", leg(stETH))).not.toThrow();
+    expect(() => assertCanonicalDispatchOnTxChain("prepare_lido_stake", leg(bogus))).toThrow(
+      /INV_1A/,
+    );
+  });
+
+  it("Compound supply chain: builder substituting an off-allowlist Comet at the tail throws", () => {
+    const chain = leg(usdc, leg(bogus));
+    expect(() => assertCanonicalDispatchOnTxChain("prepare_compound_supply", chain)).toThrow(
+      /INV_1A.*DISPATCH-TARGET MISMATCH/,
+    );
+    // Canonical Comet on the tail passes.
+    expect(() =>
+      assertCanonicalDispatchOnTxChain("prepare_compound_supply", leg(usdc, leg(cUSDCv3))),
+    ).not.toThrow();
+  });
+
+  it("Morpho supply chain: bogus tail throws, Morpho Blue tail passes", () => {
+    expect(() =>
+      assertCanonicalDispatchOnTxChain("prepare_morpho_supply", leg(usdc, leg(bogus))),
+    ).toThrow(/INV_1A/);
+    expect(() =>
+      assertCanonicalDispatchOnTxChain("prepare_morpho_supply", leg(usdc, leg(morphoBlue))),
+    ).not.toThrow();
+  });
+
+  it("Uniswap swap chain (approve→swap): bogus router-substitute throws, SwapRouter02 passes", () => {
+    expect(() =>
+      assertCanonicalDispatchOnTxChain("prepare_uniswap_swap", leg(usdc, leg(bogus))),
+    ).toThrow(/INV_1A/);
+    expect(() =>
+      assertCanonicalDispatchOnTxChain("prepare_uniswap_swap", leg(usdc, leg(swapRouter))),
+    ).not.toThrow();
+  });
+
+  it("Uniswap V3 mint chain (approve→approve→mint): two-deep tail walk hits the NPM leg", () => {
+    const wbtc = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599" as `0x${string}`;
+    // Two approvals (token0, token1) precede the NPM mint.
+    expect(() =>
+      assertCanonicalDispatchOnTxChain(
+        "prepare_uniswap_v3_mint",
+        leg(usdc, leg(wbtc, leg(npm))),
+      ),
+    ).not.toThrow();
+    // Substituted final leg is caught.
+    expect(() =>
+      assertCanonicalDispatchOnTxChain(
+        "prepare_uniswap_v3_mint",
+        leg(usdc, leg(wbtc, leg(bogus))),
+      ),
+    ).toThrow(/INV_1A/);
+  });
+
+  it("EigenLayer deposit (approve→deposit): bogus tail throws, StrategyManager passes", () => {
+    expect(() =>
+      assertCanonicalDispatchOnTxChain(
+        "prepare_eigenlayer_deposit",
+        leg(usdc, leg(bogus)),
+      ),
+    ).toThrow(/INV_1A/);
+    expect(() =>
+      assertCanonicalDispatchOnTxChain(
+        "prepare_eigenlayer_deposit",
+        leg(usdc, leg(eigenSM)),
+      ),
+    ).not.toThrow();
+  });
+
+  it("non-guarded prepare_* (sends, LiFi swap): wiring is a no-op even with arbitrary `to`", () => {
+    expect(() =>
+      assertCanonicalDispatchOnTxChain("prepare_native_send", leg(bogus)),
+    ).not.toThrow();
+    expect(() =>
+      assertCanonicalDispatchOnTxChain("prepare_token_send", leg(usdc, leg(bogus))),
+    ).not.toThrow();
+    // prepare_swap (LiFi) is not in the allowlist either — the helper short-circuits.
+    expect(() =>
+      assertCanonicalDispatchOnTxChain("prepare_swap", leg(bogus)),
     ).not.toThrow();
   });
 });
