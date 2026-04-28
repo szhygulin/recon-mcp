@@ -2672,17 +2672,21 @@ export async function prepareCustomCall(
         "user's affirmative ack that they're calling a non-protocol target.",
     );
   }
-  return enrichTx(
-    await buildCustomCall({
-      wallet: args.wallet as `0x${string}`,
-      chain: args.chain as SupportedChain,
-      contract: args.contract as `0x${string}`,
-      fn: args.fn,
-      args: args.args ?? [],
-      value: args.value,
-      abi: args.abi,
-    }),
-  );
+  const built = await buildCustomCall({
+    wallet: args.wallet as `0x${string}`,
+    chain: args.chain as SupportedChain,
+    contract: args.contract as `0x${string}`,
+    fn: args.fn,
+    args: args.args ?? [],
+    value: args.value,
+    abi: args.abi,
+  });
+  // Stamp the affirmative-ack on the tx so `assertTransactionSafe`
+  // (preview/send time) recognizes this handle as the explicit
+  // non-protocol-target bypass and skips ONLY its catch-all "unknown
+  // destination" refusal. Issue #496.
+  built.acknowledgedNonProtocolTarget = true;
+  return enrichTx(built);
 }
 
 /**

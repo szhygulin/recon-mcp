@@ -1257,6 +1257,20 @@ export interface UnsignedTx {
     /** Non-fatal warnings (e.g. "contacts file failed verification — recipient label not checked"). */
     warnings?: string[];
   };
+  /**
+   * Set when the tx was built by `prepare_custom_call` after the user passed
+   * the affirmative `acknowledgeNonProtocolTarget: true` schema-enforced
+   * gate. Read by `assertTransactionSafe` to skip ONLY the catch-all
+   * "unknown destination" refusal at preview/send time — every other
+   * pre-sign defense (approve-spender allowlist, transfer-on-unknown-token,
+   * allowed-ABI-selector check) stays active. Issue #496.
+   *
+   * Trust note: this flag flows through the handle store keyed by the
+   * server-minted UUID; the agent cannot fabricate it on a tx that didn't
+   * come through `prepare_custom_call`'s build path. Setting it to true on
+   * any other prepare path is a server bug, not a user-controllable lever.
+   */
+  acknowledgedNonProtocolTarget?: boolean;
 }
 
 /** Shape of ~/.vaultpilot-mcp/config.json. */
