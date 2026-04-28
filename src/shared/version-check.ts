@@ -23,6 +23,7 @@
  * (mirrors the `VAULTPILOT_DISABLE_SKILL_AUTOINSTALL` shape).
  */
 import { renderUpdateAvailableNotice } from "../signing/render-verification.js";
+import { getInstallPath } from "./install-path.js";
 import { isUpdateAvailable } from "./semver.js";
 import { getServerVersion } from "./version.js";
 
@@ -33,6 +34,13 @@ const PACKAGE_NAME = "vaultpilot-mcp";
 let kickoffStarted = false;
 let resolvedNotice: string | null = null;
 let noticeEmitted = false;
+/**
+ * Latest version observed from the npm registry, regardless of whether it
+ * is newer than the current. Surfaced through `getLatestKnownVersion()`
+ * so the `get_update_command` tool can report a concrete latest version
+ * to the agent rather than `null` when no update is needed.
+ */
+let latestKnownVersion: string | null = null;
 
 function isDisabled(): boolean {
   const v = process.env.VAULTPILOT_DISABLE_UPDATE_CHECK;
@@ -56,6 +64,7 @@ export function _resetUpdateCheckForTests(): void {
   kickoffStarted = false;
   resolvedNotice = null;
   noticeEmitted = false;
+  latestKnownVersion = null;
 }
 
 /**
@@ -91,11 +100,14 @@ async function runCheck(): Promise<void> {
     if (!body || typeof body.version !== "string") return;
     const current = getServerVersion();
     const latest = body.version;
+    latestKnownVersion = latest;
     if (!isUpdateAvailable(current, latest)) return;
+    const install = getInstallPath();
     resolvedNotice = renderUpdateAvailableNotice({
       current,
       latest,
       packageName: PACKAGE_NAME,
+      installBlock: install.noticeInstallBlock,
     });
   } catch {
     // Silent fall-through — see module header.
@@ -112,4 +124,15 @@ export function consumeUpdateNotice(): string | null {
   if (resolvedNotice === null) return null;
   noticeEmitted = true;
   return resolvedNotice;
+}
+
+/**
+ * Latest version returned by the most recent successful npm-registry
+ * fetch, regardless of whether it is newer than the current. `null`
+ * means the fetch hasn't resolved yet (or failed silently). Used by
+ * `get_update_command` so it can surface a concrete latest version
+ * even when no update is available.
+ */
+export function getLatestKnownVersion(): string | null {
+  return latestKnownVersion;
 }

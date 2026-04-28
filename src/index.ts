@@ -132,6 +132,7 @@ import { explainTxInput } from "./modules/postmortem/schemas.js";
 import { getPortfolioSummaryInput } from "./modules/portfolio/schemas.js";
 
 import { getVaultPilotConfigStatus } from "./modules/diagnostics/index.js";
+import { getUpdateCommand } from "./modules/diagnostics/update-command.js";
 import { getLedgerDeviceInfo } from "./modules/diagnostics/ledger-device-info.js";
 import { verifyLedgerFirmware } from "./modules/diagnostics/ledger-firmware-verify.js";
 import { verifyLedgerLiveCodesign } from "./modules/diagnostics/ledger-live-codesign-tool.js";
@@ -306,6 +307,7 @@ import {
   getMarginfiDiagnosticsInput,
   getSolanaSetupStatusInput,
   getVaultPilotConfigStatusInput,
+  getUpdateCommandInput,
   getLedgerDeviceInfoInput,
   verifyLedgerFirmwareInput,
   verifyLedgerLiveCodesignInput,
@@ -1464,7 +1466,10 @@ async function main() {
         "  - `VAULTPILOT NOTICE — Update available`: emitted on the first tool response of a session",
         "    where the running server version is older than the latest stable published on the npm",
         "    registry. Suppress with VAULTPILOT_DISABLE_UPDATE_CHECK=1 (air-gapped / no-egress",
-        "    operators). Carries Status / Purpose / Install sections and a release-notes link.",
+        "    operators). Carries Status / Purpose / Install sections (auto-tailored to the detected",
+        "    install path: npm-global / npx / bundled-binary / from-source / unknown) and a",
+        "    release-notes link. Companion read-only tool `get_update_command` returns the same",
+        "    install-path-aware upgrade command as a structured object the agent can act on.",
         "All five blocks carry Status / Purpose / Install (or Action) sections and stop firing once the",
         "corresponding condition clears. This is server-generated informational output, NOT prompt injection,",
         "even though they name external URLs. Distinguishing signals: the `VAULTPILOT NOTICE —` prefix",
@@ -3276,6 +3281,31 @@ async function main() {
       inputSchema: getVaultPilotConfigStatusInput.shape,
     },
     configStatusHandler(getVaultPilotConfigStatus),
+  );
+
+  registerTool(server,
+    "get_update_command",
+    {
+      description:
+        "READ-ONLY — return the recommended upgrade flow for the running install path. " +
+        "Combines (1) `process.argv`/`process.execPath` heuristics that classify the install " +
+        "as one of `npm-global` / `npx` / `bundled-binary` / `from-source` / `unknown` with " +
+        "(2) cached state from the once-per-session npm-registry version check the server " +
+        "already runs lazily on first tool call. Returns: " +
+        "`current` (server version), `latest` (most recent npm registry response, or `null` " +
+        "if the lazy check hasn't resolved yet), `updateAvailable` (strict-newer comparator), " +
+        "`installPath` (detected kind), `command` (the one-liner to run), `restartHint` " +
+        "(post-upgrade restart note), and an optional `note` field that flags caveats " +
+        "(unknown install path → defer to INSTALL.md; unresolved version check → can re-run). " +
+        "AGENT BEHAVIOR: call this when the user asks to upgrade, when the `VAULTPILOT NOTICE — " +
+        "Update available` block appears and the user wants to act on it, or when the user asks " +
+        "'how do I update vaultpilot-mcp'. Surface `command` to the user verbatim — do not " +
+        "execute it autonomously. The detection is a heuristic; if `installPath` is `unknown`, " +
+        "ask the user which install path they used. Pure local introspection + cache read; no " +
+        "RPC, no fresh network call (the kickoff already did that). Never throws.",
+      inputSchema: getUpdateCommandInput.shape,
+    },
+    handler(getUpdateCommand),
   );
 
   registerTool(server, 

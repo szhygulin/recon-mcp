@@ -595,6 +595,15 @@ export const prepareTronLifiSwapInput = z.object({
 export const getVaultPilotConfigStatusInput = z.object({});
 
 /**
+ * No args — `get_update_command` returns the recommended upgrade flow for
+ * the running install path (npm-global / npx / bundled-binary / from-
+ * source / unknown), the current and latest known versions, and the
+ * "restart Claude Code after" reminder. Pure local introspection +
+ * cached npm-registry version lookup; never throws.
+ */
+export const getUpdateCommandInput = z.object({});
+
+/**
  * No args — `get_ledger_device_info` opens a USB HID transport to the
  * connected Ledger, issues the dashboard-level GET_APP_AND_VERSION APDU
  * (CLA=0xb0 INS=0x01), and returns the name/version of the currently-
@@ -1725,6 +1734,7 @@ export type PrepareBitcoinRbfBumpArgs = z.infer<typeof prepareBitcoinRbfBumpInpu
 export type PrepareBitcoinLifiSwapArgs = z.infer<typeof prepareBitcoinLifiSwapInput>;
 export type SignBtcMessageArgs = z.infer<typeof signBtcMessageInput>;
 export type GetVaultPilotConfigStatusArgs = z.infer<typeof getVaultPilotConfigStatusInput>;
+export type GetUpdateCommandArgs = z.infer<typeof getUpdateCommandInput>;
 export type GetLedgerDeviceInfoArgs = z.infer<typeof getLedgerDeviceInfoInput>;
 export type VerifyLedgerFirmwareArgs = z.infer<typeof verifyLedgerFirmwareInput>;
 export type VerifyLedgerLiveCodesignArgs = z.infer<typeof verifyLedgerLiveCodesignInput>;
