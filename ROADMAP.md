@@ -33,6 +33,10 @@
 - **MarginFi lending adapter** — DefiLlama doesn't carry MarginFi borrow-lend (only their LST product); needs an on-chain wallet-less bank reader split out from `getMarginfiPositions`. Same shape `getCompoundMarketInfo` already establishes.
 - **EigenLayer + Solana native-stake adapters** — structurally different (per-operator / per-validator rows, not per-protocol APR); each needs its own plan file before implementation.
 
+**Bitcoin tooling**
+
+- **BIP-322 message signing** — `sign_message_btc` ships BIP-137 today, which fails (or falls back to legacy-address tricks) for `bc1q` (P2WPKH) and `bc1p` (Taproot) addresses. Modern verifiers (exchanges, proof-of-reserves tools, Sparrow / Coldcard ecosystem) expect BIP-322. Deferred pending a scope probe of the Ledger BTC app's BIP-322 firmware floor + which SDK exposes the entrypoint (`@ledgerhq/hw-app-btc` vs the newer `ledger-bitcoin` v2 client) — implementing the wrong flavor (simple / full / legacy) yields valid signatures verifiers reject, and signature-flavor bugs are silent (sig generates, verifier rejects, user is confused). ([#438](https://github.com/szhygulin/vaultpilot-mcp/issues/438))
+
 **Wallet integrations**
 
 - **MetaMask Mobile** via WalletConnect v2 — alongside Ledger Live. Reduced final-mile anchor (software wallet) surfaced clearly in docs + pairing receipt. Browser-extension bridge deferred to a follow-up. ([plan](./claude-work/plan-metamask-mobile-walletconnect.md))
