@@ -87,6 +87,8 @@ import { isClearSignOnlyTx } from "../../signing/render-verification.js";
 import { getClient, verifyChainId } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
 import { resolveTokenMeta } from "../shared/token-meta.js";
+import { lookupKnownSpender } from "../../security/known-spenders.js";
+import { assertNotUnlimitedBurnApproval } from "../shared/approval.js";
 import { simulateTx } from "../simulation/index.js";
 import { isDemoMode } from "../../demo/index.js";
 import {
@@ -140,6 +142,7 @@ import type {
   PrepareWethUnwrapArgs,
   PrepareTokenSendArgs,
   PrepareRevokeApprovalArgs,
+  PrepareTokenApproveArgs,
   PrepareCustomCallArgs,
   PrepareSolanaNativeSendArgs,
   PrepareSolanaSplSendArgs,
@@ -2697,6 +2700,87 @@ export async function prepareRevokeApproval(
   });
 }
 
+/**
+ * Build an `approve(spender, amount)` tx that raises (or sets) the
+ * allowance `wallet` grants `spender` on `token`. Structured inverse of
+ * `prepare_revoke_approval`. Issue #556.
+ *
+ * `amount` is a decimal string in token units; pass `"max"` for the
+ * uint256-max unlimited allowance. Burn-address gate refuses unlimited
+ * approvals to canonical no-key recipients unless
+ * `acknowledgeBurnApproval: true` is set.
+ *
+ * Resolves a friendly spender label from the canonical `CONTRACTS` table
+ * so the description + Ledger-screen preview reads as "Approve USDC for
+ * Aave V3 Pool, 1000 USDC" rather than a raw hex address.
+ */
+export async function prepareTokenApprove(
+  args: PrepareTokenApproveArgs,
+): Promise<UnsignedTx> {
+  const wallet = args.wallet as `0x${string}`;
+  const chain = args.chain as SupportedChain;
+  const token = args.token as `0x${string}`;
+  const spender = args.spender as `0x${string}`;
+
+  const meta = await resolveTokenMeta(chain, token);
+
+  let amountWei: bigint;
+  let amountDisplay: string;
+  if (args.amount === "max") {
+    amountWei = (1n << 256n) - 1n;
+    amountDisplay = "unlimited";
+  } else if (/^\d+(\.\d+)?$/.test(args.amount)) {
+    amountWei = parseUnits(args.amount, meta.decimals);
+    amountDisplay = `${args.amount} ${meta.symbol}`;
+  } else {
+    throw new Error(
+      `\`amount\` must be a decimal string (e.g. "10" or "1.5") in ${meta.symbol} units, ` +
+        `or the literal "max" for unlimited. Got: "${args.amount}". Raw wei is NOT accepted.`,
+    );
+  }
+
+  if (amountWei === 0n) {
+    throw new Error(
+      `prepare_token_approve refuses approve(spender, 0) — that's the revoke pattern. ` +
+        `Use prepare_revoke_approval instead, which adds the "live allowance must be > 0" ` +
+        `pre-flight check and the friendly revoke description.`,
+    );
+  }
+
+  assertNotUnlimitedBurnApproval(spender, amountWei, args.acknowledgeBurnApproval);
+
+  const knownLabel = lookupKnownSpender(chain, spender);
+  const spenderDisplay = knownLabel ? `${knownLabel} (${spender})` : spender;
+
+  const { makeDurableBinding } = await import(
+    "../../security/durable-binding.js"
+  );
+  return enrichTx({
+    chain,
+    to: token,
+    data: encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [spender, amountWei],
+    }),
+    value: "0",
+    from: wallet,
+    description: `Approve ${meta.symbol} for ${spenderDisplay} on ${chain} (${amountDisplay})`,
+    decoded: {
+      functionName: "approve",
+      args: {
+        spender,
+        amount: amountDisplay,
+        symbol: meta.symbol,
+        ...(knownLabel ? { spenderLabel: knownLabel } : {}),
+      },
+    },
+    // Inv #14 — the spender selected here is the durable object the user
+    // must re-verify. Mirrors prepare_revoke_approval.
+    durableBindings: [makeDurableBinding("approval-spender-address", spender)],
+  });
+}
+
 export async function prepareCustomCall(
   args: PrepareCustomCallArgs,
 ): Promise<UnsignedTx> {
@@ -2718,6 +2802,8 @@ export async function prepareCustomCall(
     args: args.args ?? [],
     value: args.value,
     abi: args.abi,
+    acknowledgeBurnApproval: args.acknowledgeBurnApproval,
+    acknowledgeRawApproveBypass: args.acknowledgeRawApproveBypass,
   });
   // Stamp the affirmative-ack on the tx so `assertTransactionSafe`
   // (preview/send time) recognizes this handle as the explicit
@@ -2727,49 +2813,6 @@ export async function prepareCustomCall(
   return enrichTx(built);
 }
 
-/**
- * Resolve a friendly label for a spender address from the canonical
- * `CONTRACTS` table on the given chain. Returns undefined for arbitrary
- * (non-protocol) spender addresses. Mirrors the same lookup the read-
- * side `get_token_allowances` tool uses for consistent labeling across
- * the read + revoke surfaces.
- */
-function lookupKnownSpender(
-  chain: SupportedChain,
-  spender: `0x${string}`,
-): string | undefined {
-  const c = CONTRACTS[chain] as Record<string, Record<string, string>> | undefined;
-  if (!c) return undefined;
-  const target = spender.toLowerCase();
-  for (const [protocol, addrs] of Object.entries(c)) {
-    if (protocol === "tokens") continue;
-    if (typeof addrs !== "object" || addrs === null) continue;
-    for (const [name, addr] of Object.entries(addrs)) {
-      if (typeof addr !== "string" || addr.toLowerCase() !== target) continue;
-      const protoLabel = (() => {
-        switch (protocol) {
-          case "aave":
-            return "Aave V3";
-          case "uniswap":
-            return "Uniswap V3";
-          case "lido":
-            return "Lido";
-          case "eigenlayer":
-            return "EigenLayer";
-          case "compound":
-            return "Compound V3";
-          case "morpho":
-            return "Morpho Blue";
-          default:
-            return protocol.charAt(0).toUpperCase() + protocol.slice(1);
-        }
-      })();
-      const niceName = name.charAt(0).toUpperCase() + name.slice(1);
-      return `${protoLabel} ${niceName}`;
-    }
-  }
-  return undefined;
-}
 
 // ----- Send + status -----
 

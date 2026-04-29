@@ -239,6 +239,7 @@ import {
   prepareWethUnwrap,
   prepareTokenSend,
   prepareRevokeApproval,
+  prepareTokenApprove,
   prepareCustomCall,
   previewSend,
   previewSolanaSend,
@@ -344,6 +345,7 @@ import {
   prepareWethUnwrapInput,
   prepareTokenSendInput,
   prepareRevokeApprovalInput,
+  prepareTokenApproveInput,
   prepareCustomCallInput,
   previewSendInput,
   previewSolanaSendInput,
@@ -4323,6 +4325,16 @@ async function main() {
       inputSchema: prepareRevokeApprovalInput.shape,
     },
     txHandler("prepare_revoke_approval", prepareRevokeApproval)
+  );
+
+  registerTool(server,
+    "prepare_token_approve",
+    {
+      description:
+        "Build an unsigned `approve(spender, amount)` transaction that raises (or sets) an ERC-20 allowance — the structured inverse of `prepare_revoke_approval`. `amount` is a decimal in token units (e.g. \"10\" for 10 USDC) or the literal \"max\" for unlimited. Refuses unlimited approvals to canonical no-key addresses (`0x0…0`, `0x0…dEaD`, `0xdEaD…0`, `0xff…ff`) with `BURN_ADDRESS_UNLIMITED_APPROVAL`; override via `acknowledgeBurnApproval: true` only when the user explicitly asked for that exact spender + unlimited amount. Resolves a friendly spender label from the canonical CONTRACTS table so the description + Ledger preview reads as \"Approve USDC for Aave V3 Pool, 1000 USDC\" rather than a raw hex address. EVM-only. Prefer protocol-specific `prepare_*` (e.g. `prepare_aave_supply`) when the approval is bundled with a downstream action — those route through the shared `buildApprovalTx` helper which handles the USDT-style reset pattern in one step. Use this tool for one-off allowance-setting that doesn't fit a bundled prepare.",
+      inputSchema: prepareTokenApproveInput.shape,
+    },
+    txHandler("prepare_token_approve", prepareTokenApprove)
   );
 
   registerTool(server,

@@ -312,6 +312,104 @@ describe("buildCustomCall — encoding", () => {
   });
 });
 
+// Minimal ERC-20 fragment — only `approve` is needed for the redirect gate.
+const ERC20_APPROVE_ABI = [
+  {
+    type: "function",
+    name: "approve",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "spender", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+] as const;
+
+const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as const;
+const RANDOM_EOA = "0x000000000000000000000000000000000000beef" as const;
+const UNISWAP_ROUTER02 = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45" as const;
+const UINT256_MAX = (1n << 256n) - 1n;
+
+describe("buildCustomCall — approve-route refusal (issue #556)", () => {
+  it("refuses approve(...) and points to prepare_token_approve when spender is unknown", async () => {
+    await expect(
+      buildCustomCall({
+        wallet: WALLET,
+        chain: "ethereum",
+        contract: USDC,
+        fn: "approve",
+        args: [RANDOM_EOA, "1000000"],
+        value: "0",
+        abi: ERC20_APPROVE_ABI as unknown as readonly unknown[],
+      }),
+    ).rejects.toThrow(/APPROVE_ROUTE_VIA_DEDICATED_TOOL[\s\S]*prepare_token_approve/);
+  });
+
+  it("refuses approve(...) and points to protocol-specific prepare_* when spender is a known protocol", async () => {
+    await expect(
+      buildCustomCall({
+        wallet: WALLET,
+        chain: "ethereum",
+        contract: USDC,
+        fn: "approve",
+        args: [UNISWAP_ROUTER02, UINT256_MAX.toString()],
+        value: "0",
+        abi: ERC20_APPROVE_ABI as unknown as readonly unknown[],
+      }),
+    ).rejects.toThrow(/APPROVE_ROUTE_VIA_DEDICATED_TOOL[\s\S]*Uniswap V3/);
+  });
+
+  it("allows approve(...) when acknowledgeRawApproveBypass=true (escape hatch)", async () => {
+    const tx = await buildCustomCall({
+      wallet: WALLET,
+      chain: "ethereum",
+      contract: USDC,
+      fn: "approve",
+      args: [RANDOM_EOA, "1000000"],
+      value: "0",
+      abi: ERC20_APPROVE_ABI as unknown as readonly unknown[],
+      acknowledgeRawApproveBypass: true,
+    });
+    expect(tx.data.startsWith("0x095ea7b3")).toBe(true);
+  });
+
+  it("burn-address gate still fires on the override path (defense in depth)", async () => {
+    await expect(
+      buildCustomCall({
+        wallet: WALLET,
+        chain: "ethereum",
+        contract: USDC,
+        fn: "approve",
+        args: ["0xdead000000000000000000000000000000000000", UINT256_MAX.toString()],
+        value: "0",
+        abi: ERC20_APPROVE_ABI as unknown as readonly unknown[],
+        acknowledgeRawApproveBypass: true,
+      }),
+    ).rejects.toThrow(/BURN_ADDRESS_UNLIMITED_APPROVAL/);
+  });
+
+  it("does not fire on non-approve calldata (Timelock schedule)", async () => {
+    const tx = await buildCustomCall({
+      wallet: WALLET,
+      chain: "ethereum",
+      contract: TIMELOCK,
+      fn: "schedule",
+      args: [
+        "0x0000000000000000000000000000000000000001",
+        "0",
+        "0x",
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "172800",
+      ],
+      value: "0",
+      abi: TIMELOCK_ABI as unknown as readonly unknown[],
+    });
+    expect(tx.data.startsWith("0x01d5062a")).toBe(true);
+  });
+});
+
 describe("canonical-dispatch wiring (#483 / PR #489)", () => {
   it("is a no-op for prepare_custom_call regardless of `to`", () => {
     // The wired txHandler walks to the action leg and asserts canonical
