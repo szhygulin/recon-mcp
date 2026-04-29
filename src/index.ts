@@ -95,6 +95,9 @@ import {
 import { compareYields } from "./modules/yields/index.js";
 import { compareYieldsInput } from "./modules/yields/schemas.js";
 
+import { readContract } from "./modules/read-contract/index.js";
+import { readContractInput } from "./modules/read-contract/schemas.js";
+
 import {
   getStakingPositions,
   getStakingRewards,
@@ -2164,6 +2167,26 @@ async function main() {
       },
     },
     handler((a) => getContractAbiHandler(a))
+  );
+
+  registerTool(server,
+    "read_contract",
+    {
+      description:
+        "READ-ONLY — call any view/pure function on any verified-ABI EVM contract. Mirrors Etherscan's \"Read Contract\" tab and the symmetric counterpart of `prepare_custom_call`. Use for the long tail of on-chain reads no protocol-specific tool covers: OZ AccessControl role members (`getRoleMember(bytes32,uint256)`, `hasRole(bytes32,address)`), governance proposal state, oracle prices, vault share prices, Safe owner enumeration, ERC-1155 balances, etc. " +
+        "ABI source: pass `abi: [...]` inline (preferred when you have the project's published artifact) OR omit it and the tool fetches via Etherscan V2 — refuses on unverified contracts with NO raw-bytecode fallback. Proxies are followed once to the implementation when Etherscan exposes the link. " +
+        "Pass `fn` as a name (\"getRoleMember\") when unambiguous, or as the full signature (\"getRoleMember(bytes32,uint256)\") to disambiguate overloads. `args` types are validated by viem's encoder — uint256 expects a decimal string, address expects 0x-prefixed hex, bytes32 expects 0x-prefixed 64-hex (e.g. an OZ role hash like keccak256(\"EXECUTOR_ROLE\") = 0xd8aa0f3194971a2a116679f7c2090f6939c8d4e01a2a8d7e41d55e5351469482). " +
+        "Refuses on functions whose `stateMutability` is not `view` or `pure` — `eth_call` would simulate a state-changing function and return a hypothetical result that has not occurred on-chain. Use `prepare_custom_call` for writes.",
+      inputSchema: readContractInput.shape,
+      annotations: {
+        title: "Read Contract",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    handler(readContract)
   );
 
   registerTool(server,
