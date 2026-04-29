@@ -1939,6 +1939,13 @@ async function main() {
       description:
         "Fetch all Aave V3 lending/borrowing positions for a wallet. Returns collateral, debt (both in USD and per-asset), health factor, LTV, and liquidation threshold across Ethereum and Arbitrum.",
       inputSchema: getLendingPositionsInput.shape,
+      annotations: {
+        title: "Get Lending Positions",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getLendingPositions)
   );
@@ -1949,6 +1956,13 @@ async function main() {
       description:
         "Fetch all Uniswap V3 liquidity-provider positions for a wallet. Returns token pair, current token amounts, fee tier, in-range status, uncollected fees (lower bound), and an approximate impermanent-loss estimate.",
       inputSchema: getLpPositionsInput.shape,
+      annotations: {
+        title: "Get LP Positions",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getLpPositions)
   );
@@ -1969,6 +1983,13 @@ async function main() {
         "still surfaces, and the absence of a protocol from the at-risk list is never " +
         "silently wrong. Issue #427 (was Aave-V3-only despite generic name).",
       inputSchema: getHealthAlertsInput.shape,
+      annotations: {
+        title: "Get Health Alerts",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getHealthAlerts)
   );
@@ -1979,6 +2000,13 @@ async function main() {
       description:
         "Simulate the effect of adding or removing collateral, or borrowing/repaying debt on a lending position. Returns the projected health factor and collateral/debt totals. Supports Aave V3 (default), Compound V3 (pass `protocol: \"compound-v3\"` + `market` Comet address), and Morpho Blue (pass `protocol: \"morpho-blue\"` + `marketId` bytes32). No transaction is sent.",
       inputSchema: simulatePositionChangeInput.shape,
+      annotations: {
+        title: "Simulate Position Change",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(simulatePositionChange)
   );
@@ -1989,6 +2017,13 @@ async function main() {
       description:
         "Fetch Safe (Gnosis Safe) multisig accounts for an EVM owner address and/or by Safe address. Returns per-Safe threshold, owners, contract version, native balance, pending and recently-executed transactions, and risk notes (single-signer threshold, all-required threshold, Safe Modules, Safe Guards). Pass `signerAddress` to discover every Safe the wallet is an owner on, OR `safeAddress` to look up one Safe directly (or both — results are unioned and deduped). `chains` defaults to `[\"ethereum\"]`; pass an explicit array to query other supported EVM chains. Requires SAFE_API_KEY (https://developer.safe.global/) — Safe Transaction Service authenticates every request. ERC-20 balances are NOT enumerated here; pair with `get_token_balance` per token or `get_portfolio_summary` against the Safe address.",
       inputSchema: getSafePositionsInput.shape,
+      annotations: {
+        title: "Get Safe Positions",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getSafePositions)
   );
@@ -1999,6 +2034,13 @@ async function main() {
       description:
         "Propose a new Safe (Gnosis Safe) multisig transaction. Wraps an inner action — either a previous prepare_*'s `handle` (recommended; pulls to/value/data from server-side state) OR raw `to / value / data` — into a SafeTx, computes its EIP-712 hash, and returns an UnsignedTx that calls `Safe.approveHash(safeTxHash)`. The proposer broadcasts that approveHash via `send_transaction`; once mined, call `submit_safe_tx_signature` to post the proposal to Safe Transaction Service. Uses the on-chain approveHash flow (NOT off-chain `eth_signTypedData_v4`) — preserves the WalletConnect anti-Permit2-phishing scope. Default `operation` is CALL (0); DELEGATECALL (1) is high-risk and is flagged in the receipt.",
       inputSchema: prepareSafeTxProposeInput.shape,
+      annotations: {
+        title: "Prepare Safe Tx Propose",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_safe_tx_propose", prepareSafeTxPropose)
   );
@@ -2009,6 +2051,13 @@ async function main() {
       description:
         "Add an additional approveHash signature to a Safe (Gnosis Safe) transaction that's ALREADY in the queue (proposed elsewhere — Safe Web UI, another VaultPilot install, or a co-signer). Returns an UnsignedTx that calls `Safe.approveHash(safeTxHash)` for the given signer; broadcast via `send_transaction`, then call `submit_safe_tx_signature` to push the new signature to Safe Transaction Service. Use `prepare_safe_tx_propose` instead when you're proposing a NEW Safe tx.",
       inputSchema: prepareSafeTxApproveInput.shape,
+      annotations: {
+        title: "Prepare Safe Tx Approve",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_safe_tx_approve", prepareSafeTxApprove)
   );
@@ -2019,6 +2068,13 @@ async function main() {
       description:
         "After the on-chain `approveHash` tx has been mined (broadcast via `send_transaction` from the receipt of `prepare_safe_tx_propose` or `prepare_safe_tx_approve`), post the signature to Safe Transaction Service. Verifies on-chain that `approvedHashes(signer, safeTxHash) != 0` first — refuses to post when the underlying approval doesn't exist yet. Auto-detects whether to call `proposeTransaction` (creates a new queue entry — when this server proposed the tx) or `confirmTransaction` (adds a signature to an existing entry — when another client proposed it). Returns the Safe Web UI deep-link so the user / co-signers can see the queue state.",
       inputSchema: submitSafeTxSignatureInput.shape,
+      annotations: {
+        title: "Submit Safe Tx Signature",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(submitSafeTxSignature)
   );
@@ -2029,6 +2085,13 @@ async function main() {
       description:
         "Build the final on-chain `execTransaction` UnsignedTx that lands a Safe (Gnosis Safe) multisig payload. The executor doesn't need to have pre-approved on-chain — when `msg.sender` is an owner, the Safe contract treats their inline `(r=msg.sender, s=0, v=1)` signature as implicit consent. So one of the threshold \"signatures\" can be the executor themselves; the rest come from the on-chain `approvedHashes` registry filled by previous `prepare_safe_tx_propose` / `prepare_safe_tx_approve` calls. Refuses to build the tx when the threshold isn't met (which would just revert at execute time). Resolves the SafeTx body from the local store first, falling back to Safe Transaction Service. Returns an UnsignedTx the executor broadcasts via `send_transaction` — the OUTER tx sends 0 ETH (the inner value, if any, is paid by the Safe from its own balance during the inner CALL).",
       inputSchema: prepareSafeTxExecuteInput.shape,
+      annotations: {
+        title: "Prepare Safe Tx Execute",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_safe_tx_execute", prepareSafeTxExecute)
   );
@@ -2040,6 +2103,13 @@ async function main() {
       description:
         "Check Etherscan verification status, EIP-1967 proxy pattern, implementation/admin slots, and the presence of dangerous admin functions (mint, pause, upgradeTo, etc.) for a given contract.",
       inputSchema: checkContractSecurityInput.shape,
+      annotations: {
+        title: "Check Contract Security",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler((a) => checkContractSecurityHandler(a))
   );
@@ -2050,6 +2120,13 @@ async function main() {
       description:
         "Enumerate privileged roles on a contract (Ownable.owner, AccessControl hints) and classify holders as EOA, Gnosis Safe multisig, or TimelockController.",
       inputSchema: checkPermissionRisksInput.shape,
+      annotations: {
+        title: "Check Permission Risks",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler((a) => checkPermissionRisksHandler(a))
   );
@@ -2060,6 +2137,13 @@ async function main() {
       description:
         "Return a 0-100 risk score for a DeFi protocol, combining TVL size, 30-day TVL trend, contract age, audit count (DefiLlama), and Immunefi bug-bounty status. Higher = safer. The `protocol` argument is the DefiLlama slug — works for any chain DefiLlama covers, not just EVM (Solana: `marinade-finance`, `jito`, `kamino`, `marginfi`, `drift`; Tron: `justlend`, `sun-io`; EVM: `aave-v3`, `uniswap-v3`, etc.). Issue #243.",
       inputSchema: getProtocolRiskScoreInput.shape,
+      annotations: {
+        title: "Get Protocol Risk Score",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler((a) => getProtocolRiskScoreHandler(a))
   );
@@ -2071,6 +2155,13 @@ async function main() {
         "READ-ONLY — fetch a verified contract's ABI on any Etherscan-V2-supported EVM chain (Ethereum, Arbitrum, Polygon, Base, Optimism). Wraps the same `getsourcecode` path `prepare_custom_call` and `check_contract_security` use, so the call carries the user's `ETHERSCAN_API_KEY`, the `MAX_RESPONSE_BYTES` cap, the `sanitizeContractName` discipline, and the 24h cache. Returns `{ chain, address, isVerified, isProxy, implementation?, contractName?, compilerVersion?, abi?, abiSource }`. When the target is a proxy and `followProxy=true` (default), follows once to the implementation's ABI and reports `abiSource: \"proxy-implementation\"`; when `followProxy=false` or the implementation isn't verified, returns the proxy's own ABI with `abiSource: \"proxy-target\"` plus a `proxyFollowSkippedReason` explaining why. Unverified contracts return `{ isVerified: false }` and no ABI — ask the user to paste the ABI inline if they have it from the project's published artifacts. " +
         "ALWAYS prefer this tool over a generic WebFetch against `etherscan.io`/`api.etherscan.io` for ABI lookups in this MCP's surface — that path doesn't carry the API key (the env var lives in the MCP process, not the agent's harness), loses the size cap + verified-vs-unverified discipline, loses the 24h cache, and pulls the response through the agent's web layer with no sanitization for attacker-controlled fields like `ContractName`. Issue #495.",
       inputSchema: getContractAbiInput.shape,
+      annotations: {
+        title: "Get Contract ABI",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler((a) => getContractAbiHandler(a))
   );
@@ -2084,6 +2175,13 @@ async function main() {
         "Filters: `chains` (default = all EVM mainnets + Solana); `minTvlUsd` (rows with `tvl: null` are NOT filtered — no data ≠ tiny market); `riskCeiling` (only show protocols at LEAST this safe; rows with `riskScore: null` are NOT filtered). Empty result returns `emptyResultReason` explaining whether nothing matched at all vs. everything filtered out. " +
         "AGENT BEHAVIOR: this tool surfaces data; it does NOT pick. Surface the comparison verbatim. Do NOT pick a 'best' option for the user — they decide. The plan's positioning is explicit: 'Here are current supply rates' is right; 'I recommend depositing in X' is OUT.",
       inputSchema: compareYieldsInput.shape,
+      annotations: {
+        title: "Compare Yields",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler((a) => compareYields(a as Parameters<typeof compareYields>[0]))
   );
@@ -2095,6 +2193,13 @@ async function main() {
       description:
         "Fetch Lido (stETH/wstETH) and EigenLayer staking positions for a wallet across supported chains. Returns per-protocol staked amounts, USD value, APR, and EigenLayer delegation target.",
       inputSchema: getStakingPositionsInput.shape,
+      annotations: {
+        title: "Get Staking Positions",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getStakingPositions)
   );
@@ -2105,6 +2210,13 @@ async function main() {
       description:
         "Estimate staking rewards earned over a given period (7d/30d/90d/1y) using the current APR as a proxy. This is an estimate, not an on-chain rewards query.",
       inputSchema: getStakingRewardsInput.shape,
+      annotations: {
+        title: "Get Staking Rewards",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getStakingRewards)
   );
@@ -2115,6 +2227,13 @@ async function main() {
       description:
         "Project annual yield on a hypothetical staking amount for Lido or EigenLayer using current APRs. Use this for 'what would I earn if I staked X ETH?' questions before the user commits capital. Returns the protocol, input amount, APR used, and projected annual rewards denominated in the same asset. Purely forward-looking — does NOT read any wallet or on-chain position; pair with `get_staking_positions` for actual holdings.",
       inputSchema: estimateStakingYieldInput.shape,
+      annotations: {
+        title: "Estimate Staking Yield",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(estimateStakingYield)
   );
@@ -2126,6 +2245,13 @@ async function main() {
       description:
         "One-shot cross-chain portfolio aggregation for one or more wallets. Fans out across Ethereum/Arbitrum/Polygon/Base/Optimism (unless `chains` narrows it) and assembles: native ETH/MATIC balances, top ERC-20 holdings, Aave V3 and Compound V3 lending positions, Uniswap V3 LP positions, and Lido/EigenLayer staking — each valued in USD via DefiLlama. Pass `tronAddress` (base58, prefix T) alongside a single `wallet` to fold TRX + TRC-20 balances plus TRON staking into the same totals; `breakdown.tron` holds the TRON slice, `tronUsd` the subtotal, and `tronStakingUsd` the staking portion. Pass `solanaAddress` (base58, 43-44 chars) to fold SOL + SPL token balances into the totals; `breakdown.solana` holds the Solana slice and `solanaUsd` the subtotal (Solana staking lands in a follow-up phase). Returns a `totalUsd`, a `breakdown` by category and by chain, and the raw per-protocol position arrays. Default tool for 'what's in my portfolio?' / 'total value' questions; prefer it over calling each per-protocol reader separately.",
       inputSchema: getPortfolioSummaryInput.shape,
+      annotations: {
+        title: "Get Portfolio Summary",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getPortfolioSummary)
   );
@@ -2136,6 +2262,13 @@ async function main() {
       description:
         "Decompose what changed in the user's portfolio over a time window — the AI version of an account statement. Returns the top-level USD change, broken down by chain and per-asset into: price moves (USD impact of price change on what was held the entire window), net deposits / withdrawals (sum of priced external transfers), and 'other' (the residual — interest accrual, swap legs, MEV, anything not cleanly attributable to price or external flow). Supports `wallet` (EVM), `tronAddress`, `solanaAddress`, `bitcoinAddress` — at least one required. Window: 24h / 7d / 30d / ytd. Returns BOTH a structured envelope AND a pre-rendered narrative string suitable for verbatim relay (control via `format`). Distinct from `get_portfolio_summary` (which gives current state) and `get_pnl_summary` (which gives the single net-PnL number) — this tool gives narrative decomposition. v1 caveats: history fetcher caps at ~50 items per chain, so very active wallets may under-count flows (response surfaces `truncated: true`); DeFi-position interest accrual collapses into the `otherEffectUsd` residual rather than its own bucket; Solana program-interaction txs (Jupiter swaps, MarginFi actions, etc.) are skipped from net-flow accounting (their balance deltas mix swap legs); Bitcoin shows current balance only (no in-window flow accounting yet).",
       inputSchema: getPortfolioDiffInput.shape,
+      annotations: {
+        title: "Get Portfolio Diff",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getPortfolioDiff)
   );
@@ -2146,6 +2279,13 @@ async function main() {
       description:
         "Generate a shareable, anonymized JSON snapshot of the user's portfolio STRUCTURE — protocol + asset + percentage of total — with NO addresses, NO absolute USD values, NO transaction hashes. Use this when the user wants to share their setup (\"here's my Solana yield-farming strategy\") with another VaultPilot user. Pass at least one of `wallet` / `tronAddress` / `solanaAddress` / `bitcoinAddress` / `litecoinAddress`, plus a `name` and optional `description` / `authorLabel` / `riskProfile`. The recipient pastes the returned `jsonString` into their own VaultPilot via `import_strategy` for read-only inspection. v1 emits JSON only; URL hosting is deferred to v2 (depends on hosted-MCP infra). Privacy guard: a regex scan runs on the output before emit and refuses (RedactionError) if any EVM 0x address, TRON T-address, Solana base58 pubkey, 64-hex tx hash, or Solana signature is detected anywhere in the JSON — including in user-supplied free-form fields. Percentages are rounded to 1 decimal to avoid wallet-fingerprint leakage. The strategy describes structure only; recipients cannot replicate amounts or addresses. Read-only — no signing, no broadcast.",
       inputSchema: shareStrategyInput.shape,
+      annotations: {
+        title: "Share Strategy",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(shareStrategy)
   );
@@ -2156,6 +2296,13 @@ async function main() {
       description:
         "Parse and validate a shared-strategy JSON produced by `share_strategy` (someone else's, or one the user generated earlier). Pass either the stringified form or the parsed object via `json`. Returns the validated `SharedStrategy` for read-only inspection — protocol allocations, per-position percentages, optional health-factor / fee-tier / APR metadata. The same redaction scan that runs on emit also runs on import — addresses or tx hashes anywhere in the imported JSON cause a RedactionError, so a malicious sender cannot smuggle a wallet identifier through fields the recipient might not eyeball. Strict shape validation: unknown fields tolerated (forward-compat for v2 schema additions) but required fields must be present and well-typed. Read-only — no on-chain side effect, no signing.",
       inputSchema: importStrategyInput.shape,
+      annotations: {
+        title: "Import Strategy",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(importStrategy)
   );
@@ -2166,6 +2313,13 @@ async function main() {
       description:
         "Generate a time-bound, revocable token that lets someone else read a specific subset of the user's wallets via their own VaultPilot instance. The classic use case: hand the token to a financial advisor or experienced friend so they can look at the user's DeFi positions without being given signing access. Pass `wallets` (at least one of `evm` / `tron` / `solana` / `btc` arrays — addresses validated against per-chain regex), optional `name` (auto-defaults to `share-XXXX`), `expiresIn` (`1h` / `24h` / `7d` / `30d`, default `24h`), and `scope` (`read-portfolio` only in v1). Returns the `token` ONCE — the issuer-side store keeps only sha256 of the token, so a recipient who paste-bombs the token into a public channel cannot have it re-emitted. Recipient runs `import_readonly_token` to decode and then queries the wallets via standard portfolio reads (`get_portfolio_summary`, `get_lending_positions`, etc.) using their own RPCs. Model A — the token is structured intent, NOT a security boundary: anyone holding it can query the listed addresses, but anyone could query those addresses without it (chain reads are public). Revocation (`revoke_readonly_invite`) is issuer-side bookkeeping; it doesn't recall a token already in the wild. Use `list_readonly_invites` to see what's outstanding. Read-only — no signing, no broadcast.",
       inputSchema: generateReadonlyLinkInput.shape,
+      annotations: {
+        title: "Generate Readonly Link",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
     },
     handler(generateReadonlyLink)
   );
@@ -2176,6 +2330,13 @@ async function main() {
       description:
         "Decode a `vp1.…` read-only share token (generated by someone else's `generate_readonly_link`) into the embedded wallet bundle. Accepts either the raw token or an http(s) URL containing a `?t=vp1.…` / `#t=vp1.…` parameter. Returns `{ wallets, scope, name, issuedAt, expiresAt, id }` — the recipient agent then passes those wallet addresses to standard portfolio reads (`get_portfolio_summary`, `get_lending_positions`, `get_token_allowances`, `get_transaction_history`, etc.) using the recipient's own configured RPCs. Refuses expired tokens with a clear error pointing the user back at the issuer. v1 stores nothing recipient-side — the agent juggles addresses in conversation; persistent recipient-side state is deferred. Read-only — no signing, no broadcast.",
       inputSchema: importReadonlyTokenInput.shape,
+      annotations: {
+        title: "Import Readonly Token",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(importReadonlyToken)
   );
@@ -2186,6 +2347,13 @@ async function main() {
       description:
         "List the read-only share tokens the user has generated. By default returns only ACTIVE invites (not revoked, not expired); pass `includeInactive: true` to see history. Each entry returns `{ id, name, scope, issuedAt, expiresAt, revokedAt, expired, active, walletCounts, totalAddresses }` — note the addresses themselves are NOT re-surfaced here, only counts per chain (the raw token isn't stored either, only its sha256 hash). Pair with `revoke_readonly_invite({ name })` to invalidate an invite. Read-only.",
       inputSchema: listReadonlyInvitesInput.shape,
+      annotations: {
+        title: "List Readonly Invites",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(listReadonlyInvites)
   );
@@ -2196,6 +2364,13 @@ async function main() {
       description:
         "Revoke a previously-generated read-only share invite by `name`. Marks the issuer-side record as revoked at the current time. Important caveat (Model A): this is issuer-side BOOKKEEPING — it does NOT recall the token already in the recipient's hands. Anyone holding the raw token can still query the listed addresses (chain reads are public regardless of whether the issuer wants the share to continue). Genuine recall requires Model B (hosted enforcement endpoint), deferred. Returns `{ revoked: { id, name, revokedAt } }` on success; refuses if the name is unknown or already revoked.",
       inputSchema: revokeReadonlyInviteInput.shape,
+      annotations: {
+        title: "Revoke Readonly Invite",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(revokeReadonlyInvite)
   );
@@ -2210,6 +2385,13 @@ async function main() {
         "Returns BOTH a structured envelope AND a pre-rendered markdown narrative (control via `format`). Sub-tool failures degrade to per-section `notes` rather than aborting (e.g. a Solana RPC outage doesn't void the EVM briefing). " +
         "Two sections punted at v1 with explicit `available: false` reasons rather than silent omission: `bestStablecoinYield` (depends on the unshipped `compare_yields` tool) and `liquidationCalendar` (depends on the unshipped `schedule_tx` tool). Distinct from `get_portfolio_summary` (current state only) and `get_portfolio_diff` (window decomposition only) — this tool is the conversational AI rollup that sits on top of both.",
       inputSchema: getDailyBriefingInput.shape,
+      annotations: {
+        title: "Get Daily Briefing",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getDailyBriefing)
   );
@@ -2220,6 +2402,13 @@ async function main() {
       description:
         "Wallet-level net PnL over a preset time window across EVM (Ethereum/Arbitrum/Polygon/Base/Optimism), TRON, and Solana. Returns the headline `pnlUsd` (= ending value − starting value − net user contribution), with per-chain and per-asset breakdown. Math: starting quantity per asset is reconstructed as `currentQty − netFlowQty` (clamped at zero when negative — user received the asset entirely within the window), priced at the period's start via DefiLlama historical, then `pnlUsd = walletValueChange − (inflowsUsd − outflowsUsd)`. Use this for the simple 'how much did I make?' question; pair with `get_portfolio_diff` for the same window when the user wants the price-vs-quantity decomposition narrative. Periods: 24h / 7d / 30d / ytd / inception (capped at 365d in v1 — \"since wallet creation\" is not literal because the underlying history fetcher caps at ~50 items per chain). At least one of `wallet` / `tronAddress` / `solanaAddress` is required. v1 caveats: wallet token balances only (DeFi position interest accrual collapses into the residual); gas costs not subtracted; Solana program-interaction txs (Jupiter swaps, MarginFi actions, native staking actions) are skipped from net-flow accounting because their balance deltas mix intra-tx swap legs; truncation flagged when history caps. Bitcoin is intentionally NOT supported in v1 — the BTC path lacks in-window flow accounting and a price-effect-only number would be misleading.",
       inputSchema: getPnlSummaryInput.shape,
+      annotations: {
+        title: "Get PnL Summary",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getPnlSummary)
   );
@@ -2230,6 +2419,13 @@ async function main() {
       description:
         "Narrative analysis of a single confirmed transaction. Walks what actually happened: top-level method/instruction call, decoded ERC-20/TRC-20 Transfer + Approval events (or Solana SPL balance deltas), per-token balance changes for the wallet, fee paid, and a heuristics block flagging surprises (failed status, unlimited approval, dust outflow, transfer-to-zero burn, high-gas vs. moved value, unexpected no-state-change). Returns BOTH a structured envelope and a pre-rendered narrative string for verbatim relay (control via `format`). Distinct from `get_transaction_status` (just confirmation status) and the prepare→preview→send pipeline (forward-looking). Useful for debugging (\"why did this swap return less than the quote?\"), learning (\"what does this contract call actually do?\"), forensics (\"what addresses did this tx touch?\"), and address-poisoning triage. v1 covers EVM (Ethereum/Arbitrum/Polygon/Base/Optimism), TRON, and Solana — Bitcoin is deferred. v1 reads top-level execution only; internal calls / CPI / DeFi compositions surface via balance & event effects rather than as separate step rows. Pricing is current spot via DefiLlama (not historical at tx time). Optional `wallet` arg recomputes balance/approval changes from THAT wallet's perspective — defaults to tx sender. Read-only — no signing, no broadcast.",
       inputSchema: explainTxInput.shape,
+      annotations: {
+        title: "Explain Tx",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(explainTx)
   );
@@ -2240,6 +2436,13 @@ async function main() {
       description:
         "Fetch a wallet's recent on-chain transaction history on a single chain, merged across external (user-initiated) txs, ERC-20/TRC-20 token transfers, and internal (contract-initiated) txs. Results are sorted newest-first, capped at `limit` (default 25, max 50), and annotated with decoded method names (via 4byte.directory) and historical USD values at the time of each tx (via DefiLlama). Supports Ethereum/Arbitrum/Polygon/Base/Optimism via Etherscan, TRON via TronGrid, and Solana via the configured Solana RPC. On Solana, results include a fourth item type `program_interaction` for DeFi calls (Jupiter swaps, Marinade/Jito liquid staking, Raydium/Orca swaps, native validator staking, or any unknown program) with balance-delta summaries showing net SOL + SPL changes for the wallet across the tx — more useful than raw instruction data for 'what happened to my wallet?'. `includeInternal` has no meaning for TRON (silently ignored) or Solana (doesn't have an 'internal' concept — CPI effects are captured inside program_interaction deltas). Use this to answer 'what did I do last week?', 'show me my recent swaps', or 'did I already approve X?' without the user pasting tx hashes. Read-only — no signing, no broadcast. Items may carry an optional `suspectedPoisoning` field flagging address-poisoning heuristics: `zero_amount_transfer` (USDC `transferFrom` 0-amount exploit, chain-agnostic), `vanity_suffix_lookalike` (dust tx whose counterparty mimics another counterparty's first-4 + last-4 hex chars; `mimics` field names the matched address), and `self_suffix_lookalike` (counterparty mimics the wallet itself). EVM-only for the suffix rules. AGENT BEHAVIOR: this field is for you, NOT for the user. Do NOT include flagged entries in the user-facing summary — they're noise that crowds out real activity (a single poisoned wallet can have dozens of dust-lookalike entries pinned at the top by recency). Filter them out silently; if the user asks 'is that everything?' or you want to be transparent about the filter, mention briefly like 'hid N suspected-poisoning entries (use the raw response if you want to inspect them)'. Surface a flagged entry only when the user explicitly asks about a specific tx hash that happens to match, or about address-poisoning attempts on this wallet. The point of the flag is to keep poisoning data accessible to your reasoning (e.g. when validating a future `prepare_*` recipient against the wallet's history) WITHOUT polluting chat with scam noise.",
       inputSchema: getTransactionHistoryInput.shape,
+      annotations: {
+        title: "Get Transaction History",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getTransactionHistory)
   );
@@ -2254,6 +2457,13 @@ async function main() {
         "PROTOCOL ROUTING (issue #411): without `exchanges` / `bridges`, LiFi picks the best-output route across all aggregators (Sushi, Uniswap, 1inch, Paraswap, etc.). When the user names a specific DEX (\"swap on 1inch\"), pass `exchanges: [\"1inch\"]` so LiFi only routes via that DEX — without the filter, the prepare receipt would silently use a different protocol. The response's `routedVia.tool` is the actually-resolved route; surface it to the user before they sign. " +
         "No transaction is built by this tool.",
       inputSchema: getSwapQuoteInput.shape,
+      annotations: {
+        title: "Get Swap Quote",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getSwapQuote)
   );
@@ -2269,6 +2479,13 @@ async function main() {
         "INTERMEDIATE-CHAIN BRIDGES: NEAR Intents (notably for ETH→TRON USDT routes) settles on NEAR and releases on the final chain via an off-chain relayer, so its on-chain `destinationChainId` is NEAR's pseudo-id (1885080386571452) rather than the user's requested chain. The defense allows this ONLY for an explicit hardcoded (bridge name, intermediate chain ID) pair held as a source-code constant — not loaded from env / config / LiFi response — so a compromised aggregator can't claim arbitrary chains as 'intermediate'. Receiver-side checks (non-EVM sentinel, etc.) still apply unchanged. " +
         "The returned tx can be sent via `send_transaction`.",
       inputSchema: prepareSwapInput.shape,
+      annotations: {
+        title: "Prepare Swap",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_swap", prepareSwap)
   );
@@ -2287,6 +2504,13 @@ async function main() {
           "`send_transaction` can forward to Ledger Live. Single-hop only in v1 — multi-hop routes " +
           "through an intermediate asset (e.g. via WETH) fall back to `prepare_swap`.",
       inputSchema: prepareUniswapSwapInput.shape,
+      annotations: {
+        title: "Prepare Uniswap Swap",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_uniswap_swap", prepareUniswapSwap)
   );
@@ -2298,6 +2522,13 @@ async function main() {
       description:
         "Initiate a WalletConnect v2 pairing session with Ledger Live. Returns a URI and ASCII QR code — paste into Ledger Live's WalletConnect screen to complete pairing. The session persists for future transactions. EVM chains only; for TRON use `pair_ledger_tron` instead.",
       inputSchema: pairLedgerLiveInput.shape,
+      annotations: {
+        title: "Pair Ledger Live",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(pairLedgerLive)
   );
@@ -2308,6 +2539,13 @@ async function main() {
       description:
         "Pair the host's directly-connected Ledger device for TRON signing. REQUIREMENTS: Ledger plugged into the machine running this MCP (USB, not WalletConnect), device unlocked, and the 'Tron' app open on-screen. Ledger Live's WalletConnect relay does not currently honor the `tron:` CAIP namespace, so TRON signing goes over USB HID via @ledgerhq/hw-app-trx. Reads the device address at m/44'/195'/<accountIndex>'/0/0 (default accountIndex=0) and caches it so `get_ledger_status` can report it. Call multiple times with different `accountIndex` values (0, 1, 2, …) to pair additional TRON accounts — each call adds to the cache; subsequent calls for the same index refresh in place. Call this once per session (per account) before calling any `prepare_tron_*` tool or `send_transaction` with a TRON handle. If the TRON app isn't open, or the device is locked, returns an actionable error describing what to fix.",
       inputSchema: pairLedgerTronInput.shape,
+      annotations: {
+        title: "Pair Ledger TRON",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(pairLedgerTron)
   );
@@ -2318,6 +2556,13 @@ async function main() {
       description:
         "Pair the host's directly-connected Ledger device for Solana signing. REQUIREMENTS: Ledger plugged into the machine running this MCP (USB, not WalletConnect), device unlocked, and the 'Solana' app open on-screen. Ledger Live's WalletConnect integration does NOT expose Solana accounts, so Solana signing goes over USB HID via @ledgerhq/hw-app-solana (same USB path as TRON). Reads the device address at `m/44'/501'/<accountIndex>'` (default accountIndex=0 — the first Solana account in Ledger Live) and caches it so `get_ledger_status` can report it under the `solana: [...]` section. Call multiple times with different `accountIndex` values to pair additional Solana accounts. Call this once per session (per account) before `prepare_solana_*` or `send_transaction` with a Solana handle. If the Solana app isn't open, the device is locked, or the derivation path doesn't match your Ledger Live setup, returns an actionable error.",
       inputSchema: pairLedgerSolanaInput.shape,
+      annotations: {
+        title: "Pair Ledger Solana",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(pairLedgerSolana)
   );
@@ -2333,6 +2578,13 @@ async function main() {
         "All four are cached so `get_ledger_status` can report them under the `bitcoin: [...]` section. " +
         "Call again with a different `accountIndex` to expose additional accounts. Read-only on the device — the Ledger BTC app does not prompt during `getWalletPublicKey` by default. Phase 1 is mainnet-only.",
       inputSchema: pairLedgerBitcoinInput.shape,
+      annotations: {
+        title: "Pair Ledger BTC",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(pairLedgerBitcoin)
   );
@@ -2343,6 +2595,13 @@ async function main() {
       description:
         "Build an unsigned SOL native-transfer DRAFT via SystemProgram.transfer. Returns a compact preview + opaque handle — but does NOT yet serialize the message or fetch a blockhash (those happen in `preview_solana_send`, called right before `send_transaction`, to keep the ~60s blockhash validity window from being burned during user review). Run `pair_ledger_solana` once per session first so the Solana app is open and the device address is verified. Amount is in SOL (e.g. \"0.5\") or \"max\" for full balance minus fee + safety buffer. Priority fee is added dynamically only when `getRecentPrioritizationFees` p50 is above the congestion threshold. OPTIONAL MEMO: pass `memo: \"...\"` (≤256 UTF-8 bytes) to attach an SPL Memo program instruction (program id `MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr`) to the tx — common for invoice / payment-reference strings. The Ledger Solana app clear-signs Memo program calls and renders the UTF-8 string on-device alongside the transfer. AUTO NONCE SETUP: if the wallet has no durable-nonce account yet (first Solana send), this tool transparently bundles createAccountWithSeed + nonceInitialize ahead of the transfer in a single tx — costs an extra ~0.00144 SOL rent (reclaimable via `prepare_solana_nonce_close`), surfaced in the response (`firstTimeNonceSetup: \"true\"`, `rentLamports`, description suffix). Subsequent sends are durable-nonce-protected and stay valid indefinitely on the device. The Ledger Solana app clear-signs SystemProgram.transfer + nonce-account ops (no blind-sign hash-match step needed for native sends).",
       inputSchema: prepareSolanaNativeSendInput.shape,
+      annotations: {
+        title: "Prepare Solana Native Send",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareSolanaNativeSend)
   );
@@ -2353,6 +2612,13 @@ async function main() {
       description:
         "Build an unsigned SPL token transfer DRAFT via Token.TransferChecked. Returns a compact preview + opaque handle — but does NOT yet serialize the message or fetch a blockhash. When the user says 'send', call `preview_solana_send(handle)` to pin a fresh blockhash, compute the Message Hash, and emit the CHECKS agent-task block, then call `send_transaction`. Run `pair_ledger_solana` first. Pass the base58 SPL mint address (canonical decimals resolved for USDC, USDT, JUP, BONK, JTO, mSOL, jitoSOL; otherwise read from chain). If the recipient does NOT yet have an Associated Token Account for this mint, the draft automatically includes a `createAssociatedTokenAccount` instruction — the sender pays ~0.00204 SOL rent, disclosed explicitly (`rentLamports` + `description`). AUTO NONCE SETUP: if the wallet has no durable-nonce account yet, this tool transparently bundles createAccountWithSeed + nonceInitialize ahead of the SPL transfer (legacy blockhash; subsequent SPL sends use the durable-nonce path). Surfaced as `firstTimeNonceSetup: \"true\"` + ~0.00144 SOL rent in the description. BLIND-SIGN REQUIRED: the Ledger Solana app does NOT auto clear-sign TransferChecked — its parser requires a signed 'Trusted Name' TLV descriptor that only Ledger Live supplies, so the device drops into blind-sign and shows a 'Message Hash' (base58(sha256(messageBytes))). The user must (1) enable 'Allow blind signing' in Solana app → Settings, and (2) match the Message Hash surfaced by `preview_solana_send` against the on-device value before approving.",
       inputSchema: prepareSolanaSplSendInput.shape,
+      annotations: {
+        title: "Prepare Solana SPL Send",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareSolanaSplSend)
   );
@@ -2372,6 +2638,13 @@ async function main() {
         "already exists at the derived PDA. This init tx uses a regular recent blockhash (no nonce " +
         "to use yet — same constraint that makes auto-bundling possible inside native/SPL sends).",
       inputSchema: prepareSolanaNonceInitInput.shape,
+      annotations: {
+        title: "Prepare Solana Nonce Init",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
     },
     handler(prepareSolanaNonceInit)
   );
@@ -2387,6 +2660,13 @@ async function main() {
         "wallet will refuse until `prepare_solana_nonce_init` is run again. Refuses if no nonce account " +
         "exists for the wallet.",
       inputSchema: prepareSolanaNonceCloseInput.shape,
+      annotations: {
+        title: "Prepare Solana Nonce Close",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
     },
     handler(prepareSolanaNonceClose)
   );
@@ -2403,6 +2683,13 @@ async function main() {
         "Pass raw integer amounts in base units (e.g., '1000000' for 1 USDC). For native SOL, use the wrapped-SOL " +
         "mint So11111111111111111111111111111111111111112 — Jupiter auto-wraps/unwraps at swap time.",
       inputSchema: getSolanaSwapQuoteInput.shape,
+      annotations: {
+        title: "Get Solana Swap Quote",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getSolanaSwapQuote)
   );
@@ -2423,6 +2710,13 @@ async function main() {
         "registry), so the user must match the Message Hash on-device — surfaced in the CHECKS block " +
         "emitted by `preview_solana_send`.",
       inputSchema: prepareSolanaSwapInput.shape,
+      annotations: {
+        title: "Prepare Solana Swap",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareSolanaSwap)
   );
@@ -2449,6 +2743,13 @@ async function main() {
         "Hash on-device after `preview_solana_send`. Refuses if a MarginfiAccount already exists at " +
         "the derived PDA.",
       inputSchema: prepareMarginfiInitInput.shape,
+      annotations: {
+        title: "Prepare MarginFi Init",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareMarginfiInit)
   );
@@ -2465,6 +2766,13 @@ async function main() {
         "Uses v0 VersionedTransaction + MarginFi group ALTs for compact wire size. BLIND-SIGN " +
         "on Ledger — match the Message Hash on-device after `preview_solana_send`.",
       inputSchema: prepareMarginfiSupplyInput.shape,
+      annotations: {
+        title: "Prepare MarginFi Supply",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareMarginfiSupply)
   );
@@ -2480,6 +2788,13 @@ async function main() {
         "prepare_marginfi_init prerequisites identical to prepare_marginfi_supply. BLIND-SIGN on " +
         "Ledger.",
       inputSchema: prepareMarginfiWithdrawInput.shape,
+      annotations: {
+        title: "Prepare MarginFi Withdraw",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareMarginfiWithdraw)
   );
@@ -2495,6 +2810,13 @@ async function main() {
         "on a reverting tx. DURABLE NONCE + prepare_marginfi_init prerequisites identical to " +
         "prepare_marginfi_supply. BLIND-SIGN on Ledger.",
       inputSchema: prepareMarginfiBorrowInput.shape,
+      annotations: {
+        title: "Prepare MarginFi Borrow",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareMarginfiBorrow)
   );
@@ -2508,6 +2830,13 @@ async function main() {
         "slot). DURABLE NONCE + prepare_marginfi_init prerequisites identical to " +
         "prepare_marginfi_supply. BLIND-SIGN on Ledger.",
       inputSchema: prepareMarginfiRepayInput.shape,
+      annotations: {
+        title: "Prepare MarginFi Repay",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareMarginfiRepay)
   );
@@ -2525,6 +2854,13 @@ async function main() {
         "BLIND-SIGN on Ledger (Marinade's program is not in the Solana app's clear-sign " +
         "registry) — match the Message Hash on-device after `preview_solana_send`.",
       inputSchema: prepareMarinadeStakeInput.shape,
+      annotations: {
+        title: "Prepare Marinade Stake",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareMarinadeStake)
   );
@@ -2548,6 +2884,13 @@ async function main() {
         "via WithdrawSol or delayed via WithdrawStake) is not yet exposed; tracked " +
         "as a follow-up.",
       inputSchema: prepareJitoStakeInput.shape,
+      annotations: {
+        title: "Prepare Jito Stake",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareJitoStake)
   );
@@ -2564,6 +2907,13 @@ async function main() {
         "in exchange for instant liquidity. DURABLE NONCE REQUIRED + same Ledger signing " +
         "constraints as `prepare_marinade_stake`. BLIND-SIGN on Ledger.",
       inputSchema: prepareMarinadeUnstakeImmediateInput.shape,
+      annotations: {
+        title: "Prepare Marinade Unstake Immediate",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareMarinadeUnstakeImmediate)
   );
@@ -2589,6 +2939,13 @@ async function main() {
         "against the one confirmed in step 1. The response's `notes[]` field surfaces these " +
         "instructions verbatim — pass them through to the user.",
       inputSchema: listSolanaValidatorsInput.shape,
+      annotations: {
+        title: "List Solana Validators",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler((args: ListSolanaValidatorsArgs) => listSolanaValidators(args))
   );
@@ -2608,6 +2965,13 @@ async function main() {
         "position). BLIND-SIGN on Ledger by default — match the Message Hash on-device. To pick " +
         "a validator, call `list_solana_validators` first.",
       inputSchema: prepareNativeStakeDelegateInput.shape,
+      annotations: {
+        title: "Prepare Native Stake Delegate",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareNativeStakeDelegate)
   );
@@ -2624,6 +2988,13 @@ async function main() {
         "prepare_native_stake_delegate. The on-chain stake program reverts if the stake is " +
         "already deactivating/inactive — the simulation gate catches it.",
       inputSchema: prepareNativeStakeDeactivateInput.shape,
+      annotations: {
+        title: "Prepare Native Stake Deactivate",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareNativeStakeDeactivate)
   );
@@ -2639,6 +3010,13 @@ async function main() {
         "the simulation gate catches it. DURABLE NONCE REQUIRED + same Ledger blind-sign treatment " +
         "as prepare_native_stake_delegate.",
       inputSchema: prepareNativeStakeWithdrawInput.shape,
+      annotations: {
+        title: "Prepare Native Stake Withdraw",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareNativeStakeWithdraw)
   );
@@ -2661,6 +3039,13 @@ async function main() {
         "this server; track as a follow-up. BLIND-SIGN on Ledger — match the Message Hash " +
         "on-device after `preview_solana_send`.",
       inputSchema: prepareSolanaLifiSwapInput.shape,
+      annotations: {
+        title: "Prepare Solana LiFi Swap",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareSolanaLifiSwap)
   );
@@ -2678,6 +3063,13 @@ async function main() {
         "BLIND-SIGN on Ledger — Kamino's program isn't in the Solana app's clear-sign " +
         "allowlist; match the Message Hash on-device after `preview_solana_send`.",
       inputSchema: prepareKaminoInitUserInput.shape,
+      annotations: {
+        title: "Prepare Kamino Init User",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareKaminoInitUser)
   );
@@ -2695,6 +3087,13 @@ async function main() {
         "[computeBudget, ATA setup if needed, reserve refresh, obligation refresh, " +
         "deposit, cleanup] under v0 + Kamino's market ALTs.",
       inputSchema: prepareKaminoSupplyInput.shape,
+      annotations: {
+        title: "Prepare Kamino Supply",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareKaminoSupply)
   );
@@ -2710,6 +3109,13 @@ async function main() {
         "reserve's `borrowLimit` (the simulation gate catches this before signing). " +
         "DURABLE NONCE REQUIRED + same blind-sign treatment as prepare_kamino_supply.",
       inputSchema: prepareKaminoBorrowInput.shape,
+      annotations: {
+        title: "Prepare Kamino Borrow",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareKaminoBorrow)
   );
@@ -2724,6 +3130,13 @@ async function main() {
         "collateralized for outstanding debt revert (caught by the simulation gate). " +
         "DURABLE NONCE REQUIRED + same blind-sign treatment as prepare_kamino_supply.",
       inputSchema: prepareKaminoWithdrawInput.shape,
+      annotations: {
+        title: "Prepare Kamino Withdraw",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareKaminoWithdraw)
   );
@@ -2738,6 +3151,13 @@ async function main() {
         "the excess (no funds lost). DURABLE NONCE REQUIRED + same blind-sign treatment " +
         "as prepare_kamino_supply.",
       inputSchema: prepareKaminoRepayInput.shape,
+      annotations: {
+        title: "Prepare Kamino Repay",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareKaminoRepay)
   );
@@ -2754,6 +3174,13 @@ async function main() {
         "Returns an empty list when the wallet has no Kamino userMetadata (= never used " +
         "Kamino). Reserve-level pause / freeze flags surface in `warnings`.",
       inputSchema: getKaminoPositionsInput.shape,
+      annotations: {
+        title: "Get Kamino Positions",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getKaminoPositions)
   );
@@ -2770,6 +3197,13 @@ async function main() {
         "`BITCOIN_INDEXER_URL` env var or `userConfig.bitcoinIndexerUrl` for self-hosted " +
         "Esplora / Electrs. Phase 1 is mainnet-only (testnet/signet rejected).",
       inputSchema: getBitcoinBalanceInput.shape,
+      annotations: {
+        title: "Get BTC Balance",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getBitcoinBalance)
   );
@@ -2783,6 +3217,13 @@ async function main() {
         "call (mirrors how EVM portfolio enumeration handles flaky RPCs). Each successful " +
         "entry has the same shape as `get_btc_balance`'s output.",
       inputSchema: getBitcoinBalancesInput.shape,
+      annotations: {
+        title: "Get BTC Balances",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getBitcoinBalances)
   );
@@ -2798,6 +3239,13 @@ async function main() {
         "falls back to per-target estimates from the standard Esplora `/fee-estimates` " +
         "for self-hosted indexers.",
       inputSchema: getBitcoinFeeEstimatesInput.shape,
+      annotations: {
+        title: "Get BTC Fee Estimates",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getBitcoinFeeEstimates)
   );
@@ -2824,6 +3272,13 @@ async function main() {
         "to stay under mempool.space's free-tier rate limits; transient " +
         "429s and network errors are retried once internally.",
       inputSchema: rescanBitcoinAccountInput.shape,
+      annotations: {
+        title: "Rescan BTC Account",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(rescanBitcoinAccount)
   );
@@ -2846,6 +3301,13 @@ async function main() {
         "PAST the originally-walked gap window (the rescan flags that case " +
         "via `needsExtend: true`).",
       inputSchema: getBitcoinAccountBalanceInput.shape,
+      annotations: {
+        title: "Get BTC Account Balance",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getBitcoinAccountBalance)
   );
@@ -2865,6 +3327,13 @@ async function main() {
         "indexer-freshness sanity checks before quoting balances, confirmation-" +
         "depth math against `get_btc_tx_history` entries.",
       inputSchema: getBitcoinBlockTipInput.shape,
+      annotations: {
+        title: "Get BTC Block Tip",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getBitcoinBlockTip)
   );
@@ -2883,6 +3352,13 @@ async function main() {
         "to compute hash_cliff, empty_block_streak, and miner_concentration. " +
         "Issue #233 v1.",
       inputSchema: getBitcoinBlocksRecentInput.shape,
+      annotations: {
+        title: "Get BTC Blocks Recent",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getBitcoinBlocksRecent)
   );
@@ -2900,6 +3376,13 @@ async function main() {
         "was missing from the MCP surface despite the underlying indexer method " +
         "existing in code).",
       inputSchema: getLitecoinBlockTipInput.shape,
+      annotations: {
+        title: "Get LTC Block Tip",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getLitecoinBlockTip)
   );
@@ -2914,6 +3397,13 @@ async function main() {
         "to compute hash_cliff, empty_block_streak, and miner_concentration. " +
         "Issue #233 v1.",
       inputSchema: getLitecoinBlocksRecentInput.shape,
+      annotations: {
+        title: "Get LTC Blocks Recent",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getLitecoinBlocksRecent)
   );
@@ -2930,6 +3420,13 @@ async function main() {
         "(self-hosted bitcoind or a public RPC provider). Returns `available: false` with " +
         "a setup hint when RPC is not configured. Issue #248 / #233 v2.",
       inputSchema: getBitcoinChainTipsInput.shape,
+      annotations: {
+        title: "Get BTC Chain Tips",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getBitcoinChainTips)
   );
@@ -2944,6 +3441,13 @@ async function main() {
         "so for LTC users wanting an indexer-independent second opinion, self-hosting is " +
         "the most accessible route. Issue #248 / #233 v2.",
       inputSchema: getLitecoinChainTipsInput.shape,
+      annotations: {
+        title: "Get LTC Chain Tips",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getLitecoinChainTips)
   );
@@ -2958,6 +3462,13 @@ async function main() {
         "NOT fee percentiles. Used to spot fee-market anomalies and to baseline " +
         "`mempool_anomaly`. Requires `BITCOIN_RPC_URL` configured. Issue #248 / #233 v2.",
       inputSchema: getBitcoinBlockStatsInput.shape,
+      annotations: {
+        title: "Get BTC Block Stats",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getBitcoinBlockStats)
   );
@@ -2969,6 +3480,13 @@ async function main() {
         "READ-ONLY — litecoind `getblockstats` output. Mirror of `get_btc_block_stats` for LTC. " +
         "Requires `LITECOIN_RPC_URL` configured. Issue #248 / #233 v2.",
       inputSchema: getLitecoinBlockStatsInput.shape,
+      annotations: {
+        title: "Get LTC Block Stats",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getLitecoinBlockStats)
   );
@@ -2985,6 +3503,13 @@ async function main() {
         "`available: false` to live computation. Requires `BITCOIN_RPC_URL` configured. " +
         "Issue #248 / #236 v2.",
       inputSchema: getBitcoinMempoolSummaryInput.shape,
+      annotations: {
+        title: "Get BTC Mempool Summary",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getBitcoinMempoolSummary)
   );
@@ -2996,6 +3521,13 @@ async function main() {
         "READ-ONLY — litecoind `getmempoolinfo` output. Mirror of `get_btc_mempool_summary` " +
         "for LTC. Requires `LITECOIN_RPC_URL` configured. Issue #248 / #236 v2.",
       inputSchema: getLitecoinMempoolSummaryInput.shape,
+      annotations: {
+        title: "Get LTC Mempool Summary",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getLitecoinMempoolSummary)
   );
@@ -3010,6 +3542,13 @@ async function main() {
         "RBF-eligible flag (sequence < 0xFFFFFFFE on at least one input). Default 25 " +
         "txs, capped at 50 (one Esplora page); pagination beyond is a follow-up.",
       inputSchema: getBitcoinTxHistoryInput.shape,
+      annotations: {
+        title: "Get BTC Tx History",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getBitcoinTxHistory)
   );
@@ -3035,6 +3574,13 @@ async function main() {
         "value)` unless `allowHighFee: true` is passed. RBF is enabled by default " +
         "(sequence 0xFFFFFFFD); pass `rbf: false` to mark final.",
       inputSchema: prepareBitcoinNativeSendInput.shape,
+      annotations: {
+        title: "Prepare BTC Send",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareBitcoinNativeSend, { toolName: "prepare_btc_send" })
   );
@@ -3062,6 +3608,13 @@ async function main() {
         "matches the LiFi-advertised vault, and `nonWitnessUtxo` is hydrated on every " +
         "input (Ledger 2.x rejects segwit/taproot inputs without it).",
       inputSchema: prepareBitcoinLifiSwapInput.shape,
+      annotations: {
+        title: "Prepare BTC LiFi Swap",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareBitcoinLifiSwap, { toolName: "prepare_btc_lifi_swap" })
   );
@@ -3086,6 +3639,13 @@ async function main() {
         "with `allowHighFee: true`). Phase 1 source-side scope: native segwit + " +
         "taproot only.",
       inputSchema: prepareBitcoinRbfBumpInput.shape,
+      annotations: {
+        title: "Prepare BTC RBF Bump",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareBitcoinRbfBump, { toolName: "prepare_btc_rbf_bump" })
   );
@@ -3108,6 +3668,13 @@ async function main() {
         "every cosigner xpub via @scure/bip32 round-trip — typos that would silently " +
         "register a wallet we can never sign with are refused up-front.",
       inputSchema: registerBitcoinMultisigWalletInput.shape,
+      annotations: {
+        title: "Register BTC Multisig Wallet",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(registerBtcMultisigWallet, { toolName: "register_btc_multisig_wallet" })
   );
@@ -3128,6 +3695,13 @@ async function main() {
         "or broadcast — that's the initiator's job once they have all M signatures. " +
         "Phase 2 scope: P2WSH wallets registered via `register_btc_multisig_wallet`.",
       inputSchema: signBitcoinMultisigPsbtInput.shape,
+      annotations: {
+        title: "Sign BTC Multisig PSBT",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(signBtcMultisigPsbt, { toolName: "sign_btc_multisig_psbt" })
   );
@@ -3145,6 +3719,13 @@ async function main() {
         "per-input signature count so the caller can tell whether the threshold has " +
         "been reached. No device touch.",
       inputSchema: combineBitcoinPsbtsInput.shape,
+      annotations: {
+        title: "Combine BTC Psbts",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(combineBtcPsbts, { toolName: "combine_btc_psbts" })
   );
@@ -3162,6 +3743,13 @@ async function main() {
         "when the caller wants to inspect the hex first or broadcast through a " +
         "different relay. No device touch.",
       inputSchema: finalizeBitcoinPsbtInput.shape,
+      annotations: {
+        title: "Finalize BTC PSBT",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(finalizeBtcPsbt, { toolName: "finalize_btc_psbt" })
   );
@@ -3178,6 +3766,13 @@ async function main() {
         "are derived locally from the stored cosigner xpubs. Phase 3 supports " +
         "P2WSH (`wsh`) wallets only; taproot lands in a follow-up PR.",
       inputSchema: getBitcoinMultisigBalanceInput.shape,
+      annotations: {
+        title: "Get BTC Multisig Balance",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getBtcMultisigBalance, { toolName: "get_btc_multisig_balance" })
   );
@@ -3193,6 +3788,13 @@ async function main() {
         "for users who want to inspect the spendable set without preparing a tx. " +
         "No device touch.",
       inputSchema: getBitcoinMultisigUtxosInput.shape,
+      annotations: {
+        title: "Get BTC Multisig Utxos",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getBtcMultisigUtxos, { toolName: "get_btc_multisig_utxos" })
   );
@@ -3219,6 +3821,13 @@ async function main() {
         "automatically. Phase 3 supports `wsh` (P2WSH) wallets only; taproot " +
         "lands in a follow-up PR.",
       inputSchema: prepareBitcoinMultisigSendInput.shape,
+      annotations: {
+        title: "Prepare BTC Multisig Send",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareBtcMultisigSend, { toolName: "prepare_btc_multisig_send" })
   );
@@ -3236,6 +3845,13 @@ async function main() {
         "use. Idempotent: returns `removed: false` when the name isn't " +
         "registered. No device touch.",
       inputSchema: unregisterBitcoinMultisigWalletInput.shape,
+      annotations: {
+        title: "Unregister BTC Multisig Wallet",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(unregisterBtcMultisigWallet, {
       toolName: "unregister_btc_multisig_wallet",
@@ -3266,6 +3882,13 @@ async function main() {
         "scheme) is not yet exposed by the Ledger BTC app; sign with one of your other " +
         "paired address types from the same Ledger account instead.",
       inputSchema: signBtcMessageInput.shape,
+      annotations: {
+        title: "Sign Message BTC",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(signBtcMessage, { toolName: "sign_message_btc" })
   );
@@ -3292,6 +3915,13 @@ async function main() {
         "forward-compat only. All paired entries surface under the `litecoin: " +
         "[...]` section of `get_ledger_status`.",
       inputSchema: pairLedgerLitecoinInput.shape,
+      annotations: {
+        title: "Pair Ledger LTC",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(pairLedgerLitecoin, { toolName: "pair_ledger_ltc" })
   );
@@ -3306,6 +3936,13 @@ async function main() {
         "Returns confirmed + mempool litoshis and an LTC-decimal projection. " +
         "Accepts L/M/3/ltc1q/ltc1p — the read path validates format only.",
       inputSchema: getLitecoinBalanceInput.shape,
+      annotations: {
+        title: "Get LTC Balance",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getLitecoinBalance, { toolName: "get_ltc_balance" })
   );
@@ -3324,6 +3961,13 @@ async function main() {
         "consumed by `send_transaction`, which signs over USB HID with the " +
         "Litecoin app and broadcasts via the indexer.",
       inputSchema: prepareLitecoinNativeSendInput.shape,
+      annotations: {
+        title: "Prepare Litecoin Native Send",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareLitecoinNativeSend, { toolName: "prepare_litecoin_native_send" })
   );
@@ -3343,6 +3987,13 @@ async function main() {
         "interaction — same allowlist as `sign_message_btc`. Taproot (`ltc1p…`) is " +
         "refused — BIP-322 isn't exposed by the Ledger Litecoin app.",
       inputSchema: signLtcMessageInput.shape,
+      annotations: {
+        title: "Sign Message LTC",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(signLtcMessage, { toolName: "sign_message_ltc" })
   );
@@ -3369,6 +4020,13 @@ async function main() {
         "free-tier rate limits; transient 429s and network errors are retried " +
         "once internally.",
       inputSchema: rescanLitecoinAccountInput.shape,
+      annotations: {
+        title: "Rescan LTC Account",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(rescanLitecoinAccount, { toolName: "rescan_ltc_account" })
   );
@@ -3399,6 +4057,13 @@ async function main() {
         "`/wallet/broadcasthex` endpoint (LiFi gives us only raw_data_hex, not the " +
         "deserialized JSON shape `/wallet/broadcasttransaction` requires).",
       inputSchema: prepareTronLifiSwapInput.shape,
+      annotations: {
+        title: "Prepare TRON LiFi Swap",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareTronLifiSwap, { toolName: "prepare_tron_lifi_swap" })
   );
@@ -3428,6 +4093,13 @@ async function main() {
         "address has not been published officially and its multi-version path encoding is a " +
         "different ABI shape.",
       inputSchema: prepareTronSunswapSwapInput.shape,
+      annotations: {
+        title: "Prepare SunSwap Swap",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(prepareTronSunswapSwap, { toolName: "prepare_sunswap_swap" })
   );
@@ -3445,6 +4117,13 @@ async function main() {
         "One getAccountInfo per probed PDA; no SDK load, no oracle fetch. Returns empty " +
         "arrays / exists:false when nothing's set up — never throws for an empty wallet.",
       inputSchema: getSolanaSetupStatusInput.shape,
+      annotations: {
+        title: "Get Solana Setup Status",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getSolanaSetupStatus)
   );
@@ -3483,6 +4162,13 @@ async function main() {
         "write-flow walkthrough, call `get_demo_wallet` to surface the persona list, then " +
         "`set_demo_wallet({ persona: \"...\" })` to upgrade.",
       inputSchema: getVaultPilotConfigStatusInput.shape,
+      annotations: {
+        title: "Get Vaultpilot Config Status",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     configStatusHandler(getVaultPilotConfigStatus),
   );
@@ -3508,6 +4194,13 @@ async function main() {
         "ask the user which install path they used. Pure local introspection + cache read; no " +
         "RPC, no fresh network call (the kickoff already did that). Never throws.",
       inputSchema: getUpdateCommandInput.shape,
+      annotations: {
+        title: "Get Update Command",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getUpdateCommand),
   );
@@ -3528,6 +4221,13 @@ async function main() {
         "'I see your Bitcoin app is open — switch to Solana (device → right button → Solana → " +
         "both buttons)'. One USB round-trip; no chain RPC calls.",
       inputSchema: getLedgerDeviceInfoInput.shape,
+      annotations: {
+        title: "Get Ledger Device Info",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getLedgerDeviceInfo)
   );
@@ -3554,6 +4254,13 @@ async function main() {
         "USB round-trip; never throws — surfaces every failure as a structured " +
         "verdict for the agent to relay.",
       inputSchema: verifyLedgerFirmwareInput.shape,
+      annotations: {
+        title: "Verify Ledger Firmware",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(verifyLedgerFirmware)
   );
@@ -3579,6 +4286,13 @@ async function main() {
         "after first install / Ledger Live update / OS update. Codesign tools " +
         "take 100s of ms so this is NOT auto-fired on every signing call.",
       inputSchema: verifyLedgerLiveCodesignInput.shape,
+      annotations: {
+        title: "Verify Ledger Live Codesign",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(verifyLedgerLiveCodesign)
   );
@@ -3601,6 +4315,13 @@ async function main() {
         "identity binding at signing time. The tool surface is shipped now " +
         "so future research can fill in the implementation without a redesign.",
       inputSchema: verifyLedgerAttestationInput.shape,
+      annotations: {
+        title: "Verify Ledger Attestation",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(verifyLedgerAttestation)
   );
@@ -3617,6 +4338,13 @@ async function main() {
         "pause warnings surface in the `warnings` field. Parallel to EVM's `get_compound_positions` " +
         "/ `get_morpho_positions`. Returns an empty array when the wallet has no MarginfiAccount.",
       inputSchema: getMarginfiPositionsInput.shape,
+      annotations: {
+        title: "Get MarginFi Positions",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getMarginfiPositions)
   );
@@ -3635,6 +4363,13 @@ async function main() {
         "returning the full view; individual sections are separately readable via the underlying " +
         "module functions for portfolio integration.",
       inputSchema: getSolanaStakingPositionsInput.shape,
+      annotations: {
+        title: "Get Solana Staking Positions",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getSolanaStakingPositions)
   );
@@ -3653,6 +4388,13 @@ async function main() {
         "confirm the mint truly isn't in the current group. The snapshot reflects the most recent " +
         "`fetchGroupData` pass in this process; an empty cache is warmed on demand. No input args.",
       inputSchema: getMarginfiDiagnosticsInput.shape,
+      annotations: {
+        title: "Get MarginFi Diagnostics",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getMarginfiDiagnostics)
   );
@@ -3676,6 +4418,13 @@ async function main() {
         "The `tron` array is read from the cache populated by `pair_ledger_tron`; `send_transaction` re-probes USB on every TRON sign, so the cache cannot be spoofed into approving a tx for the wrong account. " +
         "If the response has `peerUnreachable: true`, the WalletConnect relay couldn't confirm Ledger Live is connected — the cached `accounts` are still fine for address resolution (read-only questions about balances / history / portfolio), but BEFORE any signing flow you MUST ask the user whether to re-pair via `pair_ledger_live`. The exact call-to-action text is in `peerUnreachableGuidance`; splice it verbatim into your reply rather than paraphrasing. Never auto-re-pair on a read-only request.",
       inputSchema: getLedgerStatusInput.shape,
+      annotations: {
+        title: "Get Ledger Status",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getLedgerStatus)
   );
@@ -3686,6 +4435,13 @@ async function main() {
       description:
         "Build an unsigned Aave V3 supply transaction. If an ERC-20 approve() is required first, it is returned as the outer tx and the supply tx is embedded in `.next`. Both must be signed for the supply to succeed.",
       inputSchema: prepareAaveSupplyInput.shape,
+      annotations: {
+        title: "Prepare Aave Supply",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_aave_supply", prepareAaveSupply)
   );
@@ -3696,6 +4452,13 @@ async function main() {
       description:
         "Build an unsigned Aave V3 withdraw transaction. Pass `amount: \"max\"` to withdraw the entire aToken balance.",
       inputSchema: prepareAaveWithdrawInput.shape,
+      annotations: {
+        title: "Prepare Aave Withdraw",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_aave_withdraw", prepareAaveWithdraw)
   );
@@ -3706,6 +4469,13 @@ async function main() {
       description:
         "Build an unsigned Aave V3 borrow transaction (variable rate — stable rate is deprecated and reverts on production markets). The borrower must already have sufficient collateral supplied.",
       inputSchema: prepareAaveBorrowInput.shape,
+      annotations: {
+        title: "Prepare Aave Borrow",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_aave_borrow", prepareAaveBorrow)
   );
@@ -3716,6 +4486,13 @@ async function main() {
       description:
         "Build an unsigned Aave V3 repay transaction. If an ERC-20 approve() is required first, it is returned as the outer tx and repay is in `.next`. Pass `amount: \"max\"` to repay the full debt.",
       inputSchema: prepareAaveRepayInput.shape,
+      annotations: {
+        title: "Prepare Aave Repay",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_aave_repay", prepareAaveRepay)
   );
@@ -3731,6 +4508,13 @@ async function main() {
         "Slippage defaults to 50 bps (0.5%); soft cap at 100 bps requires `acknowledgeHighSlippage: true`. " +
         "After signing the mint, the resulting LP NFT appears in `get_lp_positions` for the recipient address.",
       inputSchema: prepareUniswapV3MintInput.shape,
+      annotations: {
+        title: "Prepare Uniswap V3 Mint",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_uniswap_v3_mint", prepareUniswapV3Mint)
   );
@@ -3747,6 +4531,13 @@ async function main() {
         "Slippage defaults to 50 bps (0.5%); soft cap at 100 bps requires `acknowledgeHighSlippage: true`. " +
         "Pass `amount0Desired: \"0\"` (or amount1Desired) for a single-sided range deposit when the current price is outside the position's range.",
       inputSchema: prepareUniswapV3IncreaseLiquidityInput.shape,
+      annotations: {
+        title: "Prepare Uniswap V3 Increase Liquidity",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_uniswap_v3_increase_liquidity", prepareUniswapV3IncreaseLiquidity)
   );
@@ -3761,6 +4552,13 @@ async function main() {
         "Hard-refuses when the tokenId is not owned by `wallet` (would credit the actual owner) and when the position has zero liquidity (nothing to decrease). " +
         "**Withdrawn tokens become `tokensOwed` on the position — they do NOT move to the wallet until you call `prepare_uniswap_v3_collect` afterwards.** This separation matches the on-chain protocol shape and lets the agent batch decrease+collect via rebalance.",
       inputSchema: prepareUniswapV3DecreaseLiquidityInput.shape,
+      annotations: {
+        title: "Prepare Uniswap V3 Decrease Liquidity",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_uniswap_v3_decrease_liquidity", prepareUniswapV3DecreaseLiquidity)
   );
@@ -3773,6 +4571,13 @@ async function main() {
         "Hard-refuses when the tokenId is not owned by `wallet`. The protocol auto-settles uncollected fee growth into `tokensOwed` inside the call, so even a position with `tokensOwed{0,1}=0` may receive tokens. " +
         "`recipient` defaults to the wallet; pass an address to send the harvest elsewhere.",
       inputSchema: prepareUniswapV3CollectInput.shape,
+      annotations: {
+        title: "Prepare Uniswap V3 Collect",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_uniswap_v3_collect", prepareUniswapV3Collect)
   );
@@ -3785,6 +4590,13 @@ async function main() {
         "Hard-refuses unless the position is fully drained: `liquidity == 0` AND `tokensOwed{0,1} == 0`. " +
         "Standard close-out sequence: `prepare_uniswap_v3_decrease_liquidity({ liquidityPct: 100 })` → `prepare_uniswap_v3_collect` → `prepare_uniswap_v3_burn`. The error message names the right next step on each refusal.",
       inputSchema: prepareUniswapV3BurnInput.shape,
+      annotations: {
+        title: "Prepare Uniswap V3 Burn",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_uniswap_v3_burn", prepareUniswapV3Burn)
   );
@@ -3801,6 +4613,13 @@ async function main() {
         "Up to two ERC-20 approvals are chained ahead of the multicall (the mint phase still needs them — collect routes the tokens back to the wallet, then mint pulls them again via transferFrom). " +
         "Hard-refuses on owner mismatch, mis-aligned new ticks, identical new range, or zero-liquidity position.",
       inputSchema: prepareUniswapV3RebalanceInput.shape,
+      annotations: {
+        title: "Prepare Uniswap V3 Rebalance",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_uniswap_v3_rebalance", prepareUniswapV3Rebalance)
   );
@@ -3811,6 +4630,13 @@ async function main() {
       description:
         "Build an unsigned Lido stake transaction (wraps ETH into stETH via stETH.submit). The tx's value field is the ETH amount to stake.",
       inputSchema: prepareLidoStakeInput.shape,
+      annotations: {
+        title: "Prepare Lido Stake",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_lido_stake", prepareLidoStake)
   );
@@ -3821,6 +4647,13 @@ async function main() {
       description:
         "Build an unsigned Lido withdrawal request transaction. Wraps `requestWithdrawals` on the Lido Withdrawal Queue and includes an approve step if needed.",
       inputSchema: prepareLidoUnstakeInput.shape,
+      annotations: {
+        title: "Prepare Lido Unstake",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_lido_unstake", prepareLidoUnstake)
   );
@@ -3831,6 +4664,13 @@ async function main() {
       description:
         "Build an unsigned wstETH.wrap transaction that converts stETH (rebasing) into wstETH (non-rebasing). 1:1 by share count, no DEX fee. Includes an stETH approve step to the wstETH contract if needed.",
       inputSchema: prepareLidoWrapInput.shape,
+      annotations: {
+        title: "Prepare Lido Wrap",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_lido_wrap", prepareLidoWrap)
   );
@@ -3841,6 +4681,13 @@ async function main() {
       description:
         "Build an unsigned wstETH.unwrap transaction that converts wstETH (non-rebasing) back into stETH (rebasing). No approval needed — burns wstETH from the caller's balance.",
       inputSchema: prepareLidoUnwrapInput.shape,
+      annotations: {
+        title: "Prepare Lido Unwrap",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_lido_unwrap", prepareLidoUnwrap)
   );
@@ -3851,6 +4698,13 @@ async function main() {
       description:
         "Build an unsigned EigenLayer StrategyManager.depositIntoStrategy transaction. Includes an ERC-20 approve step if needed.",
       inputSchema: prepareEigenLayerDepositInput.shape,
+      annotations: {
+        title: "Prepare EigenLayer Deposit",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_eigenlayer_deposit", prepareEigenLayerDeposit)
   );
@@ -3861,6 +4715,13 @@ async function main() {
       description:
         "Build an unsigned Rocket Pool stake transaction (RocketDepositPool.deposit() payable, mints rETH at the current exchange rate). Ethereum mainnet only — rETH on L2s is bridged and cannot be deposit-and-mint. Preflights `getMaximumDepositAmount()` to refuse if the deposit pool is paused or at capacity.",
       inputSchema: prepareRocketPoolStakeInput.shape,
+      annotations: {
+        title: "Prepare Rocket Pool Stake",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_rocketpool_stake", prepareRocketPoolStake)
   );
@@ -3871,6 +4732,13 @@ async function main() {
       description:
         "Build an unsigned Rocket Pool unstake transaction (rETH.burn(uint256), redeems rETH for ETH from on-protocol collateral). No approval needed — burn operates on caller's balance. Preflights wallet rETH balance and rETH contract collateral; if collateral is insufficient, refuses with a hint to unwind via the rETH/ETH Uniswap V3 pool instead.",
       inputSchema: prepareRocketPoolUnstakeInput.shape,
+      annotations: {
+        title: "Prepare Rocket Pool Unstake",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_rocketpool_unstake", prepareRocketPoolUnstake)
   );
@@ -3891,6 +4759,13 @@ async function main() {
         "applicable to TRON handles (USB HID signing flow, no WalletConnect). For Solana handles " +
         "use `preview_solana_send` — it pins a fresh blockhash instead of nonce + EIP-1559 fees.",
       inputSchema: previewSendInput.shape,
+      annotations: {
+        title: "Preview Send",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     previewSendHandler(previewSend),
   );
@@ -3913,6 +4788,13 @@ async function main() {
         "and send). send_transaction will throw a clear error if called without a prior " +
         "preview_solana_send.",
       inputSchema: previewSolanaSendInput.shape,
+      annotations: {
+        title: "Preview Solana Send",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     previewSolanaSendHandler(previewSolanaSend),
   );
@@ -3927,6 +4809,13 @@ async function main() {
         "EVM handles ADDITIONALLY require passing `previewToken` (the opaque string returned in preview_send's top-level JSON response) and `userDecision: \"send\"` (set after the user has replied \"send\" to the EXTRA CHECKS menu emitted by preview_send's agent-task block). Together these prove the agent actually surfaced the preview-time gate to the user instead of collapsing preview_send + send_transaction into one silent step — missing/mismatched values cause a clear-error refusal. TRON handles ignore both args. " +
         "For TRON handles, `pair_ledger_tron` must have been called at least once per session (so the TRON app has been opened on the device) and the Ledger must still be plugged in with the TRON app open at send time; preview_send is skipped (TRON has its own clear-sign UX on-device).",
       inputSchema: sendTransactionInput.shape,
+      annotations: {
+        title: "Send Transaction",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
     sendTransactionHandler(sendTransaction)
   );
@@ -3937,6 +4826,13 @@ async function main() {
       description:
         "Poll a transaction's status via the chain's RPC (EVM / Solana) or TronGrid (TRON). Returns pending / success / failed, plus 'dropped' on Solana when the tx is mathematically unable to land. Pass chain='tron' with the bare hex txID for TRON; chain='solana' with the base58 signature for Solana. For Solana, ALSO pass whichever drop-detection field send_transaction returned: (a) `durableNonce` for nearly every send (native/SPL sends, nonce_close, jupiter_swap, all marginfi_* actions) — the tool reads the on-chain nonce account and reports 'dropped' if it rotated past the baked value; or (b) `lastValidBlockHeight` for legacy-blockhash txs (currently just nonce_init) — reports 'dropped' if current block height is past. Without either field the tool reports 'pending' forever for dropped txs.",
       inputSchema: getTransactionStatusInput.shape,
+      annotations: {
+        title: "Get Transaction Status",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getTransactionStatus)
   );
@@ -3947,6 +4843,13 @@ async function main() {
       description:
         "Re-emit the prepared-tx JSON and VERIFY-BEFORE-SIGNING block for a known handle. Use this when the original prepare_* tool output has dropped out of your context (compaction, long sessions). The response shape and verification block match the original prepare_* call exactly. NEVER recover a verification block by reading tool-result files from disk — call this tool instead. Handles live in-memory for 15 minutes after issue.",
       inputSchema: getTxVerificationInput.shape,
+      annotations: {
+        title: "Get Tx Verification",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getTxVerification)
   );
@@ -3967,6 +4870,13 @@ async function main() {
         "swiss-knife URL, and 4byte cross-check so the second agent cannot echo them. Handles " +
         "live in-memory for 15 minutes after issue.",
       inputSchema: getVerificationArtifactInput.shape,
+      annotations: {
+        title: "Get Verification Artifact",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getVerificationArtifact)
   );
@@ -3989,6 +4899,13 @@ async function main() {
         "code path. This is deliberately more expensive than a 4byte-selector lookup — it proves the " +
         "FULL calldata (not just the function name) is consistent with the independent signature.",
       inputSchema: getTxVerificationInput.shape,
+      annotations: {
+        title: "Verify Tx Decode",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(verifyTxDecode)
   );
@@ -4007,6 +4924,13 @@ async function main() {
         "the approval must be included on-chain (poll get_transaction_status until confirmed) before the " +
         "dependent tx will simulate correctly — otherwise you get a misleading 'insufficient allowance' revert.",
       inputSchema: simulateTransactionInput.shape,
+      annotations: {
+        title: "Simulate Transaction",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(simulateTransaction)
   );
@@ -4018,6 +4942,13 @@ async function main() {
       description:
         "Fetch a wallet's balance of any ERC-20 token or the chain's native coin. Pass `token: \"native\"` for ETH (or chain-native asset) or an ERC-20 contract address. Returns amount, decimals, symbol, and USD value. For TRON, pass `chain: \"tron\"` with a base58 wallet (prefix T) and either `token: \"native\"` for TRX or a base58 TRC-20 address; returns a TronBalance (same fields, base58 token id). For Solana, pass `chain: \"solana\"` with a base58 wallet (43-44 chars) and either `token: \"native\"` for SOL or an SPL mint address; returns a SolanaBalance (same fields, base58 mint).",
       inputSchema: getTokenBalanceInput.shape,
+      annotations: {
+        title: "Get Token Balance",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getTokenBalance)
   );
@@ -4028,6 +4959,13 @@ async function main() {
       description:
         "Enumerate every spender that currently holds a non-zero allowance over the wallet's balance of a specific ERC-20 token on a single EVM chain. Pulls Approval events from Etherscan's logs API filtered to the wallet as `owner`, dedups by spender (keeping the latest event per spender for provenance), then re-reads the LIVE `allowance(owner, spender)` for each via Multicall3 and drops anyone whose live value is 0 (revoked or fully consumed). Returns rows sorted by allowance descending, each carrying `spender`, optional `spenderLabel` (Aave V3 Pool / Uniswap V3 SwapRouter02 / Lido stETH / etc. resolved against the canonical CONTRACTS table), `currentAllowance` (raw bigint string), `currentAllowanceFormatted` (decimal-adjusted, or the literal string \"unlimited\"), `isUnlimited` (≥MAX_UINT256 − 0.01% — covers wallets that cap below MAX), and the `lastApprovedBlock` / `lastApprovedTxHash` / `lastApprovedAt` provenance. Top-level `unlimitedCount` and `notes[]` flag exposure (\"the spender(s) can move your entire balance, including future top-ups; revoke via approve(spender, 0)\"). Use this for security audits (\"do I have any unrevoked unlimited approvals?\"), pre-tx checks (\"do I already have allowance for X?\"), and revoke-cleanup workflows. v1 EVM-only (Ethereum / Arbitrum / Polygon / Base / Optimism). TRON deferred (different indexer surface); Solana intentionally out of scope (SPL delegation is per-account, not per-mint-per-owner — different question shape). Read-only; no signing, no broadcast.",
       inputSchema: getTokenAllowancesInput.shape,
+      annotations: {
+        title: "Get Token Allowances",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     tokenAllowancesHandler(getTokenAllowances)
   );
@@ -4043,6 +4981,13 @@ async function main() {
         "Each row aggregates per-collection (one row per (chain, contract / collection-mint)), summing `tokenCount` across token IDs the wallet holds. Optional filters (EVM-only): `minFloorEth` drops dust / spam / scam collections; `collections[]` whitelists a specific contract set. Results sorted by `totalFloorUsd` descending; Solana rows tail-sort. NFT signing actions (list, sweep, accept-bid, transfer) deferred — separate plan; biggest UX risk because of approval / proxy patterns. Caveat surfaced in `notes[]`: floor != liquidation; `totalFloorUsd` is an upper-bound, not what the wallet would net selling everything immediately. Optional `RESERVOIR_API_KEY` env var avoids the anonymous-tier rate limit on multi-chain fan-out. " +
         "Issue #433 Solana follow-ups (separate issues): `get_nft_history` Solana support, `get_nft_collection` Solana support, Solana floor pricing.",
       inputSchema: getNftPortfolioInput.shape,
+      annotations: {
+        title: "Get NFT Portfolio",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getNftPortfolio)
   );
@@ -4053,6 +4998,13 @@ async function main() {
       description:
         "Wallet-less NFT collection metadata: name, symbol, image, description, current floor ask + top bid (in native asset and USD), volume by 24h / 7d / 30d / all-time windows, owner count, total supply, secondary-sale royalty (basis points + recipient address). Source: Reservoir. Use this for \"what's this collection's vitals?\" lookups before adding it to a watchlist or evaluating exposure. EVM-only in v1 — Solana NFTs need a different API surface and are deferred. Pass the contract address on its deployed chain (defaults to ethereum). Read-only.",
       inputSchema: getNftCollectionInput.shape,
+      annotations: {
+        title: "Get NFT Collection",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getNftCollection)
   );
@@ -4063,6 +5015,13 @@ async function main() {
       description:
         "Recent NFT activity for a wallet across one or more supported EVM chains: mints, sales, transfers, listings (asks), bids, and cancels. Source: Reservoir's `/users/{user}/activity/v6`. Multi-chain results are merged + sorted by timestamp descending; capped at `limit` (default 25, max 100). Mirrors `get_transaction_history`'s shape but limited to NFT-relevant events — same agent ergonomics, scoped to the NFT side of the wallet. EVM-only in v1; Solana deferred. Read-only.",
       inputSchema: getNftHistoryInput.shape,
+      annotations: {
+        title: "Get NFT History",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getNftHistory)
   );
@@ -4073,6 +5032,13 @@ async function main() {
       description:
         "Fetch the USD price of a token via DefiLlama. Pass `token: \"native\"` for the chain's native asset (ETH on ethereum/arbitrum, MATIC on polygon) or an ERC-20 contract address. Prefer this over get_swap_quote for pure price lookups — no wallet or liquidity simulation needed. EVM-only — for non-EVM natives (BTC, LTC, SOL, XMR, etc.) or any well-known coin without an EVM contract address, use `get_coin_price` instead.",
       inputSchema: getTokenPriceInput.shape,
+      annotations: {
+        title: "Get Token Price",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getTokenPriceTool)
   );
@@ -4087,6 +5053,13 @@ async function main() {
         "Returns: { symbol, priceUsd, source: \"defillama-coingecko\", resolvedKey, asOf, confidence }. The `confidence` field is DefiLlama's 0–1 thin-liquidity score; surface it to the user when it's below 0.9. " +
         "When the agent sees a portfolio response with `priceMissing: true` for a non-EVM asset, this is the tool to call.",
       inputSchema: getCoinPriceInput.shape,
+      annotations: {
+        title: "Get Coin Price",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getCoinPriceTool)
   );
@@ -4097,6 +5070,13 @@ async function main() {
       description:
         "Fetch on-chain ERC-20 metadata (symbol, name, decimals) for any token address on an EVM chain — no wallet or balance required. Also detects EIP-1967 transparent proxies and returns the current implementation address when present. Prefer this over running raw simulate_transaction calls against symbol()/name()/decimals() selectors.",
       inputSchema: getTokenMetadataInput.shape,
+      annotations: {
+        title: "Get Token Metadata",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getTokenMetadata)
   );
@@ -4107,6 +5087,13 @@ async function main() {
       description:
         "Resolve an ENS name (e.g. vitalik.eth) to an Ethereum address via mainnet ENS resolver. Returns null if unregistered.",
       inputSchema: resolveNameInput.shape,
+      annotations: {
+        title: "Resolve ENS Name",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(resolveName)
   );
@@ -4117,6 +5104,13 @@ async function main() {
       description:
         "Reverse-resolve an Ethereum address to its primary ENS name. Returns null if no primary name is set.",
       inputSchema: reverseResolveInput.shape,
+      annotations: {
+        title: "Reverse Resolve ENS",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(reverseResolve)
   );
@@ -4133,6 +5127,13 @@ async function main() {
         "v1.0 production chains: `btc` + `evm`. `solana` / `tron` return CONTACTS_CHAIN_NOT_YET_SUPPORTED. The `notes` and `tags` fields update the unsigned metadata sidecar (joined across chains by label) so editing them doesn't require a fresh device signature. " +
         "Sends like `prepare_native_send({ to: \"Mom\" })` resolve `Mom` against the signed blob first, then fall through to the unsigned overlay with a warning. Adding the same label twice on the same chain replaces the address (with a fresh signature in production-signed mode). Adding a different label that maps to an already-saved address rejects with CONTACTS_DUPLICATE_ADDRESS.",
       inputSchema: addContactInput.shape,
+      annotations: {
+        title: "Add Contact",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(addContact)
   );
@@ -4143,6 +5144,13 @@ async function main() {
       description:
         "Remove a labeled contact. Without `chain`, removes the label from EVERY chain that has it (one device interaction per chain when removing a signed entry). With `chain`, removes only that chain's entry — the label can survive on other chains. The unsigned metadata row (notes / tags) is dropped only when no chain still references the label. Issues CONTACTS_LABEL_NOT_FOUND if neither the signed disk nor the unsigned in-memory store has the label. Issue #428: unsigned-only removals never need a Ledger; mixed labels (signed entry on one chain + unsigned on another) require pairing only for the signed-entry chain.",
       inputSchema: removeContactInput.shape,
+      annotations: {
+        title: "Remove Contact",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(removeContact)
   );
@@ -4155,6 +5163,13 @@ async function main() {
         "Strict-fail on tamper (signed disk blobs): any signature failure / anchor mismatch / version rollback throws immediately (CONTACTS_TAMPERED / CONTACTS_ANCHOR_MISMATCH / CONTACTS_VERSION_ROLLBACK) rather than silently dropping rows — agents must surface the failure to the user. Unsigned in-memory entries are merged on top of the verified signed view; signed entries always win on a per-(label, chain) basis. " +
         "In demo mode, the demo in-memory store is read directly (no signature path); all four chains supported, every row is `unsigned: true`.",
       inputSchema: listContactsInput.shape,
+      annotations: {
+        title: "List Contacts",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(listContacts)
   );
@@ -4167,6 +5182,13 @@ async function main() {
         "Issue #428: `unsignedEntryCount` is the count of in-memory unsigned entries on this chain (omitted when zero). When a chain has only unsigned entries, `ok: false, reason: \"no signed entries on this chain (unsigned-only)\", unsignedEntryCount: N` so the agent surfaces the unsigned overlay rather than silently dropping it. " +
         "In demo mode, returns a count of in-memory entries per chain with `anchorAddress: \"DEMO_ANCHOR\"`.",
       inputSchema: verifyContactsInput.shape,
+      annotations: {
+        title: "Verify Contacts",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(verifyContacts)
   );
@@ -4177,6 +5199,13 @@ async function main() {
       description:
         "Read TRON staking state for a base58 address: claimable voting rewards (WithdrawBalance-ready), frozen TRX under Stake 2.0 (bandwidth + energy), pending unfreezes with unlock timestamps, the live account-resource meter (`resources`) showing immediately-consumable bandwidth units (free + staked pools), energy units, and voting-power units, AND the per-SR vote allocation (`votes[]` — same shape as `list_tron_witnesses(addr).userVotes`, issue #271). The resource meter is what tx execution actually charges against — frozen TRX only determines the daily limit. The `votes[]` baseline is what callers building `prepare_tron_vote` rebalances need: VoteWitness REPLACES the entire allocation, so consolidating onto an existing SR or rebalancing freshly-unlocked TRON Power requires the current breakdown — this field provides it without forcing a chained `list_tron_witnesses` call. Read-only; pair with `prepare_tron_claim_rewards` to withdraw rewards or `prepare_tron_vote` to allocate voting power.",
       inputSchema: getTronStakingInput.shape,
+      annotations: {
+        title: "Get TRON Staking",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler((args: { address: string }) => getTronStaking(args.address))
   );
@@ -4187,6 +5216,13 @@ async function main() {
       description:
         "Build an unsigned TRON native TRX send transaction via TronGrid's /wallet/createtransaction. Returns a human-readable preview + opaque handle. Forward the handle via `send_transaction` to sign on the directly-connected Ledger (USB HID via @ledgerhq/hw-app-trx) and broadcast to TronGrid. Run `pair_ledger_tron` once per session first so the TRON app is open and the device address is verified.",
       inputSchema: prepareTronNativeSendInput.shape,
+      annotations: {
+        title: "Prepare TRON Native Send",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(buildTronNativeSend, { toolName: "prepare_tron_native_send" })
   );
@@ -4197,6 +5233,13 @@ async function main() {
       description:
         "Build an unsigned TRC-20 transfer transaction (canonical set only: USDT, USDC, USDD, TUSD) via TronGrid's /wallet/triggersmartcontract. Decimals are resolved from the canonical table — unknown TRC-20s are rejected with an explicit error. Default fee_limit is 100 TRX (TronLink/Ledger Live default); override with `feeLimitTrx` if energy pricing has moved. Returns a preview + opaque handle. Forward via `send_transaction` for USB-HID signing on the paired Ledger. USDT renders natively on the TRON app; other TRC-20s may display raw hex on-device (the contract address and amount are still shown, so the user can verify against the preview).",
       inputSchema: prepareTronTokenSendInput.shape,
+      annotations: {
+        title: "Prepare TRON Token Send",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(buildTronTokenSend, { toolName: "prepare_tron_token_send" })
   );
@@ -4209,6 +5252,13 @@ async function main() {
         "Accepts ANY TRC-20 contract — not just the canonical set. Decimals are auto-resolved for canonical USDT/USDC/USDD/TUSD; for any other TRC-20 you MUST pass `decimals` explicitly. We REFUSE to default decimals on approve because an off-by-power-of-ten allowance silently authorizes a 10^12-fold larger spend than intended, with no UX recovery on a Ledger blind-sign flow. " +
         "amount is a human decimal string (\"100\" = 100 tokens at the resolved decimals). \"max\" / unbounded approvals are NOT supported — pass exactly the amount you intend to swap. Returns a preview + opaque handle for `send_transaction`.",
       inputSchema: prepareTronTrc20ApproveInput.shape,
+      annotations: {
+        title: "Prepare TRON TRC20 Approve",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(buildTronTrc20Approve, { toolName: "prepare_tron_trc20_approve" })
   );
@@ -4219,6 +5269,13 @@ async function main() {
       description:
         "Build an unsigned TRON WithdrawBalance transaction that claims accumulated voting rewards to the owner's balance. TRON enforces a 24-hour cooldown between claims — TronGrid will reject (surfaced as an error) if the previous claim was inside the window. Pair with `get_tron_staking` first to read `claimableRewards` and avoid empty-claim tx builds. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronClaimRewardsInput.shape,
+      annotations: {
+        title: "Prepare TRON Claim Rewards",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(buildTronClaimRewards, { toolName: "prepare_tron_claim_rewards" })
   );
@@ -4229,6 +5286,13 @@ async function main() {
       description:
         "Build an unsigned TRON Stake 2.0 FreezeBalanceV2 transaction. Locks TRX to earn `bandwidth` (fuels plain transfers) or `energy` (fuels smart-contract calls) and gains proportional voting power. IMPORTANT: freezing alone does NOT accrue TRX rewards — `claimableRewards` (see `get_tron_staking`) only grows after the user also votes for a Super Representative. Pair this tool with `list_tron_witnesses` + `prepare_tron_vote` for the full reward-earning flow. Unlocking requires a 14-day cooldown via `prepare_tron_unfreeze` + `prepare_tron_withdraw_expire_unfreeze`. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronFreezeInput.shape,
+      annotations: {
+        title: "Prepare TRON Freeze",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(buildTronFreeze, { toolName: "prepare_tron_freeze" })
   );
@@ -4239,6 +5303,13 @@ async function main() {
       description:
         "Build an unsigned TRON Stake 2.0 UnfreezeBalanceV2 transaction — begins the 14-day cooldown on a previously-frozen slice. The `amount` must not exceed what's currently frozen for that resource (query `get_tron_staking` first; TronGrid rejects otherwise with 'less than frozen balance'). After 14 days the slice shows up in `pendingUnfreezes` with an elapsed `unlockAt`; call `prepare_tron_withdraw_expire_unfreeze` to sweep it back to liquid TRX. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronUnfreezeInput.shape,
+      annotations: {
+        title: "Prepare TRON Unfreeze",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(buildTronUnfreeze, { toolName: "prepare_tron_unfreeze" })
   );
@@ -4249,6 +5320,13 @@ async function main() {
       description:
         "Build an unsigned TRON WithdrawExpireUnfreeze transaction — sweeps every matured unfreeze slice (those whose 14-day cooldown elapsed) back to liquid TRX. No amount needed; the chain drains all eligible slices in one call. Inspect `pendingUnfreezes` from `get_tron_staking` first — if every entry's `unlockAt` is still in the future, TronGrid returns 'no expire unfreeze' and this tool errors. Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronWithdrawExpireUnfreezeInput.shape,
+      annotations: {
+        title: "Prepare TRON Withdraw Expire Unfreeze",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(buildTronWithdrawExpireUnfreeze, { toolName: "prepare_tron_withdraw_expire_unfreeze" })
   );
@@ -4259,6 +5337,13 @@ async function main() {
       description:
         "List TRON Super Representatives (SRs) + SR candidates, ranked by total vote count. Active SRs (rank ≤ 27, `isActive: true`) produce blocks and distribute the 160 TRX/block voter-reward pool pro-rata to their voters; every witness in the top 127 shares the same APR estimate (pro-rata split of the pool); witnesses ranked > 127 get `estVoterApr: 0`. APR estimates assume current mainnet constants (3-second blocks, 27 active SRs, 365 days/year) and are best-effort — actual rewards depend on missed blocks and competing voters shifting between your vote tx and reward claim. When `address` is passed, also returns `userVotes`, `totalTronPower`, `totalVotesCast`, and `availableVotes` so you can diff against a target allocation before calling `prepare_tron_vote`. Defaults to top-27 only; pass `includeCandidates: true` for the long tail.",
       inputSchema: listTronWitnessesInput.shape,
+      annotations: {
+        title: "List TRON Witnesses",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler((args: { address?: string; includeCandidates?: boolean }) =>
       listTronWitnesses(args.address, args.includeCandidates ?? false)
@@ -4271,6 +5356,13 @@ async function main() {
       description:
         "Build an unsigned TRON VoteWitnessContract transaction — casts votes for Super Representatives to earn voting rewards on frozen TRX. IMPORTANT: VoteWitness REPLACES the wallet's entire prior vote allocation atomically. Pass every SR you intend to back (not just a delta); an empty `votes` array clears all votes. Sum of `count` values must not exceed the wallet's available TRON Power — check `list_tron_witnesses(address)` → `availableVotes` first. `count` is an integer (1 vote = 1 TRX of TRON Power). Rewards accrue per block and are harvested via `prepare_tron_claim_rewards` (24h cooldown). Returns a preview + opaque handle; forward via `send_transaction` for USB-HID signing on the paired Ledger.",
       inputSchema: prepareTronVoteInput.shape,
+      annotations: {
+        title: "Prepare TRON Vote",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler(buildTronVote, { toolName: "prepare_tron_vote" })
   );
@@ -4281,6 +5373,13 @@ async function main() {
       description:
         "Build an unsigned native-coin send transaction (ETH on Ethereum/Arbitrum). Pass a human-readable amount like \"0.5\".",
       inputSchema: prepareNativeSendInput.shape,
+      annotations: {
+        title: "Prepare Native Send",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_native_send", prepareNativeSend)
   );
@@ -4291,6 +5390,13 @@ async function main() {
       description:
         "Build an unsigned WETH → native ETH unwrap transaction via a direct `WETH.withdraw(uint256)` call on the canonical WETH9 contract for the target chain. Supported chains: ethereum, arbitrum, polygon, base, optimism. Pass an explicit decimal amount (e.g. `\"0.5\"`) or the literal `\"max\"` to unwrap the full WETH balance. WETH is always 18 decimals. No approval is required — the wallet burns its own balance and receives native ETH back in the same call; the call is cheaper than routing through a DEX/aggregator. Balance is checked pre-build and the call refuses with a clear message if the wallet is short, rather than letting the tx revert on-chain. For the symmetric wrap direction (native ETH → WETH), use `prepare_native_send` with the WETH contract as `to` — sending ETH to the WETH9 fallback triggers `deposit()` automatically.",
       inputSchema: prepareWethUnwrapInput.shape,
+      annotations: {
+        title: "Prepare WETH Unwrap",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_weth_unwrap", prepareWethUnwrap)
   );
@@ -4303,6 +5409,13 @@ async function main() {
         "By design, this tool is canonical-registry-only — it does NOT probe on-chain to resolve unknown symbols, since an attacker can deploy a contract that returns \"USDC\" from `symbol()` and is wholly unrelated to the real Circle stablecoin. Unknown symbols throw with a list of registry hits on that chain so the agent can suggest the right one. " +
         "USE THIS BEFORE `prepare_token_send` when the user names a token by symbol — surface any `warnings` to the user before passing the resolved contract through to `prepare_token_send`. If the desired token isn't in the registry, look up the contract on a block explorer and call `prepare_token_send` directly with the explicit address.",
       inputSchema: resolveTokenInput.shape,
+      annotations: {
+        title: "Resolve Token",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler((args: ResolveTokenArgs) => resolveToken(args))
   );
@@ -4313,6 +5426,13 @@ async function main() {
       description:
         "Build an unsigned ERC-20 transfer transaction. Pass `amount: \"max\"` to send the full balance (resolved at build time). If the user named the token by symbol, call `resolve_token` first to disambiguate native-vs-bridged variants (USDC vs USDC.e on Arbitrum/Polygon/Optimism, USDC vs USDbC on Base) and surface the warning to the user before committing to a contract.",
       inputSchema: prepareTokenSendInput.shape,
+      annotations: {
+        title: "Prepare Token Send",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_token_send", prepareTokenSend)
   );
@@ -4323,6 +5443,13 @@ async function main() {
       description:
         "Build an unsigned `approve(spender, 0)` transaction that revokes the allowance the wallet previously granted to `spender` on `token`. Pre-flight check refuses when the live allowance is already 0 — that call would burn gas for nothing, and almost certainly means the user named the wrong (token, spender) pair. Resolves a friendly spender label from the canonical CONTRACTS table when one matches (Aave V3 Pool, Uniswap V3 SwapRouter02, Lido stETH, Compound V3 cUSDCv3, Morpho Blue, etc.) so the description + Ledger preview reads as \"Revoke USDC allowance for Aave V3 Pool (0x...)\" instead of a raw hex address. Description includes the previous allowance amount so the user sees what's being zeroed out. EVM-only — TRC-20 has the same `approve(spender, value)` shape but its prepare path runs through the TRON builder pipeline; surface in a `prepare_tron_trc20_revoke` if asked. Pair with the read-side `get_token_allowances` to enumerate what's currently approved.",
       inputSchema: prepareRevokeApprovalInput.shape,
+      annotations: {
+        title: "Prepare Revoke Approval",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_revoke_approval", prepareRevokeApproval)
   );
@@ -4333,6 +5460,13 @@ async function main() {
       description:
         "Build an unsigned `approve(spender, amount)` transaction that raises (or sets) an ERC-20 allowance — the structured inverse of `prepare_revoke_approval`. `amount` is a decimal in token units (e.g. \"10\" for 10 USDC) or the literal \"max\" for unlimited. Refuses unlimited approvals to canonical no-key addresses (`0x0…0`, `0x0…dEaD`, `0xdEaD…0`, `0xff…ff`) with `BURN_ADDRESS_UNLIMITED_APPROVAL`; override via `acknowledgeBurnApproval: true` only when the user explicitly asked for that exact spender + unlimited amount. Resolves a friendly spender label from the canonical CONTRACTS table so the description + Ledger preview reads as \"Approve USDC for Aave V3 Pool, 1000 USDC\" rather than a raw hex address. EVM-only. Prefer protocol-specific `prepare_*` (e.g. `prepare_aave_supply`) when the approval is bundled with a downstream action — those route through the shared `buildApprovalTx` helper which handles the USDT-style reset pattern in one step. Use this tool for one-off allowance-setting that doesn't fit a bundled prepare.",
       inputSchema: prepareTokenApproveInput.shape,
+      annotations: {
+        title: "Prepare Token Approve",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_token_approve", prepareTokenApprove)
   );
@@ -4343,6 +5477,13 @@ async function main() {
       description:
         "ESCAPE HATCH for arbitrary EVM contract calls — Timelock proposals, governance hooks, DAO ops, anything not covered by a protocol-specific `prepare_*`. BYPASSES the canonical-dispatch allowlist by design; the schema's `acknowledgeNonProtocolTarget: true` literal is the user's affirmative gate. ABI source: pass `abi: [...]` inline (preferred when you have the project's published artifact), OR omit it and the tool fetches via Etherscan V2 — refuses on unverified contracts with NO raw-bytecode fallback. Proxies are followed once to the implementation when Etherscan exposes the link; deeper proxy chains require an inline ABI. Pass `fn` as a name (\"schedule\") when unambiguous or as the full signature (\"schedule(address,uint256,bytes,bytes32,bytes32,uint256)\") to disambiguate overloads. `args` types are validated by viem's encoder at build time — uint256 expects a decimal string, address expects a 0x-prefixed lowercase hex, bytes/bytes32 expect 0x-prefixed hex, structs are objects with their named fields. `value` is RAW WEI (decimal string), not human-readable. The standard prepare-receipt + verification envelope (payloadHash, decoderUrl, humanDecode) applies; on-device verification is blind-sign by definition (no Ledger plugin decodes arbitrary calldata) — the swiss-knife decoder URL surfaced in chat is the user-side anchor. Use a protocol-specific `prepare_*` whenever one fits — this tool exists for the long tail.",
       inputSchema: prepareCustomCallInput.shape,
+      annotations: {
+        title: "Prepare Custom Call",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_custom_call", prepareCustomCall)
   );
@@ -4354,6 +5495,13 @@ async function main() {
       description:
         "Fetch Compound V3 (Comet) positions for a wallet across all known markets on the selected chains (cUSDCv3, cUSDTv3, cWETHv3, etc.). For each market the wallet touches, returns the base-token supply or borrow balance, per-asset collateral deposits, and USD valuations. Use this to answer 'my Compound positions' or before preparing a `prepare_compound_*` action so you have the right market address. Returns an empty list if the wallet has no Compound V3 exposure on the requested chains.",
       inputSchema: getCompoundPositionsInput.shape,
+      annotations: {
+        title: "Get Compound Positions",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getCompoundPositions)
   );
@@ -4364,6 +5512,13 @@ async function main() {
       description:
         "Fetch structured market info for a single Compound V3 (Comet) market — no wallet required. Returns base-token metadata, totalSupply/totalBorrow, utilization, supply+borrow APR, current pause flags, and the full collateral-asset list with each asset's symbol, decimals, priceFeed, borrow/liquidate/liquidation collateral factors, supply cap, and total amount currently supplied across all users. Use this to explain market state, answer 'what are the listed collaterals for cUSDCv3', or diagnose an incident (pause + utilization + contagion across collaterals) in one call.",
       inputSchema: getCompoundMarketInfoInput.shape,
+      annotations: {
+        title: "Get Compound Market Info",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getCompoundMarketInfo)
   );
@@ -4374,6 +5529,13 @@ async function main() {
       description:
         "Return an 'is anything on fire' snapshot across every registered market for a protocol + chain. For Compound V3, returns per-market pause flags, utilization, totalSupply, totalBorrow. For Aave V3, returns per-reserve isActive/isFrozen/isPaused, utilization, totalSupplied, totalBorrowed. Each entry has a `flagged` bit: Compound flags on any pause or utilization ≥ 95% (borrowers trapped); Aave flags on paused/frozen/inactive or utilization ≥ 95%. Top-level `incident: true` if any market/reserve is flagged. Use when you suspect a governance pause, a utilization cliff, or multi-market contagion from a shared-collateral exploit — collapses what would otherwise take one get_compound_market_info call per market.",
       inputSchema: getMarketIncidentStatusInput.shape,
+      annotations: {
+        title: "Get Market Incident Status",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getMarketIncidentStatus)
   );
@@ -4408,6 +5570,13 @@ async function main() {
         "broadcast txs\"), so v1's tx evidence comes from on-chain history " +
         "only.",
       inputSchema: buildIncidentReportInput.shape,
+      annotations: {
+        title: "Build Incident Report",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(buildIncidentReport)
   );
@@ -4418,6 +5587,13 @@ async function main() {
       description:
         "Build an unsigned Compound V3 supply transaction (base token or collateral). If an ERC-20 approve() is required first, it is returned as the outer tx with supply in `.next`.",
       inputSchema: prepareCompoundSupplyInput.shape,
+      annotations: {
+        title: "Prepare Compound Supply",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_compound_supply", buildCompoundSupply)
   );
@@ -4428,6 +5604,13 @@ async function main() {
       description:
         "Build an unsigned Compound V3 withdraw transaction. Pass `amount: \"max\"` to withdraw the full supplied balance.",
       inputSchema: prepareCompoundWithdrawInput.shape,
+      annotations: {
+        title: "Prepare Compound Withdraw",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_compound_withdraw", buildCompoundWithdraw)
   );
@@ -4438,6 +5621,13 @@ async function main() {
       description:
         "Build an unsigned Compound V3 borrow transaction. Compound V3 encodes a borrow as `withdraw(baseToken)` drawn beyond the wallet's supplied balance — the base token is resolved on-chain from the Comet market so you only pass the market address and amount. Requires the wallet to have already supplied enough collateral in that market; `get_compound_positions` shows the current collateral mix. Returns a handle + human-readable preview for the user to sign on Ledger; no approval step is needed (borrowing doesn't pull tokens from the wallet).",
       inputSchema: prepareCompoundBorrowInput.shape,
+      annotations: {
+        title: "Prepare Compound Borrow",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_compound_borrow", buildCompoundBorrow)
   );
@@ -4448,6 +5638,13 @@ async function main() {
       description:
         "Build an unsigned Compound V3 repay transaction — encoded as supply(baseToken) against an outstanding borrow. Includes an approve step if needed. Pass `amount: \"max\"` for a full repay.",
       inputSchema: prepareCompoundRepayInput.shape,
+      annotations: {
+        title: "Prepare Compound Repay",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_compound_repay", buildCompoundRepay)
   );
@@ -4459,6 +5656,13 @@ async function main() {
       description:
         "READ-ONLY — Curve LP positions on Ethereum stable_ng plain pools. v0.1 scope (per `claude-work/plan-curve-v1.md`): Ethereum mainnet only, stable_ng factory only, plain pools only (meta pools rejected — different ABI, separate follow-up). Returns per-pool LP token balance + gauge-staked balance + pending claimable CRV. Pools where the wallet has zero of all three are filtered out. Future PRs add: legacy pre-factory pools (3pool, fraxusdc, etc.), stable factory v1, twocrypto/crypto/tricrypto factories, Arbitrum + Polygon. The tool surface stays additive — `get_curve_positions` will keep its name and shape across the expansion.",
       inputSchema: getCurvePositionsInput.shape,
+      annotations: {
+        title: "Get Curve Positions",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler((a) => getCurvePositions(a.wallet as `0x${string}`))
   );
@@ -4469,6 +5673,13 @@ async function main() {
       description:
         "Build an unsigned Curve `add_liquidity` transaction for a stable_ng plain pool on Ethereum. Bundles ERC-20 approvals (one per non-zero deposit slot) before the action call via `chainApproval`. Pass `amounts` as a decimal-string array matching the pool's `N_COINS` (use '0' for slots you're not depositing into — single-coin deposit). Slippage gate is REQUIRED: pass either `minLpOut` (explicit decimal-string uint256) OR `slippageBps` (server computes via `calc_token_amount * (1 - bps/10000)`). v0.1 scope: stable_ng plain pools only — meta pools rejected. Use `get_curve_positions` to discover valid pool addresses + their coin order before calling this.",
       inputSchema: prepareCurveAddLiquidityInput.shape,
+      annotations: {
+        title: "Prepare Curve Add Liquidity",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_curve_add_liquidity", buildCurveAddLiquidity)
   );
@@ -4480,6 +5691,13 @@ async function main() {
       description:
         "Fetch Morpho Blue positions for a wallet. If `marketIds` is omitted, the server auto-discovers the wallet's markets by scanning Morpho Blue event logs (may take several seconds on a cold call). Pass explicit `marketIds` (bytes32 each, keccak256 of MarketParams) as a fast path. Returns per-market supplied/borrowed assets and collateral.",
       inputSchema: getMorphoPositionsInput.shape,
+      annotations: {
+        title: "Get Morpho Positions",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(getMorphoPositions)
   );
@@ -4490,6 +5708,13 @@ async function main() {
       description:
         "Build an unsigned Morpho Blue supply transaction — deposits the market's loan token to earn lending yield. Market params (loan/collateral tokens, oracle, IRM, LLTV) are resolved on-chain from the market id, so only wallet/marketId/amount are required. If the wallet's current allowance is insufficient, an ERC-20 approve tx is emitted first (chainable via `.next`); control the cap with `approvalCap` (defaults to unlimited for UX, pass 'exact' or a decimal ceiling to scope it). Returns a handle + preview for Ledger signing.",
       inputSchema: prepareMorphoSupplyInput.shape,
+      annotations: {
+        title: "Prepare Morpho Supply",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_morpho_supply", buildMorphoSupply)
   );
@@ -4500,6 +5725,13 @@ async function main() {
       description:
         "Build an unsigned Morpho Blue withdraw transaction (withdraws supplied loan token). Explicit amount only — \"max\" is not supported; query your position first.",
       inputSchema: prepareMorphoWithdrawInput.shape,
+      annotations: {
+        title: "Prepare Morpho Withdraw",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_morpho_withdraw", buildMorphoWithdraw)
   );
@@ -4510,6 +5742,13 @@ async function main() {
       description:
         "Build an unsigned Morpho Blue borrow transaction. Requires pre-existing collateral in the market.",
       inputSchema: prepareMorphoBorrowInput.shape,
+      annotations: {
+        title: "Prepare Morpho Borrow",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_morpho_borrow", buildMorphoBorrow)
   );
@@ -4520,6 +5759,13 @@ async function main() {
       description:
         "Build an unsigned Morpho Blue repay transaction. Includes an approve step if needed. Explicit amount only — \"max\" is not supported.",
       inputSchema: prepareMorphoRepayInput.shape,
+      annotations: {
+        title: "Prepare Morpho Repay",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_morpho_repay", buildMorphoRepay)
   );
@@ -4530,6 +5776,13 @@ async function main() {
       description:
         "Build an unsigned Morpho Blue supplyCollateral transaction — adds collateral to a market. Includes an approve step if needed.",
       inputSchema: prepareMorphoSupplyCollateralInput.shape,
+      annotations: {
+        title: "Prepare Morpho Supply Collateral",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_morpho_supply_collateral", buildMorphoSupplyCollateral)
   );
@@ -4540,6 +5793,13 @@ async function main() {
       description:
         "Build an unsigned Morpho Blue withdrawCollateral transaction — removes collateral from a market to send back to the wallet. Only withdraws the exact amount specified; `\"max\"` is NOT supported because Morpho's isolated-market accounting doesn't expose a clean max-safe value without simulating against the market's oracle/LLTV (query `get_morpho_positions` first to know your deposited collateral). Will revert on-chain if the withdrawal would push the position below the liquidation threshold. No approval step needed. Returns a handle + preview for Ledger signing.",
       inputSchema: prepareMorphoWithdrawCollateralInput.shape,
+      annotations: {
+        title: "Prepare Morpho Withdraw Collateral",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     txHandler("prepare_morpho_withdraw_collateral", buildMorphoWithdrawCollateral)
   );
@@ -4570,6 +5830,13 @@ async function main() {
         "Calling outside demo mode (env unset) returns a no-op response — the tool stays " +
         "available so an agent can always discover the surface, but never affects real signing.",
       inputSchema: setDemoWalletInput.shape,
+      annotations: {
+        title: "Set Demo Wallet",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler((args: SetDemoWalletArgs) => {
       if (!isDemoMode()) {
@@ -4679,6 +5946,13 @@ async function main() {
         "in demo mode never mutates state, so any flow whose precondition is itself a state " +
         "change can't be rehearsed end-to-end against a wallet that doesn't already have it).",
       inputSchema: getDemoWalletInput.shape,
+      annotations: {
+        title: "Get Demo Wallet",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
     },
     handler(() => buildGetDemoWalletResponse())
   );
@@ -4706,6 +5980,13 @@ async function main() {
         "call this tool immediately. NEVER echo the key back in any subsequent response — " +
         "treat it as secret-shaped even though Helius keys can be regenerated.",
       inputSchema: setHeliusApiKeyInput.shape,
+      annotations: {
+        title: "Set Helius Api Key",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler((args: SetHeliusApiKeyArgs) => {
       const { setAt } = setHeliusApiKey(args.apiKey);
@@ -4744,6 +6025,13 @@ async function main() {
         "chars>'), call this tool immediately. NEVER echo the key back in any subsequent " +
         "response — treat it as secret-shaped.",
       inputSchema: setEtherscanApiKeyInput.shape,
+      annotations: {
+        title: "Set Etherscan Api Key",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler((args: SetEtherscanApiKeyArgs) => {
       const r = setRuntimeOverride("etherscan", args.apiKey);
@@ -4783,6 +6071,13 @@ async function main() {
         "verbatim. " +
         "Outside demo mode, the tool returns a no-op response indicating there's nothing to exit.",
       inputSchema: exitDemoModeInput.shape,
+      annotations: {
+        title: "Exit Demo Mode",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     handler((args: ExitDemoModeArgs) => buildExitDemoGuide(args))
   );
@@ -4800,6 +6095,13 @@ async function main() {
         "Rate-limited per install (30s between calls, 3/hour, 10/day, 7-day dedupe on identical summaries). " +
         "Write clear, actionable summaries — this lands in a real issue tracker read by humans.",
       inputSchema: requestCapabilityInput.shape,
+      annotations: {
+        title: "Request Capability",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
     handler(requestCapability)
   );
