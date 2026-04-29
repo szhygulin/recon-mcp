@@ -47,6 +47,86 @@ const RISK_PROFILE_VALUES = new Set<NonNullable<SharedStrategy["meta"]["riskProf
   "aggressive",
 ]);
 
+// Known-key sets, frozen against the v1 schema. Validation refuses any key
+// outside these sets so a compromised producer can't smuggle directive-shaped
+// fields (`_delegateAuthority`, `_executor`, …) through silently. Issue #557.
+const KNOWN_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
+  "version",
+  "meta",
+  "positions",
+  "notes",
+]);
+const KNOWN_META_KEYS: ReadonlySet<string> = new Set([
+  "name",
+  "description",
+  "authorLabel",
+  "riskProfile",
+  "createdIso",
+  "chains",
+]);
+const KNOWN_POSITION_KEYS: ReadonlySet<string> = new Set([
+  "protocol",
+  "chain",
+  "kind",
+  "asset",
+  "pctOfTotal",
+  "healthFactor",
+  "feeTier",
+  "apr",
+  "inRange",
+]);
+
+/**
+ * Refuse any key not listed in `allowed`. The previous behavior (silently
+ * drop unknown keys via reconstruction) hid tampering — issue #557 wants
+ * the import side to surface it. Symmetric on emit so a future serializer
+ * drift adding a new field can't leak past validation either.
+ */
+function assertOnlyAllowedKeys(
+  obj: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+  context: string,
+): void {
+  for (const key of Object.keys(obj)) {
+    if (!allowed.has(key)) {
+      throw new Error(
+        `STRATEGY_UNKNOWN_KEY_REJECTED: ${context} contains unexpected key ` +
+          `"${key}". Strategy JSON must conform to the published ` +
+          `v${SHARED_STRATEGY_VERSION} schema; unknown keys are refused to surface ` +
+          `tampering by an upstream producer (a compromised MCP, a hand-edited ` +
+          `paste, or a directive-shaped sidecar like \`_delegateAuthority\` / ` +
+          `\`_executor\`). Allowed at ${context}: ` +
+          `${Array.from(allowed).sort().join(", ")}.`,
+      );
+    }
+  }
+}
+
+/** Walk top-level, meta, and each position and assert the strict shape. */
+function assertStrategyStrictShape(obj: Record<string, unknown>): void {
+  assertOnlyAllowedKeys(obj, KNOWN_TOP_LEVEL_KEYS, "strategy root");
+  const meta = obj.meta;
+  if (meta && typeof meta === "object") {
+    assertOnlyAllowedKeys(
+      meta as Record<string, unknown>,
+      KNOWN_META_KEYS,
+      "strategy.meta",
+    );
+  }
+  const positions = obj.positions;
+  if (Array.isArray(positions)) {
+    for (const p of positions) {
+      if (p && typeof p === "object") {
+        assertOnlyAllowedKeys(
+          p as Record<string, unknown>,
+          KNOWN_POSITION_KEYS,
+          "strategy.positions[]",
+        );
+      }
+    }
+  }
+}
+
 /** Sort positions by descending pctOfTotal so consumers see the dominant pieces first. */
 function sortPositions(positions: SharedStrategyPosition[]): SharedStrategyPosition[] {
   return [...positions].sort((a, b) => b.pctOfTotal - a.pctOfTotal);
@@ -115,6 +195,14 @@ export async function shareStrategy(
     notes,
   };
 
+  // Strict-shape guard. Backstop for serializer drift adding a new
+  // field — issue #557. Walks top-level + meta + each position and
+  // throws if any key falls outside the v1 schema. Defense in depth
+  // against a future code path that emits a directive-shaped sidecar
+  // (`_delegateAuthority`, `_executor`, …) that the recipient's import
+  // path would now refuse anyway, but this catches it at the source.
+  assertStrategyStrictShape(strategy as unknown as Record<string, unknown>);
+
   // Privacy guard. Throws RedactionError if anything in the JSON
   // matches an address / hash pattern. The serializer is expected to
   // produce clean output; this scan is a backstop for serializer drift
@@ -149,6 +237,7 @@ function validateSharedStrategy(value: unknown): SharedStrategy {
     );
   }
   const obj = value as Record<string, unknown>;
+  assertOnlyAllowedKeys(obj, KNOWN_TOP_LEVEL_KEYS, "strategy root");
   if (obj.version !== SHARED_STRATEGY_VERSION) {
     throw new Error(
       `Imported strategy version ${String(obj.version)} is not supported. ` +
@@ -159,6 +248,7 @@ function validateSharedStrategy(value: unknown): SharedStrategy {
   if (!meta || typeof meta !== "object") {
     throw new Error("Imported strategy missing required `meta` object.");
   }
+  assertOnlyAllowedKeys(meta, KNOWN_META_KEYS, "strategy.meta");
   if (typeof meta.name !== "string" || meta.name.length === 0) {
     throw new Error(
       "Imported strategy `meta.name` must be a non-empty string.",
@@ -195,6 +285,7 @@ function validateSharedStrategy(value: unknown): SharedStrategy {
       throw new Error("Each position must be an object.");
     }
     const p = raw as Record<string, unknown>;
+    assertOnlyAllowedKeys(p, KNOWN_POSITION_KEYS, "strategy.positions[]");
     if (typeof p.protocol !== "string") {
       throw new Error("Position `protocol` must be a string.");
     }

@@ -388,3 +388,100 @@ describe("importStrategy — privacy + validation", () => {
     ).rejects.toThrow(/kind/);
   });
 });
+
+describe("importStrategy — strict-shape gate (issue #557)", () => {
+  /** Shorthand for a minimum-valid v1 strategy we can mutate per test. */
+  function aValidStrategy(): Record<string, unknown> {
+    return {
+      version: 1,
+      meta: {
+        name: "x",
+        createdIso: "2026-04-26T12:00:00.000Z",
+        chains: ["ethereum"],
+      },
+      positions: [
+        {
+          protocol: "wallet",
+          chain: "ethereum",
+          kind: "balance",
+          asset: "ETH",
+          pctOfTotal: 100,
+        },
+      ],
+      notes: [],
+    };
+  }
+
+  it("refuses unknown top-level keys (e.g. _delegateAuthority)", async () => {
+    const { importStrategy } = await import("../src/modules/strategy/index.ts");
+    const hostile = aValidStrategy();
+    hostile._delegateAuthority = "0xDeadBeef";
+    await expect(
+      importStrategy({ json: hostile }),
+    ).rejects.toThrow(/STRATEGY_UNKNOWN_KEY_REJECTED.*strategy root.*_delegateAuthority/s);
+  });
+
+  it("refuses unknown nested keys under meta (e.g. _executor)", async () => {
+    const { importStrategy } = await import("../src/modules/strategy/index.ts");
+    const hostile = aValidStrategy();
+    (hostile.meta as Record<string, unknown>)._executor = "Bob";
+    await expect(
+      importStrategy({ json: hostile }),
+    ).rejects.toThrow(/STRATEGY_UNKNOWN_KEY_REJECTED.*strategy\.meta.*_executor/s);
+  });
+
+  it("refuses unknown nested keys under positions[]", async () => {
+    const { importStrategy } = await import("../src/modules/strategy/index.ts");
+    const hostile = aValidStrategy();
+    (hostile.positions as Array<Record<string, unknown>>)[0]._delegate = "Bob";
+    await expect(
+      importStrategy({ json: hostile }),
+    ).rejects.toThrow(/STRATEGY_UNKNOWN_KEY_REJECTED.*strategy\.positions\[\].*_delegate/s);
+  });
+
+  it("refuses non-underscore unknown keys too (the gate is whitelist-based, not pattern-based)", async () => {
+    const { importStrategy } = await import("../src/modules/strategy/index.ts");
+    const hostile = aValidStrategy();
+    hostile.somethingNew = "value";
+    await expect(
+      importStrategy({ json: hostile }),
+    ).rejects.toThrow(/STRATEGY_UNKNOWN_KEY_REJECTED/);
+  });
+
+  it("accepts a valid v1 strategy with all known fields populated", async () => {
+    const { importStrategy } = await import("../src/modules/strategy/index.ts");
+    const valid = {
+      version: 1,
+      meta: {
+        name: "x",
+        description: "an example",
+        authorLabel: "alice",
+        riskProfile: "moderate",
+        createdIso: "2026-04-26T12:00:00.000Z",
+        chains: ["ethereum"],
+      },
+      positions: [
+        {
+          protocol: "aave-v3",
+          chain: "ethereum",
+          kind: "supply",
+          asset: "USDC",
+          pctOfTotal: 75,
+          healthFactor: 2.1,
+          apr: 0.04,
+        },
+        {
+          protocol: "uniswap-v3",
+          chain: "ethereum",
+          kind: "lp",
+          asset: "ETH/USDC",
+          pctOfTotal: 25,
+          feeTier: 3000,
+          inRange: true,
+        },
+      ],
+      notes: ["a note"],
+    };
+    await expect(importStrategy({ json: valid })).resolves.toBeDefined();
+  });
+});
