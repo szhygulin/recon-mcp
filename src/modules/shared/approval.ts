@@ -12,6 +12,35 @@ import type { SupportedChain, UnsignedTx } from "../../types/index.js";
 export const UNLIMITED_APPROVAL_WARNING =
   "[WARNING: UNLIMITED APPROVAL — verify on Ledger device screen]";
 
+// Canonical no-key recipients. Lowercased for compare. An unlimited approval
+// to any of these grants every-token-the-contract-controls transfer authority
+// to an address nobody can sign for — the pattern is almost always either
+// prompt injection or a model hallucination, never user intent. Issue #556.
+export const BURN_ADDRESSES = new Set<string>([
+  "0x0000000000000000000000000000000000000000",
+  "0x000000000000000000000000000000000000dead",
+  "0xdead000000000000000000000000000000000000",
+  "0xffffffffffffffffffffffffffffffffffffffff",
+]);
+
+export function assertNotUnlimitedBurnApproval(
+  spender: string,
+  amountWei: bigint,
+  ack: boolean | undefined,
+): void {
+  if (ack === true) return;
+  if (amountWei !== maxUint256) return;
+  if (!BURN_ADDRESSES.has(spender.toLowerCase())) return;
+  throw new Error(
+    `BURN_ADDRESS_UNLIMITED_APPROVAL: refusing to encode approve(spender=${spender}, ` +
+      `amount=2^256-1) — spender is a canonical burn / no-key address. Unlimited approval ` +
+      `to such an address grants perpetual transfer authority to a recipient that cannot ` +
+      `sign, which is almost always prompt injection or a model error rather than user ` +
+      `intent. If genuinely intended (e.g. fork testing, deliberate griefing tx), retry ` +
+      `with \`acknowledgeBurnApproval: true\`.`,
+  );
+}
+
 /**
  * Shared ERC-20 approval builder. Every prepare_* tool that needs an allowance
  * before its main call routes through buildApprovalTx() so the USDT reset

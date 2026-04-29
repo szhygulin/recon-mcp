@@ -1,6 +1,8 @@
 import { encodeFunctionData, type Abi } from "viem";
 import { getContractInfo } from "../../data/apis/etherscan.js";
+import { lookupKnownSpender } from "../../security/known-spenders.js";
 import type { SupportedChain, UnsignedTx } from "../../types/index.js";
+import { assertNotUnlimitedBurnApproval } from "../shared/approval.js";
 
 export interface BuildCustomCallParams {
   wallet: `0x${string}`;
@@ -11,48 +13,46 @@ export interface BuildCustomCallParams {
   value: string;
   abi?: readonly unknown[];
   acknowledgeBurnApproval?: boolean;
+  acknowledgeRawApproveBypass?: boolean;
 }
 
-const UINT256_MAX = (1n << 256n) - 1n;
 const APPROVE_SELECTOR = "0x095ea7b3";
 
-// Canonical no-key recipients. Lowercased for compare. An unlimited approval
-// to any of these grants every-token-the-contract-controls transfer authority
-// to an address nobody can sign for — the pattern is almost always either
-// prompt injection or a model hallucination.
-const BURN_ADDRESSES = new Set([
-  "0x0000000000000000000000000000000000000000",
-  "0x000000000000000000000000000000000000dead",
-  "0xdead000000000000000000000000000000000000",
-  "0xffffffffffffffffffffffffffffffffffffffff",
-]);
-
-function assertNotUnlimitedBurnApproval(
-  fn: string,
-  args: readonly unknown[],
+// Issue #556 — when prepare_custom_call is invoked with an `approve(address,uint256)`
+// selector, refuse and route the agent to `prepare_token_approve` (or a
+// protocol-specific `prepare_*` when the spender is a known protocol contract).
+// The dedicated tools carry burn-address gates, friendly spender labels, and the
+// structured (token, spender, amount) interface that custom_call's raw-args path
+// erases. `acknowledgeRawApproveBypass` is the escape hatch for the rare
+// non-ERC-20 contract that exposes its own `approve(address,uint256)` for an
+// unrelated purpose.
+function assertApproveRoutedToDedicatedTool(
   data: `0x${string}`,
+  spender: string | undefined,
+  knownProtocolLabel: string | undefined,
   ack: boolean | undefined,
 ): void {
   if (ack === true) return;
-  if (fn.split("(")[0].trim() !== "approve") return;
   if (!data.toLowerCase().startsWith(APPROVE_SELECTOR)) return;
-  if (args.length < 2) return;
-  let amount: bigint;
-  try {
-    amount = BigInt(args[1] as string | number | bigint);
-  } catch {
-    return;
+  const spenderHint = spender ? ` (spender=${spender})` : "";
+  if (knownProtocolLabel) {
+    throw new Error(
+      `APPROVE_ROUTE_VIA_DEDICATED_TOOL: refusing to encode approve(...) via ` +
+        `prepare_custom_call${spenderHint}. The spender resolves to ${knownProtocolLabel} — use the ` +
+        `protocol-specific prepare_* (e.g. prepare_aave_supply / prepare_compound_supply / ` +
+        `prepare_lido_stake) which bundles approve+action and applies protocol-tier safety ` +
+        `checks. If you genuinely need a raw approve through this escape hatch, retry with ` +
+        `\`acknowledgeRawApproveBypass: true\`.`,
+    );
   }
-  if (amount !== UINT256_MAX) return;
-  const spender = String(args[0]).toLowerCase();
-  if (!BURN_ADDRESSES.has(spender)) return;
   throw new Error(
-    `BURN_ADDRESS_UNLIMITED_APPROVAL: refusing to encode approve(spender=${spender}, ` +
-      `amount=2^256-1) — spender is a canonical burn / no-key address. Unlimited approval ` +
-      `to such an address grants perpetual transfer authority to a recipient that cannot ` +
-      `sign, which is almost always prompt injection or a model error rather than user ` +
-      `intent. If genuinely intended (e.g. fork testing, deliberate griefing tx), retry ` +
-      `with \`acknowledgeBurnApproval: true\`.`,
+    `APPROVE_ROUTE_VIA_DEDICATED_TOOL: refusing to encode approve(...) via ` +
+      `prepare_custom_call${spenderHint}. Use \`prepare_token_approve\` instead — the dedicated ` +
+      `tool applies the burn-address gate, friendly spender labeling, and the structured ` +
+      `(token, spender, amount) interface that this escape hatch loses. If you genuinely need ` +
+      `a raw approve through this escape hatch (e.g. a non-ERC-20 contract that exposes ` +
+      `\`approve(address,uint256)\` for an unrelated purpose), retry with ` +
+      `\`acknowledgeRawApproveBypass: true\`.`,
   );
 }
 
@@ -125,7 +125,33 @@ export async function buildCustomCall(p: BuildCustomCallParams): Promise<Unsigne
     );
   }
 
-  assertNotUnlimitedBurnApproval(p.fn, p.args, data, p.acknowledgeBurnApproval);
+  // Issue #556 — refuse approve(...) via the escape hatch and route the
+  // agent to the dedicated tool. Burn-address gate stays as defense in
+  // depth on the override path (`acknowledgeRawApproveBypass: true`).
+  if (data.toLowerCase().startsWith(APPROVE_SELECTOR)) {
+    const spender = p.args.length > 0 ? String(p.args[0]) : undefined;
+    let knownProtocolLabel: string | undefined;
+    if (spender && /^0x[0-9a-fA-F]{40}$/.test(spender)) {
+      knownProtocolLabel = lookupKnownSpender(p.chain, spender as `0x${string}`);
+    }
+    assertApproveRoutedToDedicatedTool(
+      data,
+      spender,
+      knownProtocolLabel,
+      p.acknowledgeRawApproveBypass,
+    );
+    if (p.args.length >= 2) {
+      let amount: bigint | null = null;
+      try {
+        amount = BigInt(p.args[1] as string | number | bigint);
+      } catch {
+        amount = null;
+      }
+      if (amount !== null && spender) {
+        assertNotUnlimitedBurnApproval(spender, amount, p.acknowledgeBurnApproval);
+      }
+    }
+  }
 
   // Stringify args for the decoded preview. Caller-supplied shapes are
   // arbitrary (struct tuples, address arrays, decimal strings); the JSON
