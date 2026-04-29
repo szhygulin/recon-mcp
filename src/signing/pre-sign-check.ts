@@ -284,17 +284,26 @@ export async function assertTransactionSafe(tx: UnsignedTx): Promise<void> {
 
   // 4) Every other selector: must be a known protocol destination — UNLESS
   //    this handle came through `prepare_custom_call`'s affirmative-ack
-  //    path (`acknowledgeNonProtocolTarget: true`). The schema-enforced
-  //    gate at build time already covered consent for the non-protocol
-  //    target; refusing here would render the escape hatch dead-on-arrival
-  //    at the very next step (the bug from issue #496). Note this skips
+  //    path (`acknowledgeNonProtocolTarget: true`) OR through one of the
+  //    `prepare_safe_tx_*` builders (`safeTxOrigin: true`, issue #609 —
+  //    Safe addresses are user-specific and can never appear in any
+  //    canonical allowlist; the OUTER calldata is always `approveHash` or
+  //    `execTransaction`, neither of which carries transferable authority
+  //    on its own). The schema-enforced gate at build time (custom_call)
+  //    or the tool semantics (safe_tx_*) already covered consent for the
+  //    non-protocol target; refusing here would render the escape hatch
+  //    dead-on-arrival (the bug from #496) and break the documented
+  //    `prepare_safe_tx_propose → send_transaction` flow. Note this skips
   //    ONLY the catch-all unknown-destination refusal — the approve()
   //    spender-allowlist (block 2 above), the transfer()-on-unknown-token
   //    refusal (block 3), and the per-destination ABI-selector check
   //    (block 5 below) all stay active because they protect against
-  //    distinct attack shapes that the ack does not subsume.
+  //    distinct attack shapes the ack does not subsume.
   if (!dest) {
-    if (tx.acknowledgedNonProtocolTarget === true) {
+    if (
+      tx.acknowledgedNonProtocolTarget === true ||
+      tx.safeTxOrigin === true
+    ) {
       // Pre-sign defenses #2 (approve spender allowlist) and #3 (transfer
       // on unknown token) are already past; this catch-all is the right
       // place to cleanly accept the call.

@@ -208,5 +208,9 @@ export async function prepareSafeTxExecute(
         signaturesLength: String((signatures.length - 2) / 2),
       },
     },
+    // Safe addresses are user-specific and never appear in the
+    // canonical-dispatch allowlist. Tag the handle so `assertTransactionSafe`
+    // skips ONLY its catch-all unknown-destination refusal. Issue #609.
+    safeTxOrigin: true,
   };
 }

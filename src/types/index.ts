@@ -1300,6 +1300,26 @@ export interface UnsignedTx {
    */
   acknowledgedNonProtocolTarget?: boolean;
   /**
+   * Set when the tx was built by `prepare_safe_tx_propose`,
+   * `prepare_safe_tx_approve`, or `prepare_safe_tx_execute`. Read by
+   * `assertTransactionSafe` to skip ONLY the catch-all "unknown destination"
+   * refusal — the OUTER `to` is the user's own Safe contract, which is by
+   * definition not in any canonical allowlist. Issue #609.
+   *
+   * Why this is safe: the OUTER calldata is always a Safe-specific selector
+   * (`approveHash(bytes32)` or `execTransaction(...)`) — neither carries
+   * transferable authority on its own, and Ledger Live shows the
+   * destination address on-device. The inner-action defense (binding the
+   * SafeTx body to the safeTxHash) is upstream of this check.
+   *
+   * Trust note: like `acknowledgedNonProtocolTarget`, this flag flows
+   * through the handle store keyed by the server-minted UUID. The agent
+   * cannot fabricate it on a tx that didn't come through one of the three
+   * prepare paths above. Setting it on any other prepare path is a server
+   * bug, not a user-controllable lever.
+   */
+  safeTxOrigin?: boolean;
+  /**
    * Invariant #14 — durable-binding source-of-truth verification (issue
    * #460). When the tx binds funds to a durable on-chain object selected
    * from a multi-candidate set (Compound Comet, Morpho marketId, Uniswap

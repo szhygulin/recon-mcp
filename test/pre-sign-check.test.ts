@@ -637,3 +637,89 @@ describe("Pre-sign check: prepare_custom_call escape hatch (issue #496)", () => 
     void zeroAddress;
   });
 });
+
+describe("Pre-sign check: prepare_safe_tx_* origin flag (issue #609)", () => {
+  // A user-specific Safe Multisig contract — by definition never in any
+  // canonical-dispatch allowlist. The bug from #609: `preview_send` /
+  // `send_transaction` refused every approveHash / execTransaction handle
+  // produced by `prepare_safe_tx_propose|approve|execute` because the Safe
+  // address didn't match a known destination. The fix: those builders
+  // stamp `safeTxOrigin: true` on the UnsignedTx, and this check skips
+  // ONLY the catch-all unknown-destination refusal — every other defense
+  // stays active.
+  const SAFE_ADDRESS = "0xC9844d6cecebc0498e533118Cd886C0d05d4B537" as const;
+  // approveHash(bytes32) selector + zero hash arg
+  const APPROVE_HASH_CALLDATA =
+    ("0xd4d9bdcd" +
+      "0000000000000000000000000000000000000000000000000000000000000000") as `0x${string}`;
+
+  it("WITHOUT the safeTxOrigin flag — refuses unknown Safe address (current behavior)", async () => {
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: SAFE_ADDRESS as `0x${string}`,
+        data: APPROVE_HASH_CALLDATA,
+        value: "0",
+        from: WALLET,
+        description: "approveHash on user Safe",
+      }),
+    ).rejects.toThrow(/refusing to sign against unknown contract/);
+  });
+
+  it("WITH safeTxOrigin=true — accepts approveHash on the user's Safe", async () => {
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: SAFE_ADDRESS as `0x${string}`,
+        data: APPROVE_HASH_CALLDATA,
+        value: "0",
+        from: WALLET,
+        description: "prepare_safe_tx_propose: approveHash",
+        safeTxOrigin: true,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("WITH safeTxOrigin=true — accepts execTransaction on the user's Safe", async () => {
+    // execTransaction selector (0x6a761202); calldata body irrelevant to the
+    // catch-all branch — the destination + selector class are what's tested.
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const data = ("0x6a761202" + "00".repeat(32 * 10)) as `0x${string}`;
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: SAFE_ADDRESS as `0x${string}`,
+        data,
+        value: "0",
+        from: WALLET,
+        description: "prepare_safe_tx_execute: execTransaction",
+        safeTxOrigin: true,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("the flag does NOT bypass the approve() spender allowlist", async () => {
+    // Defense in depth: even if a builder stamped safeTxOrigin on a tx
+    // whose calldata happens to be approve(attacker, max), block 2 still
+    // refuses. The Safe-origin bypass only opens the catch-all branch.
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const data = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [ATTACKER as `0x${string}`, maxUint256],
+    });
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: USDC_ETH as `0x${string}`,
+        data,
+        value: "0",
+        from: WALLET,
+        description: "[malicious] safeTxOrigin-tagged approve",
+        safeTxOrigin: true,
+      }),
+    ).rejects.toThrow(/spender is not in the protocol allowlist/);
+  });
+});
