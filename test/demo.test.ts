@@ -271,8 +271,11 @@ describe("renderSimulationEnvelopeBlock — markdown narrative", () => {
     expect(md).toContain("`send_transaction`");
     expect(md).toContain("`h-abc-123`");
     expect(md).toContain(env.simulatedTxHash);
-    // Action paragraph the agent should relay verbatim.
-    expect(md).toContain("unset `VAULTPILOT_DEMO`");
+    // Action paragraph the agent should relay verbatim. #613 — leave path
+    // names the MCP-CLIENT restart, not just the server, since the env var
+    // lives in the client config and a server-only restart preserves it.
+    expect(md).toContain("drop `VAULTPILOT_DEMO`");
+    expect(md).toContain("MCP-client config");
   });
 
   it("summarizes a successful viem-shape simulation as 'would succeed'", async () => {

@@ -263,7 +263,7 @@ export function runDoctor(): DoctorReport {
       name: "demo-mode",
       status: "warn",
       message:
-        "Demo mode is ON via VAULTPILOT_DEMO=true. Signing tools refuse, broadcast is intercepted to a simulation envelope. To use real funds, unset VAULTPILOT_DEMO and restart.",
+        "Demo mode is ON via VAULTPILOT_DEMO=true. Signing tools refuse, broadcast is intercepted to a simulation envelope. To use real funds, drop VAULTPILOT_DEMO from your MCP-client config and restart the client (e.g. Claude Code) — restarting only the server process does not clear the env var.",
     });
   } else if (envInvalid) {
     checks.push({
