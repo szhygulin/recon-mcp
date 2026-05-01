@@ -517,6 +517,7 @@ import {
   getSkillPinDriftNotice,
   recordSkillPinDriftResult,
 } from "./diagnostics/skill-pin-drift.js";
+import { getLocalSkillDriftNotice } from "./diagnostics/local-skill-drift.js";
 import {
   renderAgentTaskBlock,
   renderLedgerHashBlock,
@@ -916,6 +917,14 @@ function handler<T, R>(
         // match or fetch-failed).
         const driftNotice = getSkillPinDriftNotice();
         if (driftNotice) content.push({ type: "text", text: driftNotice });
+        // Issue #613 finding 3 — surface local-skill drift (user's
+        // installed SKILL.md hashes to a value other than the MCP
+        // pin). Distinct from the master-vs-pin check above: this
+        // tells the user their `git clone` is stale, with explicit
+        // "stale, not tampered" wording when a version sentinel can
+        // be parsed from the local content. Once-per-session dedup.
+        const localSkillNotice = getLocalSkillDriftNotice();
+        if (localSkillNotice) content.push({ type: "text", text: localSkillNotice });
         // Issue #391 — surface the demo-wallet onboarding path on a
         // fresh post-install session (no config + no active demo wallet)
         // so the agent doesn't dead-end the user with "you need to pair
