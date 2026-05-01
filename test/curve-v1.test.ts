@@ -329,79 +329,146 @@ describe("buildCurveAddLiquidity", () => {
 });
 
 /**
- * `prepare_curve_swap` — issue #615. Pool is hardcoded to the canonical
- * legacy stETH/ETH StableSwap pool. Tests pin: direction routing,
- * slippage gate, native-value placement on eth_to_steth, approval chain
- * on steth_to_eth, get_dy → min_dy math.
+ * `prepare_curve_swap` — issue #615 v0.2. Generalized to:
+ *   - the canonical legacy stETH/ETH pool (curated entry, ETH at index 0)
+ *   - any stable_ng factory plain pool (factory-resolved, ERC-20 only)
+ * Tests pin: index resolution from coins, native-value placement on
+ * native-in legs, approval chain on ERC-20-in legs, slippage gate,
+ * meta-pool rejection, unknown-pool rejection, mismatched-token error.
  */
 const STETH_POOL = "0xDC24316b9AE028F1497c275EB9192a3Ea0f67022" as const;
 const STETH_TOKEN = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84" as const;
+const ETH_SENTINEL = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as const;
+const NG_POOL = "0xCCCCCcccCCCCcCcCCCCcCCCCcCCcCCccCCCCCCCC" as const;
+const NG_COIN_A = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as const; // USDC
+const NG_COIN_B = "0xdAC17F958D2ee523a2206206994597C13D831ec7" as const; // USDT
 
-describe("buildCurveStethSwap (issue #615)", () => {
+describe("buildCurveSwap (issue #615 v0.2)", () => {
   beforeEach(() => vi.resetModules());
   afterEach(() => vi.restoreAllMocks());
 
-  function poolClient(opts: { allowance?: bigint; getDy?: bigint } = {}) {
+  /**
+   * Mock client tailored to the curated stETH/ETH path:
+   *   - readContract N_COINS → 2
+   *   - multicall coins(0..1) → [ETH_SENTINEL, stETH]
+   *   - readContract get_dy → opts.getDy
+   *   - readContract allowance → opts.allowance
+   *   - (CURATED — no factory multicall is fired)
+   */
+  function stethPoolClient(opts: { allowance?: bigint; getDy?: bigint } = {}) {
     return {
       readContract: vi.fn(async (call: { functionName: string }) => {
+        if (call.functionName === "N_COINS") return 2n;
         if (call.functionName === "get_dy") return opts.getDy ?? 10n ** 18n;
         if (call.functionName === "allowance") return opts.allowance ?? 0n;
         if (call.functionName === "decimals") return 18;
         if (call.functionName === "symbol") return "stETH";
         throw new Error(`unexpected readContract: ${call.functionName}`);
       }),
+      multicall: vi.fn(
+        async ({ contracts }: { contracts: MulticallCall[] }) => {
+          const fns = contracts.map((c) => c.functionName);
+          if (fns.every((f) => f === "coins")) {
+            return [ETH_SENTINEL, STETH_TOKEN];
+          }
+          throw new Error(`unexpected multicall: ${fns.join(",")}`);
+        },
+      ),
     };
   }
 
-  it("eth_to_steth: native value, no approval, min_dy from slippageBps", async () => {
-    const client = poolClient({ getDy: 10n ** 18n });
+  /**
+   * Mock client for a stable_ng factory plain pool (USDC/USDT-like):
+   *   - factory multicall {is_meta, get_n_coins} → {false, 2}
+   *   - readContract N_COINS → 2
+   *   - multicall coins(0..1) → [USDC, USDT]
+   * The dispatch fires THREE multicalls in this path (factory → coins).
+   * Distinguish by inspecting the contract list of each call.
+   */
+  function ngPoolClient(opts: {
+    isMeta?: boolean;
+    nCoinsFactory?: bigint;
+    getDy?: bigint;
+    allowance?: bigint;
+  } = {}) {
+    return {
+      readContract: vi.fn(async (call: { functionName: string }) => {
+        if (call.functionName === "N_COINS") return 2n;
+        if (call.functionName === "get_dy") return opts.getDy ?? 1_000_000n;
+        if (call.functionName === "allowance") return opts.allowance ?? 0n;
+        if (call.functionName === "decimals") return 6;
+        if (call.functionName === "symbol") return "USDC";
+        throw new Error(`unexpected readContract: ${call.functionName}`);
+      }),
+      multicall: vi.fn(
+        async ({ contracts }: { contracts: MulticallCall[] }) => {
+          const fns = contracts.map((c) => c.functionName);
+          if (fns.includes("is_meta") && fns.includes("get_n_coins")) {
+            return [
+              { status: "success", result: opts.isMeta ?? false },
+              { status: "success", result: opts.nCoinsFactory ?? 2n },
+            ];
+          }
+          if (fns.every((f) => f === "coins")) {
+            return [NG_COIN_A, NG_COIN_B];
+          }
+          throw new Error(`unexpected multicall: ${fns.join(",")}`);
+        },
+      ),
+    };
+  }
+
+  it("legacy stETH/ETH (curated): native ETH input emits value=dx, no approval", async () => {
+    const client = stethPoolClient({ getDy: 10n ** 18n });
     vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
     vi.doMock("../src/modules/shared/token-meta.js", () => ({
       resolveTokenMeta: async () => ({ symbol: "stETH", decimals: 18 }),
     }));
 
-    const { buildCurveStethSwap } = await import("../src/modules/curve/actions.js");
-    const tx = await buildCurveStethSwap({
+    const { buildCurveSwap } = await import("../src/modules/curve/actions.js");
+    const tx = await buildCurveSwap({
       wallet: WALLET,
-      direction: "eth_to_steth",
+      pool: STETH_POOL,
+      fromToken: "native",
+      toToken: STETH_TOKEN,
       amount: "1.0",
-      slippageBps: 50, // 0.5%
+      slippageBps: 50,
     });
 
     expect(tx.to).toBe(STETH_POOL);
     expect(tx.value).toBe((10n ** 18n).toString());
-    expect(tx.next).toBeUndefined(); // no approval leg for native input
+    expect(tx.next).toBeUndefined();
     expect(tx.decoded?.functionName).toBe("exchange");
     expect(tx.decoded?.args.i).toBe("0");
     expect(tx.decoded?.args.j).toBe("1");
-    // 1e18 * (10000 - 50) / 10000 = 0.995e18
     expect(tx.decoded?.args.minOut).toBe("0.995 stETH");
   });
 
-  it("steth_to_eth: chains stETH approval to the pool, value=0", async () => {
-    const client = poolClient({ getDy: 10n ** 18n, allowance: 0n });
+  it("legacy stETH/ETH (curated): stETH input chains an approval to the pool, value=0", async () => {
+    const client = stethPoolClient({ getDy: 10n ** 18n, allowance: 0n });
     vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
     vi.doMock("../src/modules/shared/token-meta.js", () => ({
       resolveTokenMeta: async () => ({ symbol: "stETH", decimals: 18 }),
     }));
 
-    const { buildCurveStethSwap } = await import("../src/modules/curve/actions.js");
-    const tx = await buildCurveStethSwap({
+    const { buildCurveSwap } = await import("../src/modules/curve/actions.js");
+    const tx = await buildCurveSwap({
       wallet: WALLET,
-      direction: "steth_to_eth",
+      pool: STETH_POOL,
+      fromToken: STETH_TOKEN,
+      toToken: "native",
       amount: "1.0",
       slippageBps: 50,
       acknowledgeNonAllowlistedSpender: true,
     });
 
-    // Head should be the approval; action sits at the tail.
     expect(tx.to).toBe(STETH_TOKEN);
     expect(tx.decoded?.functionName).toBe("approve");
     // The approval head must carry the affirmative-ack flag so
     // assertTransactionSafe accepts the non-allowlisted spender at
     // preview/send time.
     expect(tx.acknowledgedNonAllowlistedSpender).toBe(true);
-    expect(tx.description).toMatch(/ADVISORY.*Curve stETH\/ETH pool.*allowlist/i);
+    expect(tx.description).toMatch(/ADVISORY.*Curve.*stETH\/ETH.*allowlist/i);
     type WithNext = typeof tx & { next?: typeof tx };
     let cur: typeof tx = tx;
     while ((cur as WithNext).next !== undefined) cur = (cur as WithNext).next!;
@@ -412,88 +479,258 @@ describe("buildCurveStethSwap (issue #615)", () => {
     expect(cur.decoded?.args.j).toBe("0");
   });
 
-  it("steth_to_eth: refuses without acknowledgeNonAllowlistedSpender", async () => {
-    const client = poolClient({ getDy: 10n ** 18n, allowance: 0n });
+  it("ERC-20 input: refuses without acknowledgeNonAllowlistedSpender (Curve pool sits outside protocol allowlist)", async () => {
+    const client = stethPoolClient({ getDy: 10n ** 18n, allowance: 0n });
     vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
     vi.doMock("../src/modules/shared/token-meta.js", () => ({
       resolveTokenMeta: async () => ({ symbol: "stETH", decimals: 18 }),
     }));
 
-    const { buildCurveStethSwap } = await import("../src/modules/curve/actions.js");
+    const { buildCurveSwap } = await import("../src/modules/curve/actions.js");
     await expect(
-      buildCurveStethSwap({
+      buildCurveSwap({
         wallet: WALLET,
-        direction: "steth_to_eth",
+        pool: STETH_POOL,
+        fromToken: STETH_TOKEN,
+        toToken: "native",
         amount: "1.0",
         slippageBps: 50,
+        // No ack — should fail.
       }),
     ).rejects.toThrow(/acknowledgeNonAllowlistedSpender|approve-allowlist|recommendation/i);
   });
 
-  it("eth_to_steth: ignores acknowledgeNonAllowlistedSpender (no approval is built)", async () => {
-    const client = poolClient({ getDy: 10n ** 18n });
+  it("native input: ignores acknowledgeNonAllowlistedSpender (no approval built)", async () => {
+    const client = stethPoolClient({ getDy: 10n ** 18n });
     vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
     vi.doMock("../src/modules/shared/token-meta.js", () => ({
       resolveTokenMeta: async () => ({ symbol: "stETH", decimals: 18 }),
     }));
 
-    const { buildCurveStethSwap } = await import("../src/modules/curve/actions.js");
-    const tx = await buildCurveStethSwap({
+    const { buildCurveSwap } = await import("../src/modules/curve/actions.js");
+    const tx = await buildCurveSwap({
       wallet: WALLET,
-      direction: "eth_to_steth",
+      pool: STETH_POOL,
+      fromToken: "native",
+      toToken: STETH_TOKEN,
       amount: "1.0",
       slippageBps: 50,
-      // No ack — eth_to_steth path does not build an approval, so the
-      // gate is irrelevant.
+      // No ack — native input path doesn't build an approval, gate is irrelevant.
     });
     expect(tx.acknowledgedNonAllowlistedSpender).toBeUndefined();
     expect(tx.next).toBeUndefined();
   });
 
-  it("requires slippage gate — refuses when neither slippageBps nor minOut is set", async () => {
-    const client = poolClient();
+  it("ERC-20 input + ack: approval description carries ADVISORY, ack flag flows to UnsignedTx", async () => {
+    const client = stethPoolClient({ getDy: 10n ** 18n, allowance: 0n });
+    vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+    vi.doMock("../src/modules/shared/token-meta.js", () => ({
+      resolveTokenMeta: async () => ({ symbol: "stETH", decimals: 18 }),
+    }));
+
+    const { buildCurveSwap } = await import("../src/modules/curve/actions.js");
+    const tx = await buildCurveSwap({
+      wallet: WALLET,
+      pool: STETH_POOL,
+      fromToken: STETH_TOKEN,
+      toToken: "native",
+      amount: "1.0",
+      slippageBps: 50,
+      acknowledgeNonAllowlistedSpender: true,
+    });
+    // Head leg is the approval; assert the ADVISORY in its description and
+    // that the ack flag is stamped so `assertTransactionSafe` skips the
+    // spender-allowlist refusal at preview/send.
+    expect(tx.decoded?.functionName).toBe("approve");
+    expect(tx.description).toMatch(/ADVISORY/);
+    expect(tx.description).toMatch(/protocol approve-allowlist/i);
+    expect(tx.acknowledgedNonAllowlistedSpender).toBe(true);
+  });
+
+  it("stable_ng factory plain pool: ERC-20 ↔ ERC-20, indices resolved from coins", async () => {
+    const client = ngPoolClient({ getDy: 1_000_000n, allowance: 0n });
+    vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+    vi.doMock("../src/modules/shared/token-meta.js", () => ({
+      resolveTokenMeta: async () => ({ symbol: "USDC", decimals: 6 }),
+    }));
+
+    const { buildCurveSwap } = await import("../src/modules/curve/actions.js");
+    const tx = await buildCurveSwap({
+      wallet: WALLET,
+      pool: NG_POOL,
+      fromToken: NG_COIN_A,
+      toToken: NG_COIN_B,
+      amount: "1.0",
+      slippageBps: 50,
+      acknowledgeNonAllowlistedSpender: true,
+    });
+
+    // Approval head (USDC → pool) then exchange.
+    expect(tx.to.toLowerCase()).toBe(NG_COIN_A.toLowerCase());
+    type WithNext = typeof tx & { next?: typeof tx };
+    let cur: typeof tx = tx;
+    while ((cur as WithNext).next !== undefined) cur = (cur as WithNext).next!;
+    expect(cur.to.toLowerCase()).toBe(NG_POOL.toLowerCase());
+    expect(cur.value).toBe("0");
+    expect(cur.decoded?.functionName).toBe("exchange");
+    expect(cur.decoded?.args.i).toBe("0");
+    expect(cur.decoded?.args.j).toBe("1");
+    expect(cur.description).toMatch(/stable_ng plain pool/i);
+  });
+
+  it("rejects meta pools with an actionable error", async () => {
+    const client = ngPoolClient({ isMeta: true });
     vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
 
-    const { buildCurveStethSwap } = await import("../src/modules/curve/actions.js");
+    const { buildCurveSwap } = await import("../src/modules/curve/actions.js");
     await expect(
-      buildCurveStethSwap({
+      buildCurveSwap({
         wallet: WALLET,
-        direction: "eth_to_steth",
+        pool: NG_POOL,
+        fromToken: NG_COIN_A,
+        toToken: NG_COIN_B,
+        amount: "1.0",
+        slippageBps: 50,
+        acknowledgeNonAllowlistedSpender: true,
+      }),
+    ).rejects.toThrow(/meta pool/i);
+  });
+
+  it("rejects pools outside curated set + stable_ng factory", async () => {
+    const client = ngPoolClient({ nCoinsFactory: 0n });
+    vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+
+    const { buildCurveSwap } = await import("../src/modules/curve/actions.js");
+    await expect(
+      buildCurveSwap({
+        wallet: WALLET,
+        pool: "0xDeadBeefDeadBeefDeadBeefDeadBeefDeadBeef",
+        fromToken: NG_COIN_A,
+        toToken: NG_COIN_B,
+        amount: "1.0",
+        slippageBps: 50,
+      }),
+    ).rejects.toThrow(/not supported|not in.*set|cryptoswap/i);
+  });
+
+  it("rejects native fromToken when pool's coins carry no ETH sentinel", async () => {
+    const client = ngPoolClient();
+    vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+    vi.doMock("../src/modules/shared/token-meta.js", () => ({
+      resolveTokenMeta: async () => ({ symbol: "USDC", decimals: 6 }),
+    }));
+
+    const { buildCurveSwap } = await import("../src/modules/curve/actions.js");
+    await expect(
+      buildCurveSwap({
+        wallet: WALLET,
+        pool: NG_POOL,
+        fromToken: "native",
+        toToken: NG_COIN_B,
+        amount: "1.0",
+        slippageBps: 50,
+      }),
+    ).rejects.toThrow(/does not accept native/i);
+  });
+
+  it("rejects fromToken that isn't in the pool's coins array", async () => {
+    const client = ngPoolClient();
+    vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+    vi.doMock("../src/modules/shared/token-meta.js", () => ({
+      resolveTokenMeta: async () => ({ symbol: "USDC", decimals: 6 }),
+    }));
+
+    const { buildCurveSwap } = await import("../src/modules/curve/actions.js");
+    await expect(
+      buildCurveSwap({
+        wallet: WALLET,
+        pool: NG_POOL,
+        fromToken: "0x1111111111111111111111111111111111111111",
+        toToken: NG_COIN_B,
+        amount: "1.0",
+        slippageBps: 50,
+      }),
+    ).rejects.toThrow(/not in the pool's coins/i);
+  });
+
+  it("requires slippage gate — refuses when neither slippageBps nor minOut is set", async () => {
+    const client = stethPoolClient();
+    vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+    vi.doMock("../src/modules/shared/token-meta.js", () => ({
+      resolveTokenMeta: async () => ({ symbol: "stETH", decimals: 18 }),
+    }));
+
+    const { buildCurveSwap } = await import("../src/modules/curve/actions.js");
+    await expect(
+      buildCurveSwap({
+        wallet: WALLET,
+        pool: STETH_POOL,
+        fromToken: "native",
+        toToken: STETH_TOKEN,
         amount: "1.0",
       }),
     ).rejects.toThrow(/min_dy=0|min_out|slippage/i);
   });
 
   it("explicit minOut overrides slippageBps and skips get_dy read", async () => {
-    const client = poolClient();
+    const client = stethPoolClient();
     vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+    vi.doMock("../src/modules/shared/token-meta.js", () => ({
+      resolveTokenMeta: async () => ({ symbol: "stETH", decimals: 18 }),
+    }));
 
-    const { buildCurveStethSwap } = await import("../src/modules/curve/actions.js");
-    const tx = await buildCurveStethSwap({
+    const { buildCurveSwap } = await import("../src/modules/curve/actions.js");
+    const tx = await buildCurveSwap({
       wallet: WALLET,
-      direction: "eth_to_steth",
+      pool: STETH_POOL,
+      fromToken: "native",
+      toToken: STETH_TOKEN,
       amount: "1.0",
-      minOut: "990000000000000000", // 0.99e18 — well under the 1e18 mock
+      minOut: "990000000000000000",
     });
     expect(tx.decoded?.args.minOut).toBe("0.99 stETH");
-    // get_dy should not have been called
     expect(client.readContract).not.toHaveBeenCalledWith(
       expect.objectContaining({ functionName: "get_dy" }),
     );
   });
 
   it("rejects high slippage without acknowledgement", async () => {
-    const client = poolClient({ getDy: 10n ** 18n });
+    const client = stethPoolClient({ getDy: 10n ** 18n });
     vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+    vi.doMock("../src/modules/shared/token-meta.js", () => ({
+      resolveTokenMeta: async () => ({ symbol: "stETH", decimals: 18 }),
+    }));
 
-    const { buildCurveStethSwap } = await import("../src/modules/curve/actions.js");
+    const { buildCurveSwap } = await import("../src/modules/curve/actions.js");
     await expect(
-      buildCurveStethSwap({
+      buildCurveSwap({
         wallet: WALLET,
-        direction: "eth_to_steth",
+        pool: STETH_POOL,
+        fromToken: "native",
+        toToken: STETH_TOKEN,
         amount: "1.0",
-        slippageBps: 200, // 2%
+        slippageBps: 200,
       }),
     ).rejects.toThrow(/sandwich|acknowledgeHighSlippage/i);
+  });
+
+  it("rejects fromToken === toToken", async () => {
+    const client = stethPoolClient();
+    vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+    vi.doMock("../src/modules/shared/token-meta.js", () => ({
+      resolveTokenMeta: async () => ({ symbol: "stETH", decimals: 18 }),
+    }));
+
+    const { buildCurveSwap } = await import("../src/modules/curve/actions.js");
+    await expect(
+      buildCurveSwap({
+        wallet: WALLET,
+        pool: STETH_POOL,
+        fromToken: STETH_TOKEN,
+        toToken: STETH_TOKEN,
+        amount: "1.0",
+        slippageBps: 50,
+      }),
+    ).rejects.toThrow(/same coin index|distinct tokens/i);
   });
 });

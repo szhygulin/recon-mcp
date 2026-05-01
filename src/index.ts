@@ -436,7 +436,7 @@ import { getCompoundPositions } from "./modules/compound/index.js";
 import { getCurvePositions } from "./modules/curve/positions.js";
 import {
   buildCurveAddLiquidity,
-  buildCurveStethSwap,
+  buildCurveSwap,
 } from "./modules/curve/actions.js";
 import {
   getCurvePositionsInput,
@@ -5715,9 +5715,9 @@ async function main() {
     "prepare_curve_swap",
     {
       description:
-        "Build an unsigned Curve swap on the canonical legacy stETH/ETH pool (0xDC24316b9AE028F1497c275EB9192a3Ea0f67022) — historically the tightest-spread venue for stETH↔ETH conversions, beating LiFi/1inch aggregator routing on this pair. Issue #615. " +
-        "Two directions: `eth_to_steth` (sends native ETH as msg.value, no approval) and `steth_to_eth` (chains an stETH approval to the pool first). Slippage gate REQUIRED: pass either `slippageBps` (server reads `get_dy` and applies the cap) or `minOut` (explicit decimal-string uint256). The pool's `exchange()` accepts `min_dy=0` silently — defaulting to that would let MEV extract the entire output. " +
-        "v0.1 scope: this pool only. Other Curve pools use distinct ABIs (cryptoswap, tricrypto, stable_ng) and routing them through the same selector would silently encode wrong calldata; per-pool dispatch is a follow-up. For other Curve pairs, fall back to `prepare_swap` (LiFi).",
+        "Build an unsigned Curve swap on Ethereum. Issue #615. Supports the canonical legacy stETH/ETH pool (0xDC24316b9AE028F1497c275EB9192a3Ea0f67022 — historically the tightest-spread venue for stETH↔ETH) and any plain pool registered with the stable_ng factory (covers crvUSD/USDC, USDe/USDC, etc.). Pass `pool` + `fromToken` + `toToken`; the tool resolves coin indices from the pool's `coins` array. Use `fromToken: \"native\"` for the ETH leg of the stETH/ETH pool (the only currently-supported pool whose `coins(i)` returns the ETH sentinel). " +
+        "Slippage gate REQUIRED: `slippageBps` (server reads `get_dy` and applies the cap) or `minOut` (explicit decimal-string uint256). The pool's `exchange()` accepts `min_dy=0` silently — defaulting to that would let MEV extract the entire output. ERC-20 inputs chain an approval to the pool automatically. " +
+        "Rejected: meta pools (use `exchange_underlying` — different ABI), cryptoswap / tricrypto / older legacy stable pools (uint256 indices, `use_eth` flag — different selectors). For unsupported Curve pairs, fall back to `prepare_swap` (LiFi).",
       inputSchema: prepareCurveSwapInput.shape,
       annotations: {
         title: "Prepare Curve Swap",
@@ -5727,7 +5727,7 @@ async function main() {
         openWorldHint: false,
       },
     },
-    txHandler("prepare_curve_swap", buildCurveStethSwap)
+    txHandler("prepare_curve_swap", buildCurveSwap)
   );
 
   // ---- Module 9: Morpho Blue ----

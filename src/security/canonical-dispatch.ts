@@ -67,9 +67,13 @@ const EXPECTED_TARGETS: Record<string, Partial<Record<SupportedChain, Set<string
   prepare_morpho_: chainSet({
     ethereum: [CONTRACTS.ethereum.morpho.blue],
   }),
-  prepare_curve_swap: chainSet({
-    ethereum: [CONTRACTS.ethereum.curve.stEthEthPool],
-  }),
+  // `prepare_curve_swap` intentionally has NO entry here. The supported
+  // pool set is dynamic (curated entries + every stable_ng factory plain
+  // pool) and can't be enumerated as a static address set. The
+  // equivalent dispatch-target validation lives in
+  // `ensureSupportedCurvePool` inside `src/modules/curve/actions.ts`,
+  // which runs before any swap tx is built and refuses pools outside
+  // the curated set + stable_ng factory.
   prepare_uniswap_swap: chainSet({
     ethereum: [CONTRACTS.ethereum.uniswap.swapRouter02],
     arbitrum: [CONTRACTS.arbitrum.uniswap.swapRouter02],

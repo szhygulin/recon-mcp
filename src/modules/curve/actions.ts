@@ -12,7 +12,7 @@
  * gate explicitly than to silently default to 0 and let the user lose
  * to MEV).
  */
-import { encodeFunctionData, formatUnits, parseUnits, type Address } from "viem";
+import { encodeFunctionData, formatUnits, getAddress, parseUnits, type Address } from "viem";
 import { getClient } from "../../data/rpc.js";
 import {
   buildApprovalTx,
@@ -33,14 +33,33 @@ import type {
 } from "./schemas.js";
 
 /**
- * Indices on the canonical Curve stETH/ETH legacy StableSwap pool
- * (`0xDC24316b9AE028F1497c275EB9192a3Ea0f67022`). Verified on
- * Etherscan: `coins(0)` returns the ETH sentinel
- * `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` and `coins(1)` returns
- * stETH `0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84`.
+ * Curve's universal sentinel for the chain's native asset, returned by
+ * `coins(i)` on pools whose i-th coin is native ETH (e.g. the legacy
+ * stETH/ETH pool returns this from `coins(0)`).
  */
-const STETH_POOL_COIN_ETH = 0;
-const STETH_POOL_COIN_STETH = 1;
+const CURVE_NATIVE_ETH_SENTINEL =
+  "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+interface CuratedCurvePool {
+  /** Number of coins. Pinned because legacy pools may not expose `N_COINS()` as a callable getter. */
+  nCoins: number;
+  /** Receipt-friendly label. */
+  label: string;
+}
+
+/**
+ * Curated entries for Curve pools NOT registered with the stable_ng
+ * factory but still supported by `prepare_curve_swap`. Today: the
+ * canonical legacy StableSwap stETH/ETH pool. Every pool here MUST
+ * honor the legacy `exchange(int128 i, int128 j, uint256 dx, uint256
+ * min_dy)` selector (selector identical to stable_ng's `exchange`).
+ */
+const CURATED_CURVE_POOLS: ReadonlyMap<string, CuratedCurvePool> = new Map([
+  [
+    CONTRACTS.ethereum.curve.stEthEthPool.toLowerCase(),
+    { nCoins: 2, label: "legacy StableSwap stETH/ETH" },
+  ],
+]);
 
 /**
  * Build a `prepare_curve_add_liquidity` UnsignedTx (with bundled
@@ -179,39 +198,152 @@ export async function buildCurveAddLiquidity(
 }
 
 /**
- * Build a `prepare_curve_swap` UnsignedTx for the canonical Curve
- * stETH/ETH legacy StableSwap pool (issue #615). Pool coin order:
- * 0=ETH (native, payable), 1=stETH.
+ * Confirm `pool` is supported by the swap path: either a curated entry
+ * (today: legacy stETH/ETH) OR a stable_ng factory plain pool. Reject
+ * meta pools and pools outside both sets — silent dispatch onto an
+ * unrecognized pool is the failure mode (cryptoswap / tricrypto /
+ * older legacy stable have different `exchange` ABIs).
  *
- *   eth_to_steth: i=0, j=1, value=dx (native), no approval.
- *   steth_to_eth: i=1, j=0, value=0, prepended with stETH approval to
- *     the pool (USDT-style reset handled by `buildApprovalTx`).
+ * Returns a brief label used in the receipt's description.
+ */
+async function ensureSupportedCurvePool(
+  pool: Address,
+  client: ReturnType<typeof getClient>,
+): Promise<{ label: string; nCoins: number }> {
+  const curated = CURATED_CURVE_POOLS.get(pool.toLowerCase());
+  if (curated) return { label: curated.label, nCoins: curated.nCoins };
+
+  const factory = CONTRACTS.ethereum.curve.stableNgFactory as Address;
+  const [isMetaR, nCoinsR] = await client.multicall({
+    contracts: [
+      {
+        address: factory,
+        abi: curveStableNgFactoryAbi,
+        functionName: "is_meta",
+        args: [pool],
+      },
+      {
+        address: factory,
+        abi: curveStableNgFactoryAbi,
+        functionName: "get_n_coins",
+        args: [pool],
+      },
+    ],
+    allowFailure: true,
+  });
+  if (
+    nCoinsR.status !== "success" ||
+    (nCoinsR.result as bigint) === 0n
+  ) {
+    throw new Error(
+      `Pool ${pool} is not supported by prepare_curve_swap. Recognized: legacy ` +
+        `stETH/ETH at ${CONTRACTS.ethereum.curve.stEthEthPool}; any stable_ng plain ` +
+        `pool at factory ${factory}. Other Curve pool generations (cryptoswap, ` +
+        `tricrypto, older legacy stable) use distinct exchange ABIs and are not ` +
+        `supported — file an issue if you need one of them.`,
+    );
+  }
+  if (isMetaR.status !== "success" || isMetaR.result === true) {
+    throw new Error(
+      `Pool ${pool} is a stable_ng meta pool. Meta pools route swaps through ` +
+        `\`exchange_underlying\` against a base-pool LP token — different ABI, out ` +
+        `of scope for prepare_curve_swap.`,
+    );
+  }
+  const nCoins = Number(nCoinsR.result as bigint);
+  return { label: "stable_ng plain pool", nCoins };
+}
+
+/**
+ * Locate a token in the pool's `coins` array. Native ETH matches the
+ * Curve sentinel `0xeeee...eeee` — pools that don't carry the sentinel
+ * at any index simply don't accept native ETH and the call will error.
+ */
+function indexOfTokenInCoins(
+  token: "native" | string,
+  coins: readonly Address[],
+): number {
+  const target =
+    token === "native"
+      ? CURVE_NATIVE_ETH_SENTINEL
+      : token.toLowerCase();
+  for (let i = 0; i < coins.length; i++) {
+    if (coins[i].toLowerCase() === target) return i;
+  }
+  if (token === "native") {
+    throw new Error(
+      `Pool does not accept native ETH (no \`coins(i)\` returns the ETH sentinel ` +
+        `${CURVE_NATIVE_ETH_SENTINEL}). Pass an ERC-20 token address instead. ` +
+        `coins=[${coins.join(", ")}].`,
+    );
+  }
+  throw new Error(
+    `Token ${token} is not in the pool's coins array. coins=[${coins.join(", ")}]. ` +
+      `Pass an address that matches one of those entries (or "native" if the pool's ` +
+      `coins(i) returns the ETH sentinel at some index).`,
+  );
+}
+
+/**
+ * Build a `prepare_curve_swap` UnsignedTx (issue #615 v0.2). Supports
+ * the canonical legacy stETH/ETH pool plus any stable_ng factory plain
+ * pool. Same `exchange(int128,int128,uint256,uint256)` selector for
+ * both flavors — the only per-pool dispatch is whether `coins(i)`
+ * returns the ETH sentinel (then we send `value = dx`, no approval) or
+ * an ERC-20 (then we chain an approval to the pool).
  *
  * Slippage gate is required: caller passes `minOut` (explicit) or
- * `slippageBps` (server computes via `get_dy * (1 - bps/10000)`).
- * Refusing to default to zero protects against MEV — Curve's exchange
- * silently accepts `min_dy=0` and would deliver whatever the pool
- * state allows, including post-sandwich.
+ * `slippageBps` (server computes via `get_dy * (1 - bps/10000)`). The
+ * pool's exchange silently accepts `min_dy=0` — defaulting there would
+ * let MEV extract the entire output.
  *
- * Tighter spread than aggregators for stETH↔ETH: the pool is the
- * historical best venue for this pair (deeper liquidity, no aggregator
- * cut). Other Curve pools use distinct ABIs (cryptoswap, tricrypto,
- * stable_ng) and are NOT supported here — the schema's `direction`
- * enum is the entire surface. Adding a `pool` parameter without
- * per-pool ABI dispatch would silently encode wrong selectors.
+ * Pools NOT in this support set (cryptoswap, tricrypto, older legacy)
+ * are rejected with an actionable error in `ensureSupportedCurvePool`.
  */
-export async function buildCurveStethSwap(
+export async function buildCurveSwap(
   p: PrepareCurveSwapArgs,
 ): Promise<UnsignedTx> {
   const wallet = p.wallet as Address;
-  const pool = CONTRACTS.ethereum.curve.stEthEthPool as Address;
-  const stETH = CONTRACTS.ethereum.lido.stETH as Address;
+  const pool = getAddress(p.pool) as Address;
   const client = getClient("ethereum");
-  const dx = parseUnits(p.amount, 18);
 
-  const ethToSteth = p.direction === "eth_to_steth";
-  const i = ethToSteth ? STETH_POOL_COIN_ETH : STETH_POOL_COIN_STETH;
-  const j = ethToSteth ? STETH_POOL_COIN_STETH : STETH_POOL_COIN_ETH;
+  const { label: poolLabel, nCoins } = await ensureSupportedCurvePool(pool, client);
+  if (!Number.isFinite(nCoins) || nCoins < 2 || nCoins > 8) {
+    throw new Error(
+      `Pool ${pool} reported N_COINS=${nCoins}. Expected 2..8 — refusing to dispatch.`,
+    );
+  }
+  const coinsR = await client.multicall({
+    contracts: Array.from({ length: nCoins }, (_, idx) => ({
+      address: pool,
+      abi: curveLegacyStableSwapAbi as never,
+      functionName: "coins" as const,
+      args: [BigInt(idx)] as const,
+    })),
+    allowFailure: false,
+  });
+  const coins = coinsR as readonly Address[];
+
+  const i = indexOfTokenInCoins(p.fromToken, coins);
+  const j = indexOfTokenInCoins(p.toToken, coins);
+  if (i === j) {
+    throw new Error(
+      `fromToken and toToken resolve to the same coin index (${i}) on pool ${pool}. ` +
+        `Pick distinct tokens.`,
+    );
+  }
+
+  const fromIsNative = p.fromToken === "native";
+  const toIsNative = p.toToken === "native";
+
+  const fromMeta = fromIsNative
+    ? { symbol: "ETH", decimals: 18 }
+    : await resolveTokenMeta("ethereum", coins[i]);
+  const toMeta = toIsNative
+    ? { symbol: "ETH", decimals: 18 }
+    : await resolveTokenMeta("ethereum", coins[j]);
+
+  const dx = parseUnits(p.amount, fromMeta.decimals);
 
   // Resolve min_dy. Mirrors `prepare_curve_add_liquidity`'s gate.
   let minDy: bigint;
@@ -247,17 +379,15 @@ export async function buildCurveStethSwap(
     args: [BigInt(i), BigInt(j), dx, minDy],
   });
 
-  const fromSym = ethToSteth ? "ETH" : "stETH";
-  const toSym = ethToSteth ? "stETH" : "ETH";
-  const minOutFormatted = formatUnits(minDy, 18);
+  const minOutFormatted = formatUnits(minDy, toMeta.decimals);
   const description =
-    `Swap ${p.amount} ${fromSym} → ≥${minOutFormatted} ${toSym} via Curve stETH/ETH pool ${pool}`;
+    `Swap ${p.amount} ${fromMeta.symbol} → ≥${minOutFormatted} ${toMeta.symbol} via Curve ${poolLabel} (${pool})`;
 
   const swapTx: UnsignedTx = {
     chain: "ethereum",
     to: pool,
     data: exchangeData,
-    value: ethToSteth ? dx.toString() : "0",
+    value: fromIsNative ? dx.toString() : "0",
     from: wallet,
     description,
     decoded: {
@@ -266,51 +396,51 @@ export async function buildCurveStethSwap(
         pool,
         i: String(i),
         j: String(j),
-        dx: `${p.amount} ${fromSym}`,
-        minOut: `${minOutFormatted} ${toSym}`,
+        dx: `${p.amount} ${fromMeta.symbol}`,
+        minOut: `${minOutFormatted} ${toMeta.symbol}`,
         ...(p.slippageBps !== undefined ? { slippageBps: String(p.slippageBps) } : {}),
       },
     },
   };
 
-  if (ethToSteth) return swapTx;
+  if (fromIsNative) return swapTx;
 
-  // stETH → ETH: prepend ERC-20 approval of stETH to the pool. The pool
-  // address is NOT in the global approve-allowlist (Aave / Compound /
-  // Morpho / Lido Queue / EigenLayer / Uniswap NPM+Router / LiFi
-  // Diamond), so the user must opt in via
+  // ERC-20 input: prepend an approval to the pool. Curve pools (any
+  // generation) are NOT in the global approve-allowlist (Aave /
+  // Compound / Morpho / Lido Queue / EigenLayer / Uniswap NPM+Router /
+  // LiFi Diamond), so the user must opt in via
   // `acknowledgeNonAllowlistedSpender: true` BEFORE the prepare path
-  // mints a handle. The flag is the affirmative gate; without it, fail
-  // fast with a clear message so the agent knows to surface the
-  // trade-off to the user. With it, stamp the approval tx so
+  // mints a handle. With it, stamp the approval tx so
   // `assertTransactionSafe` skips the spender-allowlist refusal at
-  // preview/send time.
+  // preview/send time. The allowlist is a security recommendation, not
+  // a hard requirement (PR #618 / issue #617).
   if (p.acknowledgeNonAllowlistedSpender !== true) {
     throw new Error(
-      `prepare_curve_swap (steth_to_eth) builds an approve to the Curve stETH/ETH pool ` +
-        `(${pool}), which is NOT in the protocol approve-allowlist (Aave Pool, Compound Comet, ` +
-        `Morpho Blue, Lido Queue, EigenLayer, Uniswap NPM, Uniswap SwapRouter02, LiFi Diamond). ` +
-        `The allowlist is a security recommendation: it limits approvals to a small set of ` +
-        `well-known spenders to keep prompt-injection drains from sliding through. Curve's ` +
-        `stETH/ETH pool is a 5+ year immutable contract and the historical canonical venue ` +
-        `for this pair, but it sits outside that curated set. Surface the trade-off to the ` +
-        `user, then retry with \`acknowledgeNonAllowlistedSpender: true\` to opt in.`,
+      `prepare_curve_swap builds an approve to a Curve ${poolLabel} (${pool}), which is NOT ` +
+        `in the protocol approve-allowlist (Aave Pool, Compound Comet, Morpho Blue, Lido ` +
+        `Queue, EigenLayer, Uniswap NPM, Uniswap SwapRouter02, LiFi Diamond). The allowlist ` +
+        `is a security recommendation: it limits approvals to a small set of well-known ` +
+        `spenders to keep prompt-injection drains from sliding through. Curve pools are ` +
+        `well-vetted but sit outside that curated set. Surface the trade-off to the user, ` +
+        `then retry with \`acknowledgeNonAllowlistedSpender: true\` to opt in.`,
     );
   }
-  // stETH is a rebasing OpenZeppelin-style token, no USDT quirk, but
-  // buildApprovalTx still handles the reset path defensively.
-  const meta = await resolveTokenMeta("ethereum", stETH);
-  const { approvalAmount, display } = resolveApprovalCap(p.approvalCap, dx, meta.decimals);
+  const fromTokenAddress = coins[i];
+  const { approvalAmount, display } = resolveApprovalCap(
+    p.approvalCap,
+    dx,
+    fromMeta.decimals,
+  );
   const approval = await buildApprovalTx({
     chain: "ethereum",
     wallet,
-    asset: stETH,
+    asset: fromTokenAddress,
     spender: pool,
     amountWei: dx,
     approvalAmount,
     approvalDisplay: display,
-    symbol: meta.symbol,
-    spenderLabel: `Curve stETH/ETH pool ${pool}`,
+    symbol: fromMeta.symbol,
+    spenderLabel: `Curve ${poolLabel} ${pool}`,
   });
   if (approval !== null) {
     // Surface the advisory in the description so the prepare receipt
@@ -318,7 +448,7 @@ export async function buildCurveStethSwap(
     // — security recommendation, not a hard requirement, but worth
     // verifying before signing.
     approval.description =
-      `${approval.description} ⚠ ADVISORY: spender is the Curve stETH/ETH pool, NOT in the ` +
+      `${approval.description} ⚠ ADVISORY: spender is a Curve ${poolLabel}, NOT in the ` +
       `protocol approve-allowlist; user opted in via acknowledgeNonAllowlistedSpender. ` +
       `Verify the on-device approve target matches ${pool}.`;
     // Flow the affirmative-ack flag through to assertTransactionSafe.
