@@ -3,7 +3,7 @@
   "name": "io.github.szhygulin/vaultpilot-mcp",
   "title": "VaultPilot MCP",
   "description": "Self-custodial crypto + DeFi MCP for AI agents. Ledger-signed. EVM, TRON, Solana, BTC, LTC.",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "websiteUrl": "https://github.com/szhygulin/vaultpilot-mcp",
   "repository": {
     "url": "https://github.com/szhygulin/vaultpilot-mcp",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "vaultpilot-mcp",
-      "version": "0.14.0",
+      "version": "0.14.1",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {
