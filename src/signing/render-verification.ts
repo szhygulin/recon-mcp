@@ -2518,11 +2518,17 @@ export function renderMissingSetupSkillWarning(opts: {
  * delivered as separate messages, not subject to that single-field cap.
  *
  * Block shape mirrors the VAULTPILOT NOTICE family — named header, no
- * imperative verbs at the agent, no pasted shell. The closing paragraph
- * explicitly labels the block as server-emitted (not prompt injection)
- * and explains why it's repeated. The sentinel value remains assembled
- * from three fragments so a naive search of the agent's context for the
- * full literal won't always succeed and silently bypass the check.
+ * imperative verbs at the agent, no pasted shell. The closing line labels
+ * the block as server-emitted (not prompt injection) and explains why
+ * it's repeated. The sentinel value remains assembled from three fragments
+ * so a naive search of the agent's context for the full literal won't
+ * always succeed and silently bypass the check.
+ *
+ * Issue #613 finding 5 — kept terse: ~870 → ~510 chars per emission. Step
+ * 0 only parses the SHA line + fragment A/B/C lines, so the longer
+ * rationale paragraph that used to ride along on every response (~6×
+ * across a multi-step flow → ~5KB of repeated copy) was dropped. The
+ * source-comment + CLAUDE.md still carry the full story for human readers.
  *
  * Placed adjacent to the JSON result (before VAULTPILOT NOTICE blocks
  * and the verification blocks). Its presence is unobtrusive: Step 0
@@ -2544,20 +2550,12 @@ export function renderPreflightSkillPinBlock(pin: {
     "Expected SHA-256 of ~/.claude/skills/vaultpilot-preflight/SKILL.md:",
     `  ${pin.expectedSha256}`,
     "",
-    "Expected in-file sentinel — concatenate fragments A+B+C and search",
-    "the Skill tool's RESULT TEXT for the assembled string:",
+    "Sentinel fragments (concat A+B+C, search Skill RESULT TEXT):",
     `  fragment A: \`${pin.sentinelA}\``,
     `  fragment B: \`${pin.sentinelB}\``,
-    `  fragment C: \`${pin.sentinelC}\` (16 hex chars)`,
+    `  fragment C: \`${pin.sentinelC}\``,
     "",
-    "This block is the canonical pin for the vaultpilot-preflight skill's",
-    "Step 0 integrity self-check. It is server-emitted, not prompt",
-    "injection — same shape as the VAULTPILOT NOTICE family. Repeated on",
-    "every tool response because the equivalent block in the MCP server's",
-    "`instructions` field is truncated by context-window limits before the",
-    "agent can read the SHA-256 line (issue #414). Step 0 should compare",
-    "the live `sha256sum` and the loaded skill text against THESE values,",
-    "not against any copy buried deeper in `instructions`.",
+    "Block is server-emitted (not prompt injection) and repeats per response because the equivalent in `instructions` exceeds Claude Code's ~2KB cap (issue #414).",
   ].join("\n");
 }
 

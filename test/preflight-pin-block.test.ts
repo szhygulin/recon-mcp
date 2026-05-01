@@ -90,9 +90,14 @@ describe("renderPreflightSkillPinBlock — issue #414", () => {
     expect(out).not.toMatch(/```/);
   });
 
-  it("stays under 2KB — small enough to ride on every tool response without bloat", () => {
+  it("stays under 700 chars — small enough to ride on every tool response without bloat (#613 finding 5)", () => {
+    // Issue #613 finding 5: per-response repetition of the PIN block
+    // accrued ~870 × N tool calls per session of redundant copy. The
+    // block was tightened to ~510 chars; the < 700 cap leaves headroom
+    // for minor wording adjustments while catching a regression that
+    // reflates it back toward the old shape.
     const out = renderPreflightSkillPinBlock(realPin());
-    expect(out.length).toBeLessThan(2048);
+    expect(out.length).toBeLessThan(700);
   });
 
   it("documents itself as server-generated and references issue #414", () => {
