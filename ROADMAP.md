@@ -9,7 +9,6 @@
 
 **New chains**
 
-- **Bitcoin** via Ledger USB HID — native segwit + taproot sends, portfolio integration, mempool.space fee estimation, BIP-125 RBF by default. ([plan](./claude-work/plan-bitcoin-ledger-phase1.md))
 - **Hyperliquid L1** — full parity (perps + spot + vaults + staking + TWAP). Ledger-per-trade blind-sign signing; no API-wallet shortcut. ([plan](./claude-work/plan-hyperliquid-full-parity.md))
 - **Aptos + Sui** (Move-VM) — read first (balance + staking + Sui objects), then Ledger USB HID pair + native send + stake delegate per chain. WalletConnect doesn't carry Move namespaces, so signing follows the TRON / Solana USB precedent. Phase 1 (Aptos read-only) is the smallest unit. ([plan](./claude-work/plan-aptos-sui-chain-support.md), [Sui-only single-PR alternative design](./claude-work/archive/plan-sui-support.md))
 - **More EVM chains — Avalanche, BSC, Linea, Scroll** — top-5 EVM chains by user count + dominant L2s VaultPilot doesn't yet support. Each chain is one PR (chain config + RPC + Etherscan-equivalent + per-protocol address coverage where deployed). Risk is low, well-understood; ship one at a time. ([plan](./claude-work/archive/plan-more-evm-chains.md))
@@ -56,6 +55,14 @@ The portfolio reader landed Solana NFT support via Helius DAS in #433; the per-f
 - **MetaMask Mobile** via WalletConnect v2 — alongside Ledger Live. Reduced final-mile anchor (software wallet) surfaced clearly in docs + pairing receipt. Browser-extension bridge deferred to a follow-up. ([plan](./claude-work/plan-metamask-mobile-walletconnect.md))
 - **Multi-hardware-wallet — Trezor, Keystone, GridPlus Lattice** — VaultPilot is Ledger-only today. Each new vendor expands addressable market 10-20% and removes the single-vendor dependency. Keystone in particular has a strong air-gapped story (QR-only signing) that pairs naturally with the security positioning. Staged per device. ([plan](./claude-work/archive/plan-multi-hardware-wallet.md))
 
+**MCP server ergonomics (fastmcp-inspired)**
+
+Deferred per CLAUDE.md fastmcp section's "Defer until a real 'feels stuck' report justifies it." Each is non-load-bearing UX/routing polish; pick up when a concrete signal makes the cost/benefit obvious.
+
+- **Progress notifications for long-running fanout tools** — wire MCP `_meta.progressToken` + `notifications/progress` into the registerTool wrapper, then emit at meaningful boundaries from fanout tools (`get_health_alerts`, `rescan_btc_account`, `get_portfolio_summary`, `compare_yields`, `build_incident_report`, `get_daily_briefing`). Pick up on a real "this hung" report. ([plan](./claude-work/plan-progress-notifications.md))
+- **Tool description tightening per Documentation Style** — 186 `registerTool` call sites; the top offenders (≥1000 chars: `prepare_safe_tx_propose`, `share_strategy`, `generate_readonly_link`, ~15-25 tools total) fail the "state each idea once" / "lead with the strongest sentence" / "cut hedging adjectives" bar. Descriptions are the agent's routing prompt — cuts must preserve AGENT BEHAVIOR routing directives, cross-references, and refusal conditions. Ship top offenders only in PR #1; defer the rest. ([plan](./claude-work/plan-tool-description-tightening.md))
+- **`UserError` typed-error split for handler responses** — distinguish user-recoverable errors (bad input, insufficient balance, market paused, missing approvals) from programmer errors (RPC schema drift, IDL layout mismatch). Today every error is a plain `Error("msg")`; the split cleans up host UI and preserves triage signal for real bugs. PR #1 ships the infra + 5-10 conversions; bulk migration in #2+. ([plan](./claude-work/plan-user-error-typed-split.md))
+
 **Build / packaging**
 
 - **Tier-2 binary slim — strip Kamino kliquidity** (Raydium / Orca / Meteora). Picked up only if Tier-1 mitigations (#361) + upload retry (#349) don't land enough headroom in practice. As of 2026-04-27, the linux-x64 binary is 420 MB (down from 504 MB pre-mitigation), comfortably below the empirical upload-failure threshold; Tier-2 would shave another ~100 MB but requires forking the kliquidity-sdk surface or vendoring the lending-only subset. ([plan](./claude-work/archive/plan-binary-slim-tier2-kamino.md))
@@ -66,7 +73,7 @@ The portfolio reader landed Solana NFT support via Helius DAS in #433; the per-f
 
 **Deployment modes**
 
-- **Hosted MCP endpoint** — OAuth 2.1 + bearer tokens for headless users, operator-supplied API keys, EVM-only for v1. TRON / Solana USB HID tools stay local. ([plan](./claude-work/plan-hosted-mcp-endpoint.md))
+- **Hosted MCP endpoint** — OAuth 2.1 + bearer tokens for headless users, operator-supplied API keys, EVM-only for v1. TRON / Solana USB HID tools stay local.
 
 **Security hardening**
 
@@ -83,7 +90,7 @@ The portfolio reader landed Solana NFT support via Helius DAS in #433; the per-f
 - **Tier-1 bridge facet decoders — MCP-side mechanical (Inv #6b hardening)** — adversarial scripts 136 / 137 confirmed outer LiFi `BridgeData` passes Inv #6 cleanly while the attacker recipient lives one decode-layer deeper (`NearData.receiverAccountId`, `MayanData.nonEvmRecipient`, etc.) and the Ledger ETH app blind-signs. Skill v8 Inv #6b mandates the agent extract + compare; the MCP-side mechanical decoder for Wormhole TokenBridge / Mayan / NEAR Intents / Across V3 (server-side `✗ BRIDGE-FACET RECIPIENT MISMATCH` regardless of agent cooperation) is the deferred half. Coordinated release: skill sentinel bump hardens Inv #6b from "agent-extracts" to "MCP-decodes-and-asserts" + MCP decoder ships in lockstep. Blocked on a per-bridge scope probe of facet tuple shapes against real explorer calldata — wrong-tuple decode parses garbage as a valid recipient and ships a silent vuln. ([#451](https://github.com/szhygulin/vaultpilot-mcp/issues/451))
 - **Tier-2 bridge facet decoders** — skill v8 ships Tier-1 (Wormhole / Mayan / NEAR Intents / Across V3) recipient cross-checks under Inv #6b. Tier-2 (deBridge / DLN, Stargate composeMsg, Hop, Symbiosis) is deferred until usage data justifies the per-bridge probe + decoder cost. Falls back to best-effort agent address-extraction + mandatory second-LLM check (Inv #12.5) until shipped. ([plan](./claude-work/plan-bridge-facet-decoder-tier2.md))
 - **Typed-data signing surface — gated on Inv #1b + #2b** — `prepare_eip2612_permit`, `prepare_permit2_*`, `prepare_cowswap_order`, `sign_typed_data_v4`. Today's defense is gap-by-design. Shipping any of these without paired Inv #1b (tree decode + `verifyingContract` pin + address-field surfacing) and Inv #2b (digest recompute over decoded tree) silently bypasses every existing skill defense — see [Typed-Data Signing Discipline](./CLAUDE.md#typed-data-signing-discipline) in CLAUDE.md for the full rationale. Hard precondition: Ledger must clear-sign the typed-data type. ([#453](https://github.com/szhygulin/vaultpilot-mcp/issues/453))
-- **`prepare_eip7702_authorization` builder + skill v9 release** — 7702 setCode is the highest-blast-radius EOA signature (full code-execution rights, persistent, `chain_id = 0` drains every EVM chain). Skill §16 refuses unconditionally until MCP + skill v9 ship together. **MCP arm**: `prepare_eip7702_authorization({ implementation, chainId, nonce })` targeting ERC-5792 `wallet_sendCalls` (the wallet-side convergence point — bare `eth_signAuthorization` isn't standardized in WC namespaces), `chain_id ≠ 0` enforcement, paired revocation-tuple emission, Inv #12.5 mandatory second-LLM, out-of-band implementation-address re-statement. No curated allowlist needed — Ledger ETH app v1.18.0+ enforces it on-firmware. **Skill arm**: §16 lifted, `EXPECTED_SKILL_SHA256` updated in lockstep. Blocked on a Ledger Live WC-bridge ERC-5792 support probe. ([#481](https://github.com/szhygulin/vaultpilot-mcp/issues/481))
+- **`prepare_eip7702_authorization` builder + skill v9 release** — 7702 setCode is the highest-blast-radius EOA signature (full code-execution rights, persistent, `chain_id = 0` drains every EVM chain). Skill §16 refuses unconditionally until MCP + skill v9 ship together. **MCP arm**: `prepare_eip7702_authorization({ implementation, chainId, nonce })` targeting ERC-5792 `wallet_sendCalls` (the wallet-side convergence point — bare `eth_signAuthorization` isn't standardized in WC namespaces), `chain_id ≠ 0` enforcement, paired revocation-tuple emission, Inv #12.5 mandatory second-LLM, out-of-band implementation-address re-statement. No curated allowlist needed — Ledger ETH app v1.18.0+ enforces it on-firmware. **Skill arm**: §16 lifted, `EXPECTED_SKILL_SHA256` updated in lockstep. Blocked on a Ledger Live WC-bridge ERC-5792 support probe. ([#481](https://github.com/szhygulin/vaultpilot-mcp/issues/481), [plan](./claude-work/plan-eip7702-authorization-builder.md))
 
 **Recently shipped** (previously on this list)
 
@@ -110,6 +117,7 @@ The portfolio reader landed Solana NFT support via Helius DAS in #433; the per-f
 
 Earlier:
 
+- **Bitcoin + Litecoin via Ledger USB HID** — native segwit + taproot sends (`prepare_btc_send` / `prepare_litecoin_native_send`), multisig (PSBT combine + finalize), portfolio integration (`get_btc_balances`, balance/UTXO/tx-history readers), mempool.space fee estimation, BIP-125 RBF (`prepare_btc_rbf_bump`), BIP-137 message signing.
 - **`compare_yields` v1** — Aave V3 (5 chains), Compound V3 (5 chains, multi-market), Lido stETH (#282).
 - **Kamino lending** (Solana) — `prepare_kamino_init_user` + supply / withdraw / borrow / repay tools.
 - **Nonce-aware dropped-tx polling** (Solana) — on-chain nonce is the authoritative signal for whether a durable-nonce tx can still land; replaces the `lastValidBlockHeight` path that's meaningless for nonce-protected sends (#137).
