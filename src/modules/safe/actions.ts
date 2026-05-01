@@ -305,28 +305,35 @@ export async function submitSafeTxSignature(
   const cached = lookupSafeTx(safeTxHash);
   let action: "proposed" | "confirmed";
   if (cached) {
-    await kit.proposeTransaction({
-      safeAddress,
-      safeTransactionData: {
-        to: cached.body.to,
-        value: cached.body.value,
-        data: cached.body.data,
-        operation: cached.body.operation,
-        safeTxGas: cached.body.safeTxGas,
-        baseGas: cached.body.baseGas,
-        gasPrice: cached.body.gasPrice,
-        gasToken: cached.body.gasToken,
-        refundReceiver: cached.body.refundReceiver,
-        nonce: cached.body.nonce,
-      },
-      safeTxHash,
-      senderAddress: signer,
-      senderSignature,
-      origin: "vaultpilot-mcp",
-    });
+    await enrichSafeServiceError(
+      () =>
+        kit.proposeTransaction({
+          safeAddress,
+          safeTransactionData: {
+            to: cached.body.to,
+            value: cached.body.value,
+            data: cached.body.data,
+            operation: cached.body.operation,
+            safeTxGas: cached.body.safeTxGas,
+            baseGas: cached.body.baseGas,
+            gasPrice: cached.body.gasPrice,
+            gasToken: cached.body.gasToken,
+            refundReceiver: cached.body.refundReceiver,
+            nonce: cached.body.nonce,
+          },
+          safeTxHash,
+          senderAddress: signer,
+          senderSignature,
+          origin: "vaultpilot-mcp",
+        }),
+      { op: "proposeTransaction", chain, safeAddress, signer, safeTxHash },
+    );
     action = "proposed";
   } else {
-    await kit.confirmTransaction(safeTxHash, senderSignature);
+    await enrichSafeServiceError(
+      () => kit.confirmTransaction(safeTxHash, senderSignature),
+      { op: "confirmTransaction", chain, safeAddress, signer, safeTxHash },
+    );
     action = "confirmed";
   }
 
@@ -338,6 +345,101 @@ export async function submitSafeTxSignature(
     signer,
     safeWebUiUrl: `https://app.safe.global/transactions/queue?safe=${chainPrefix(chain)}:${safeAddress}`,
   };
+}
+
+/**
+ * Wrap a Safe-API-Kit propose/confirm call with diagnostic enrichment.
+ *
+ * Why: `@safe-global/api-kit`'s internal `sendRequest` extracts the response
+ * body only when its JSON shape contains one of a hard-coded key allowlist
+ * (`data`, `detail`, `message`, `nonFieldErrors`, `delegate`, `safe`,
+ * `delegator`). Safe Transaction Service 422 validation errors typically
+ * return field-keyed shapes (e.g. `{"signature": ["..."]}`) that miss the
+ * allowlist — the SDK falls through to `throw new Error(response.statusText)`
+ * and the caller gets the literal string "Unprocessable Content" with no
+ * actionable signal. See issue #610.
+ *
+ * Strategy: on failure, issue a read probe (`getTransaction(safeTxHash)`)
+ * against the same service to recover whether STS already knows the entry,
+ * and fold that state plus chain/signer/safe context into a re-thrown error.
+ * The probe is read-only, and any probe failure is swallowed so enrichment
+ * never masks the original error.
+ */
+async function enrichSafeServiceError<T>(
+  fn: () => Promise<T>,
+  context: {
+    op: "proposeTransaction" | "confirmTransaction";
+    chain: SupportedChain;
+    safeAddress: `0x${string}`;
+    signer: `0x${string}`;
+    safeTxHash: `0x${string}`;
+  },
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (origError) {
+    const original = origError instanceof Error ? origError.message : String(origError);
+    const probeLines = await probeSafeServiceState(context);
+    const enriched = new Error(
+      [
+        `Safe Transaction Service ${context.op} failed: ${original}`,
+        ...probeLines,
+        `Context: chain=${context.chain} safe=${context.safeAddress} ` +
+          `signer=${context.signer} safeTxHash=${context.safeTxHash}`,
+      ].join("\n"),
+    );
+    if (origError instanceof Error && origError.stack) {
+      enriched.stack = origError.stack;
+    }
+    (enriched as Error & { cause?: unknown }).cause = origError;
+    throw enriched;
+  }
+}
+
+/**
+ * Read-only probe of Safe Tx Service state for a safeTxHash. Returns a list
+ * of summary lines tailored to one of three branches:
+ *   1. STS knows the hash → include nonce / isExecuted / confirmation count.
+ *   2. STS returns "Not found." → suggest re-running prepare_safe_tx_propose.
+ *   3. Probe itself fails → include the probe error so the user can tell.
+ *
+ * All errors are swallowed; this function never throws.
+ */
+async function probeSafeServiceState(context: {
+  op: "proposeTransaction" | "confirmTransaction";
+  chain: SupportedChain;
+  safeTxHash: `0x${string}`;
+}): Promise<string[]> {
+  try {
+    const kit = getSafeApiKit(context.chain);
+    const remote = await kit.getTransaction(context.safeTxHash);
+    const conf = remote.confirmations?.length ?? 0;
+    return [
+      `STS state: KNOWS this safeTxHash (nonce=${remote.nonce} ` +
+        `isExecuted=${remote.isExecuted} confirmations=${conf}/${remote.confirmationsRequired}).`,
+      context.op === "proposeTransaction"
+        ? `Hint: STS already has an entry for this hash, so the proposeTransaction ` +
+          `call collided. The local SafeTx body cache likely went stale (TTL 30 min) ` +
+          `but STS retains the prior proposal — call submit_safe_tx_signature again ` +
+          `after re-running prepare_safe_tx_propose, or use prepare_safe_tx_approve ` +
+          `(which routes through confirmTransaction) for an additional signer.`
+        : `Hint: STS has the entry; confirmTransaction failure is most likely a ` +
+          `signature-shape rejection. Verify approvedHashes(signer, safeTxHash)==1 ` +
+          `on chain and that the signer is an owner of this Safe.`,
+    ];
+  } catch (probeError) {
+    const probeMsg = probeError instanceof Error ? probeError.message : String(probeError);
+    if (/not\s*found/i.test(probeMsg)) {
+      return [
+        `STS state: does NOT have this safeTxHash (probe returned "Not found.").`,
+        `Hint: STS rejected the ${context.op} call before persisting the entry. ` +
+          `Common causes: signature shape, payload-field validation (e.g. checksum ` +
+          `case on \`to\`/\`safeAddress\`), or stale nonce. Re-run ` +
+          `prepare_safe_tx_propose to refresh the cached SafeTx body and retry.`,
+      ];
+    }
+    return [`STS state: probe failed (${probeMsg}).`];
+  }
 }
 
 /**

@@ -201,4 +201,75 @@ describe("submit_safe_tx_signature", () => {
     expect(mockKit.confirmTransaction).toHaveBeenCalledOnce();
     expect(mockKit.proposeTransaction).not.toHaveBeenCalled();
   });
+
+  it("enriches opaque proposeTransaction errors with STS-knows-hash probe state", async () => {
+    rememberSafeTx({
+      safeTxHash,
+      chain: "ethereum",
+      safeAddress: SAFE,
+      body: buildSafeTxBody({
+        to: RECIPIENT,
+        value: "0",
+        data: "0x",
+        operation: 0,
+        nonce: "1",
+      }),
+    });
+    mockClient.readContract.mockResolvedValue(1n);
+    mockKit.proposeTransaction.mockRejectedValueOnce(new Error("Unprocessable Content"));
+    mockKit.getTransaction.mockResolvedValueOnce({
+      safeTxHash,
+      nonce: "1",
+      to: RECIPIENT,
+      value: "0",
+      data: "0x",
+      operation: 0,
+      confirmations: [{ owner: SIGNER }],
+      confirmationsRequired: 2,
+      proposer: SIGNER,
+      submissionDate: "2026-04-29T00:00:00Z",
+      transactionHash: null,
+      executionDate: null,
+      isExecuted: false,
+    });
+
+    await expect(
+      submitSafeTxSignature({
+        signer: SIGNER,
+        safeAddress: SAFE,
+        chain: "ethereum",
+        safeTxHash,
+      }),
+    ).rejects.toThrowError(/Unprocessable Content[\s\S]*KNOWS this safeTxHash[\s\S]*Context:/);
+  });
+
+  it("enriches opaque confirmTransaction errors with STS-not-found probe state", async () => {
+    mockClient.readContract.mockResolvedValue(1n);
+    mockKit.confirmTransaction.mockRejectedValueOnce(new Error("Unprocessable Content"));
+    mockKit.getTransaction.mockRejectedValueOnce(new Error("Not found."));
+
+    await expect(
+      submitSafeTxSignature({
+        signer: SIGNER,
+        safeAddress: SAFE,
+        chain: "ethereum",
+        safeTxHash,
+      }),
+    ).rejects.toThrowError(/Unprocessable Content[\s\S]*does NOT have this safeTxHash[\s\S]*Context:/);
+  });
+
+  it("never masks the original error when the probe itself fails", async () => {
+    mockClient.readContract.mockResolvedValue(1n);
+    mockKit.confirmTransaction.mockRejectedValueOnce(new Error("Unprocessable Content"));
+    mockKit.getTransaction.mockRejectedValueOnce(new Error("ECONNRESET"));
+
+    await expect(
+      submitSafeTxSignature({
+        signer: SIGNER,
+        safeAddress: SAFE,
+        chain: "ethereum",
+        safeTxHash,
+      }),
+    ).rejects.toThrowError(/Unprocessable Content[\s\S]*probe failed \(ECONNRESET\)/);
+  });
 });
