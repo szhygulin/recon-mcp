@@ -327,3 +327,129 @@ describe("buildCurveAddLiquidity", () => {
     expect(cur.decoded?.args.minLpOut).toBe("1485000"); // 1_500_000 * (1 - 0.01)
   });
 });
+
+/**
+ * `prepare_curve_swap` — issue #615. Pool is hardcoded to the canonical
+ * legacy stETH/ETH StableSwap pool. Tests pin: direction routing,
+ * slippage gate, native-value placement on eth_to_steth, approval chain
+ * on steth_to_eth, get_dy → min_dy math.
+ */
+const STETH_POOL = "0xDC24316b9AE028F1497c275EB9192a3Ea0f67022" as const;
+const STETH_TOKEN = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84" as const;
+
+describe("buildCurveStethSwap (issue #615)", () => {
+  beforeEach(() => vi.resetModules());
+  afterEach(() => vi.restoreAllMocks());
+
+  function poolClient(opts: { allowance?: bigint; getDy?: bigint } = {}) {
+    return {
+      readContract: vi.fn(async (call: { functionName: string }) => {
+        if (call.functionName === "get_dy") return opts.getDy ?? 10n ** 18n;
+        if (call.functionName === "allowance") return opts.allowance ?? 0n;
+        if (call.functionName === "decimals") return 18;
+        if (call.functionName === "symbol") return "stETH";
+        throw new Error(`unexpected readContract: ${call.functionName}`);
+      }),
+    };
+  }
+
+  it("eth_to_steth: native value, no approval, min_dy from slippageBps", async () => {
+    const client = poolClient({ getDy: 10n ** 18n });
+    vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+    vi.doMock("../src/modules/shared/token-meta.js", () => ({
+      resolveTokenMeta: async () => ({ symbol: "stETH", decimals: 18 }),
+    }));
+
+    const { buildCurveStethSwap } = await import("../src/modules/curve/actions.js");
+    const tx = await buildCurveStethSwap({
+      wallet: WALLET,
+      direction: "eth_to_steth",
+      amount: "1.0",
+      slippageBps: 50, // 0.5%
+    });
+
+    expect(tx.to).toBe(STETH_POOL);
+    expect(tx.value).toBe((10n ** 18n).toString());
+    expect(tx.next).toBeUndefined(); // no approval leg for native input
+    expect(tx.decoded?.functionName).toBe("exchange");
+    expect(tx.decoded?.args.i).toBe("0");
+    expect(tx.decoded?.args.j).toBe("1");
+    // 1e18 * (10000 - 50) / 10000 = 0.995e18
+    expect(tx.decoded?.args.minOut).toBe("0.995 stETH");
+  });
+
+  it("steth_to_eth: chains stETH approval to the pool, value=0", async () => {
+    const client = poolClient({ getDy: 10n ** 18n, allowance: 0n });
+    vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+    vi.doMock("../src/modules/shared/token-meta.js", () => ({
+      resolveTokenMeta: async () => ({ symbol: "stETH", decimals: 18 }),
+    }));
+
+    const { buildCurveStethSwap } = await import("../src/modules/curve/actions.js");
+    const tx = await buildCurveStethSwap({
+      wallet: WALLET,
+      direction: "steth_to_eth",
+      amount: "1.0",
+      slippageBps: 50,
+    });
+
+    // Head should be the approval; action sits at the tail.
+    expect(tx.to).toBe(STETH_TOKEN);
+    expect(tx.decoded?.functionName).toBe("approve");
+    type WithNext = typeof tx & { next?: typeof tx };
+    let cur: typeof tx = tx;
+    while ((cur as WithNext).next !== undefined) cur = (cur as WithNext).next!;
+    expect(cur.to).toBe(STETH_POOL);
+    expect(cur.value).toBe("0");
+    expect(cur.decoded?.functionName).toBe("exchange");
+    expect(cur.decoded?.args.i).toBe("1");
+    expect(cur.decoded?.args.j).toBe("0");
+  });
+
+  it("requires slippage gate — refuses when neither slippageBps nor minOut is set", async () => {
+    const client = poolClient();
+    vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+
+    const { buildCurveStethSwap } = await import("../src/modules/curve/actions.js");
+    await expect(
+      buildCurveStethSwap({
+        wallet: WALLET,
+        direction: "eth_to_steth",
+        amount: "1.0",
+      }),
+    ).rejects.toThrow(/min_dy=0|min_out|slippage/i);
+  });
+
+  it("explicit minOut overrides slippageBps and skips get_dy read", async () => {
+    const client = poolClient();
+    vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+
+    const { buildCurveStethSwap } = await import("../src/modules/curve/actions.js");
+    const tx = await buildCurveStethSwap({
+      wallet: WALLET,
+      direction: "eth_to_steth",
+      amount: "1.0",
+      minOut: "990000000000000000", // 0.99e18 — well under the 1e18 mock
+    });
+    expect(tx.decoded?.args.minOut).toBe("0.99 stETH");
+    // get_dy should not have been called
+    expect(client.readContract).not.toHaveBeenCalledWith(
+      expect.objectContaining({ functionName: "get_dy" }),
+    );
+  });
+
+  it("rejects high slippage without acknowledgement", async () => {
+    const client = poolClient({ getDy: 10n ** 18n });
+    vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+
+    const { buildCurveStethSwap } = await import("../src/modules/curve/actions.js");
+    await expect(
+      buildCurveStethSwap({
+        wallet: WALLET,
+        direction: "eth_to_steth",
+        amount: "1.0",
+        slippageBps: 200, // 2%
+      }),
+    ).rejects.toThrow(/sandwich|acknowledgeHighSlippage/i);
+  });
+});

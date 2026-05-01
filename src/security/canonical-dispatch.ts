@@ -67,6 +67,9 @@ const EXPECTED_TARGETS: Record<string, Partial<Record<SupportedChain, Set<string
   prepare_morpho_: chainSet({
     ethereum: [CONTRACTS.ethereum.morpho.blue],
   }),
+  prepare_curve_swap: chainSet({
+    ethereum: [CONTRACTS.ethereum.curve.stEthEthPool],
+  }),
   prepare_uniswap_swap: chainSet({
     ethereum: [CONTRACTS.ethereum.uniswap.swapRouter02],
     arbitrum: [CONTRACTS.arbitrum.uniswap.swapRouter02],

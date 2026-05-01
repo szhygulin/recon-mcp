@@ -1,6 +1,6 @@
 import { parseUnits, formatUnits, encodeFunctionData, getAddress } from "viem";
 import { fetchQuote } from "./lifi.js";
-import { fetchOneInchQuote } from "./oneinch.js";
+import { fetchOneInchQuote, fetchOneInchSwap } from "./oneinch.js";
 import type { GetSwapQuoteArgs, PrepareSwapArgs } from "./schemas.js";
 import { getClient } from "../../data/rpc.js";
 import { erc20Abi } from "../../abis/erc20.js";
@@ -13,6 +13,7 @@ import {
 import { NON_EVM_RECEIVER_SENTINEL } from "../../abis/lifi-diamond.js";
 import { matchIntermediateChainBridge } from "./intermediate-chain-bridges.js";
 import { mevExposureNote } from "./mev-hint.js";
+import { buildApprovalTx, chainApproval, resolveApprovalCap } from "../shared/approval.js";
 import type { SupportedChain, UnsignedTx } from "../../types/index.js";
 
 /**
@@ -571,6 +572,128 @@ export async function getSwapQuote(args: GetSwapQuoteArgs) {
   };
 }
 
+/**
+ * Issue #615 — direct 1inch /swap fallback for `prepareSwap`. Invoked
+ * when LiFi rejects an `exchanges: ["1inch"]` filter and the call is
+ * intra-chain + exact-in + the user has a 1inch API key. The endpoint
+ * returns calldata against the 1inch Aggregation Router V6; for ERC-20
+ * inputs that same address is the spender, so we approve `tx.to`
+ * directly. Mirrors the LiFi path's decimals cross-check and
+ * sandwich-MEV hint, and surfaces in the description that this is the
+ * direct-1inch path (not LiFi).
+ */
+async function prepareDirectOneInchSwap(
+  args: PrepareSwapArgs,
+  fromAmountWei: string,
+  apiKey: string,
+  lifiErr: Error,
+): Promise<UnsignedTx> {
+  const chain = args.fromChain as SupportedChain;
+  const fromToken = args.fromToken as `0x${string}` | "native";
+  const toToken = args.toToken as `0x${string}` | "native";
+  const slippageBps = args.slippageBps ?? 50;
+
+  const oi = await fetchOneInchSwap({
+    chain,
+    fromToken,
+    toToken,
+    fromAmount: fromAmountWei,
+    fromAddress: args.wallet as `0x${string}`,
+    slippageBps,
+    apiKey,
+  }).catch((err: unknown) => {
+    const oneInchMsg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `prepare_swap: LiFi route failed AND direct 1inch fallback also failed. ` +
+        `LiFi: ${lifiErr.message} | 1inch: ${oneInchMsg}`,
+    );
+  });
+
+  // Decimals cross-check — refuse on mismatch, mirrors the LiFi path.
+  const fromDecimalsOnchain = await readOnchainDecimals(chain, fromToken);
+  const toDecimalsOnchain = await readOnchainDecimals(chain, toToken);
+  if (
+    fromDecimalsOnchain !== undefined &&
+    fromDecimalsOnchain !== oi.srcToken.decimals
+  ) {
+    throw new Error(
+      `Decimals mismatch for fromToken ${oi.srcToken.symbol} (${oi.srcToken.address}): ` +
+        `1inch reports ${oi.srcToken.decimals}, on-chain says ${fromDecimalsOnchain}. ` +
+        `Refusing to return calldata.`,
+    );
+  }
+  if (
+    toDecimalsOnchain !== undefined &&
+    toDecimalsOnchain !== oi.dstToken.decimals
+  ) {
+    throw new Error(
+      `Decimals mismatch for toToken ${oi.dstToken.symbol} (${oi.dstToken.address}): ` +
+        `1inch reports ${oi.dstToken.decimals}, on-chain says ${toDecimalsOnchain}. ` +
+        `Refusing to return calldata.`,
+    );
+  }
+
+  const fromSym = oi.srcToken.symbol;
+  const toSym = oi.dstToken.symbol;
+  const dstAmount = BigInt(oi.dstAmount);
+  const minOut = (dstAmount * BigInt(10000 - slippageBps)) / 10000n;
+  const quotedToAmount = formatUnits(dstAmount, oi.dstToken.decimals);
+  const minOutFormatted = formatUnits(minOut, oi.dstToken.decimals);
+
+  // 1inch doesn't return priceUSD, so the MEV hint runs without a USD
+  // notional and falls back to its percent-only message.
+  const mevNote = mevExposureNote(chain, slippageBps, undefined);
+
+  const description =
+    `Swap ${args.amount} ${fromSym} → ~${quotedToAmount} ${toSym} on ${chain} ` +
+    `via 1inch direct (LiFi could not build a route under exchanges=["1inch"])`;
+
+  const swapTx: UnsignedTx = {
+    chain,
+    to: getAddress(oi.tx.to),
+    data: oi.tx.data as `0x${string}`,
+    value: BigInt(oi.tx.value || "0").toString(),
+    from: args.wallet as `0x${string}`,
+    description,
+    decoded: {
+      functionName: "1inch_swap_v6",
+      args: {
+        from: `${args.amount} ${fromSym}`,
+        expectedOut: `${quotedToAmount} ${toSym}`,
+        minOut: `${minOutFormatted} ${toSym}`,
+        slippageBps: String(slippageBps),
+        ...(mevNote ? { mev: mevNote } : {}),
+      },
+    },
+    gasEstimate: oi.tx.gas ? BigInt(oi.tx.gas).toString() : undefined,
+  };
+
+  if (fromToken === "native") return swapTx;
+
+  // ERC-20 input: prepend approval. Spender is the Aggregation Router V6
+  // (same address as `tx.to`). Match LiFi-path semantics: exact-amount
+  // approval, USDT-style reset on existing nonzero allowance handled by
+  // `buildApprovalTx`.
+  const fromAmountBig = BigInt(fromAmountWei);
+  const { approvalAmount, display } = resolveApprovalCap(
+    "exact",
+    fromAmountBig,
+    oi.srcToken.decimals,
+  );
+  const approval = await buildApprovalTx({
+    chain,
+    wallet: args.wallet as `0x${string}`,
+    asset: fromToken,
+    spender: getAddress(oi.tx.to),
+    amountWei: fromAmountBig,
+    approvalAmount,
+    approvalDisplay: display,
+    symbol: fromSym,
+    spenderLabel: "1inch Aggregation Router V6",
+  });
+  return chainApproval(approval, swapTx);
+}
+
 export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
   assertSlippageOk(args.slippageBps, args.acknowledgeHighSlippage);
   assertCrossChainAddressing(args);
@@ -617,9 +740,35 @@ export async function prepareSwap(args: PrepareSwapArgs): Promise<UnsignedTx> {
       : {}),
     ...(args.order !== undefined ? { order: args.order } : {}),
   } as Parameters<typeof fetchQuote>[0];
-  const quote = await fetchQuote(lifiReq).catch((err: unknown) => {
+  // Issue #615 — when the user's exchange filter is exclusively
+  // ["1inch"] and LiFi can't build the route (common for stETH→ETH and
+  // other long-tail intra-chain pairs LiFi exposes as 1inch
+  // alternatives but can't actually compose), fall back to calling
+  // 1inch's /swap endpoint directly. Only attempted intra-chain,
+  // exact-in, with a configured 1inch API key — 1inch has no bridge
+  // and no exact-out endpoint.
+  const intraChainEvm = args.fromChain === args.toChain && !toIsNonEvm;
+  const oneInchOnlyFilter =
+    args.exchanges?.length === 1 &&
+    args.exchanges[0]?.toLowerCase() === "1inch";
+  const oneInchKey =
+    intraChainEvm && !isExactOut && oneInchOnlyFilter
+      ? resolveOneInchApiKey(readUserConfig())
+      : undefined;
+  let quote: Awaited<ReturnType<typeof fetchQuote>>;
+  try {
+    quote = await fetchQuote(lifiReq);
+  } catch (err: unknown) {
+    if (oneInchKey) {
+      return await prepareDirectOneInchSwap(
+        args,
+        amountWei,
+        oneInchKey,
+        err instanceof Error ? err : new Error(String(err)),
+      );
+    }
     throw rephraseLifiNoRouteError(err, args);
-  });
+  }
 
   const txRequest = quote.transactionRequest;
   if (!txRequest || !txRequest.to || !txRequest.data) {

@@ -54,3 +54,63 @@ export async function fetchOneInchQuote(req: OneInchQuoteRequest): Promise<OneIn
   }
   return (await res.json()) as OneInchQuoteRaw;
 }
+
+export interface OneInchSwapRequest extends OneInchQuoteRequest {
+  fromAddress: `0x${string}`;
+  /** Slippage in basis points (1..500). Converted to 1inch's percentage on-wire. */
+  slippageBps: number;
+}
+
+export interface OneInchSwapRaw {
+  dstAmount: string;
+  srcToken: { address: string; symbol: string; decimals: number; name?: string };
+  dstToken: { address: string; symbol: string; decimals: number; name?: string };
+  tx: {
+    from: string;
+    to: string;
+    data: string;
+    /** Wei value as decimal string. "0" for ERC-20 inputs. */
+    value: string;
+    gas?: number | string;
+    gasPrice?: string;
+  };
+}
+
+/**
+ * 1inch v6 `/swap` endpoint — returns signable calldata against the
+ * Aggregation Router V6 (`tx.to` is also the spender for ERC-20 inputs).
+ * Used as a same-chain fallback inside `prepareSwap` when LiFi's 1inch
+ * integration can't satisfy a route filter (issue #615 — stETH→ETH).
+ *
+ * `disableEstimate=true` skips 1inch's own eth_estimateGas pre-check;
+ * without it, the call fails for first-time approve+swap chains because
+ * the user hasn't yet granted allowance to the router.
+ */
+export async function fetchOneInchSwap(req: OneInchSwapRequest): Promise<OneInchSwapRaw> {
+  const chainId = CHAIN_IDS[req.chain];
+  const src = req.fromToken === "native" ? ONEINCH_NATIVE : req.fromToken;
+  const dst = req.toToken === "native" ? ONEINCH_NATIVE : req.toToken;
+
+  const url = new URL(`https://api.1inch.dev/swap/v6.0/${chainId}/swap`);
+  url.searchParams.set("src", src);
+  url.searchParams.set("dst", dst);
+  url.searchParams.set("amount", req.fromAmount);
+  url.searchParams.set("from", req.fromAddress);
+  // 1inch slippage is a percentage (0..50). 50 bps → 0.5.
+  url.searchParams.set("slippage", (req.slippageBps / 100).toString());
+  url.searchParams.set("includeTokensInfo", "true");
+  url.searchParams.set("includeGas", "true");
+  url.searchParams.set("disableEstimate", "true");
+
+  const res = await fetchWithTimeout(url, {
+    headers: {
+      Authorization: `Bearer ${req.apiKey}`,
+      Accept: "application/json",
+    },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`1inch swap ${res.status}: ${body.slice(0, 200)}`);
+  }
+  return (await res.json()) as OneInchSwapRaw;
+}

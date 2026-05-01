@@ -12,7 +12,7 @@
  * gate explicitly than to silently default to 0 and let the user lose
  * to MEV).
  */
-import { encodeFunctionData, type Address } from "viem";
+import { encodeFunctionData, formatUnits, parseUnits, type Address } from "viem";
 import { getClient } from "../../data/rpc.js";
 import {
   buildApprovalTx,
@@ -21,12 +21,26 @@ import {
 } from "../shared/approval.js";
 import { resolveTokenMeta } from "../shared/token-meta.js";
 import {
+  curveLegacyStableSwapAbi,
   curveStableNgFactoryAbi,
   curveStableNgPlainPoolAbi,
 } from "../../abis/curve.js";
 import { CONTRACTS } from "../../config/contracts.js";
 import type { UnsignedTx } from "../../types/index.js";
-import type { PrepareCurveAddLiquidityArgs } from "./schemas.js";
+import type {
+  PrepareCurveAddLiquidityArgs,
+  PrepareCurveSwapArgs,
+} from "./schemas.js";
+
+/**
+ * Indices on the canonical Curve stETH/ETH legacy StableSwap pool
+ * (`0xDC24316b9AE028F1497c275EB9192a3Ea0f67022`). Verified on
+ * Etherscan: `coins(0)` returns the ETH sentinel
+ * `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` and `coins(1)` returns
+ * stETH `0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84`.
+ */
+const STETH_POOL_COIN_ETH = 0;
+const STETH_POOL_COIN_STETH = 1;
 
 /**
  * Build a `prepare_curve_add_liquidity` UnsignedTx (with bundled
@@ -162,4 +176,120 @@ export async function buildCurveAddLiquidity(
   };
 
   return chainedApproval === null ? addTx : chainApproval(chainedApproval, addTx);
+}
+
+/**
+ * Build a `prepare_curve_swap` UnsignedTx for the canonical Curve
+ * stETH/ETH legacy StableSwap pool (issue #615). Pool coin order:
+ * 0=ETH (native, payable), 1=stETH.
+ *
+ *   eth_to_steth: i=0, j=1, value=dx (native), no approval.
+ *   steth_to_eth: i=1, j=0, value=0, prepended with stETH approval to
+ *     the pool (USDT-style reset handled by `buildApprovalTx`).
+ *
+ * Slippage gate is required: caller passes `minOut` (explicit) or
+ * `slippageBps` (server computes via `get_dy * (1 - bps/10000)`).
+ * Refusing to default to zero protects against MEV — Curve's exchange
+ * silently accepts `min_dy=0` and would deliver whatever the pool
+ * state allows, including post-sandwich.
+ *
+ * Tighter spread than aggregators for stETH↔ETH: the pool is the
+ * historical best venue for this pair (deeper liquidity, no aggregator
+ * cut). Other Curve pools use distinct ABIs (cryptoswap, tricrypto,
+ * stable_ng) and are NOT supported here — the schema's `direction`
+ * enum is the entire surface. Adding a `pool` parameter without
+ * per-pool ABI dispatch would silently encode wrong selectors.
+ */
+export async function buildCurveStethSwap(
+  p: PrepareCurveSwapArgs,
+): Promise<UnsignedTx> {
+  const wallet = p.wallet as Address;
+  const pool = CONTRACTS.ethereum.curve.stEthEthPool as Address;
+  const stETH = CONTRACTS.ethereum.lido.stETH as Address;
+  const client = getClient("ethereum");
+  const dx = parseUnits(p.amount, 18);
+
+  const ethToSteth = p.direction === "eth_to_steth";
+  const i = ethToSteth ? STETH_POOL_COIN_ETH : STETH_POOL_COIN_STETH;
+  const j = ethToSteth ? STETH_POOL_COIN_STETH : STETH_POOL_COIN_ETH;
+
+  // Resolve min_dy. Mirrors `prepare_curve_add_liquidity`'s gate.
+  let minDy: bigint;
+  if (p.minOut !== undefined) {
+    minDy = BigInt(p.minOut);
+  } else if (p.slippageBps !== undefined) {
+    if (p.slippageBps > 100 && p.acknowledgeHighSlippage !== true) {
+      throw new Error(
+        `Requested slippage is ${p.slippageBps} bps (${(p.slippageBps / 100).toFixed(2)}%). ` +
+          `The default cap is 100 bps (1%) because anything higher is almost always a ` +
+          `sandwich-bait misconfiguration. Retry with \`acknowledgeHighSlippage: true\` if ` +
+          `genuinely intended.`,
+      );
+    }
+    const expectedOut = (await client.readContract({
+      address: pool,
+      abi: curveLegacyStableSwapAbi,
+      functionName: "get_dy",
+      args: [BigInt(i), BigInt(j), dx],
+    })) as bigint;
+    minDy = (expectedOut * BigInt(10000 - p.slippageBps)) / 10000n;
+  } else {
+    throw new Error(
+      "prepare_curve_swap requires either `minOut` (explicit decimal-string uint256) or " +
+        "`slippageBps`. The pool's exchange() accepts min_dy=0 silently — defaulting to that " +
+        "would let MEV extract the entire output, so the gate is mandatory.",
+    );
+  }
+
+  const exchangeData = encodeFunctionData({
+    abi: curveLegacyStableSwapAbi,
+    functionName: "exchange",
+    args: [BigInt(i), BigInt(j), dx, minDy],
+  });
+
+  const fromSym = ethToSteth ? "ETH" : "stETH";
+  const toSym = ethToSteth ? "stETH" : "ETH";
+  const minOutFormatted = formatUnits(minDy, 18);
+  const description =
+    `Swap ${p.amount} ${fromSym} → ≥${minOutFormatted} ${toSym} via Curve stETH/ETH pool ${pool}`;
+
+  const swapTx: UnsignedTx = {
+    chain: "ethereum",
+    to: pool,
+    data: exchangeData,
+    value: ethToSteth ? dx.toString() : "0",
+    from: wallet,
+    description,
+    decoded: {
+      functionName: "exchange",
+      args: {
+        pool,
+        i: String(i),
+        j: String(j),
+        dx: `${p.amount} ${fromSym}`,
+        minOut: `${minOutFormatted} ${toSym}`,
+        ...(p.slippageBps !== undefined ? { slippageBps: String(p.slippageBps) } : {}),
+      },
+    },
+  };
+
+  if (ethToSteth) return swapTx;
+
+  // stETH → ETH: prepend ERC-20 approval of stETH to the pool. stETH
+  // is a rebasing OpenZeppelin-style token, no USDT quirk, but
+  // buildApprovalTx still handles the reset path defensively.
+  const meta = await resolveTokenMeta("ethereum", stETH);
+  const { approvalAmount, display } = resolveApprovalCap(p.approvalCap, dx, meta.decimals);
+  const approval = await buildApprovalTx({
+    chain: "ethereum",
+    wallet,
+    asset: stETH,
+    spender: pool,
+    amountWei: dx,
+    approvalAmount,
+    approvalDisplay: display,
+    symbol: meta.symbol,
+    spenderLabel: `Curve stETH/ETH pool ${pool}`,
+  });
+  return chainApproval(approval, swapTx);
 }

@@ -29,8 +29,10 @@ vi.mock("../src/modules/swap/lifi.js", () => ({
 }));
 
 const fetchOneInchMock = vi.fn();
+const fetchOneInchSwapMock = vi.fn();
 vi.mock("../src/modules/swap/oneinch.js", () => ({
   fetchOneInchQuote: (...args: unknown[]) => fetchOneInchMock(...args),
+  fetchOneInchSwap: (...args: unknown[]) => fetchOneInchSwapMock(...args),
 }));
 
 const evmClientStub = {
@@ -43,9 +45,13 @@ vi.mock("../src/data/rpc.js", () => ({
   verifyChainId: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Module-level handle for tests that exercise the 1inch fallback path
+// (issue #615): tests assign and clear `oneInchKeyOverride` to flip the
+// "API key configured" condition without busting the module cache.
+let oneInchKeyOverride: string | undefined;
 vi.mock("../src/config/user-config.js", () => ({
-  readUserConfig: () => ({}),
-  resolveOneInchApiKey: () => undefined,
+  readUserConfig: () => (oneInchKeyOverride ? { oneInchApiKey: oneInchKeyOverride } : {}),
+  resolveOneInchApiKey: () => oneInchKeyOverride,
 }));
 
 const EVM_WALLET = "0x1111111111111111111111111111111111111111";
@@ -95,6 +101,8 @@ function makeIntraChainQuote(tool: string) {
 beforeEach(() => {
   fetchQuoteMock.mockReset();
   fetchOneInchMock.mockReset();
+  fetchOneInchSwapMock.mockReset();
+  oneInchKeyOverride = undefined;
   evmClientStub.readContract.mockReset();
   evmClientStub.readContract.mockImplementation(
     async (req: { functionName: string; address?: string }) => {
@@ -402,5 +410,154 @@ describe("issue #411 — LiFi no-route error gets rephrased to name the filter",
         exchanges: ["1inch"],
       }),
     ).rejects.toThrow(/rate limit exceeded/);
+  });
+});
+
+/**
+ * Issue #615 — direct 1inch /swap fallback inside `prepareSwap`.
+ * Triggers when LiFi rejects an `exchanges: ["1inch"]` filter, the call
+ * is intra-EVM + exact-in, and a 1inch API key is configured. Without
+ * the key the fallback stays inert and the rephrased LiFi error
+ * propagates.
+ */
+describe("issue #615 — 1inch /swap direct fallback", () => {
+  const ONEINCH_ROUTER = "0x111111125421ca6dc452d289314280a0f8842a65";
+
+  function makeOneInchSwapResponse(opts: { dstAmount?: string } = {}) {
+    return {
+      dstAmount: opts.dstAmount ?? "33000000000000000",
+      srcToken: { address: ETH_USDC, symbol: "USDC", decimals: 6 },
+      dstToken: { address: ETH_WETH, symbol: "WETH", decimals: 18 },
+      tx: {
+        from: EVM_WALLET,
+        to: ONEINCH_ROUTER,
+        data: "0xdeadbeef",
+        value: "0",
+        gas: 200000,
+      },
+    };
+  }
+
+  it("falls back to 1inch /swap when LiFi fails AND filter is exclusively ['1inch'] AND key is configured", async () => {
+    fetchQuoteMock.mockRejectedValue(
+      new Error("No available routes for exchanges=[1inch]"),
+    );
+    fetchOneInchSwapMock.mockResolvedValue(makeOneInchSwapResponse());
+    oneInchKeyOverride = "test-key";
+
+    // Allowance returns 0 so the approval leg is emitted.
+    evmClientStub.readContract.mockImplementation(
+      async (req: { functionName: string; address?: string }) => {
+        if (req.functionName === "allowance") return 0n;
+        if (req.functionName === "decimals") {
+          return req.address?.toLowerCase() === ETH_WETH.toLowerCase() ? 18 : 6;
+        }
+        return 0;
+      },
+    );
+
+    const { prepareSwap } = await import("../src/modules/swap/index.js");
+    const tx = await prepareSwap({
+      wallet: EVM_WALLET,
+      fromChain: "ethereum",
+      toChain: "ethereum",
+      fromToken: ETH_USDC,
+      toToken: ETH_WETH,
+      amount: "100",
+      exchanges: ["1inch"],
+    });
+
+    // Approval leg first — spender is the 1inch Router.
+    expect(tx.to.toLowerCase()).toBe(ETH_USDC.toLowerCase());
+    expect(tx.decoded?.functionName).toBe("approve");
+    type WithNext = typeof tx & { next?: typeof tx };
+    let cur: typeof tx = tx;
+    while ((cur as WithNext).next !== undefined) cur = (cur as WithNext).next!;
+    expect(cur.to.toLowerCase()).toBe(ONEINCH_ROUTER);
+    expect(cur.decoded?.functionName).toBe("1inch_swap_v6");
+    expect(cur.description).toContain("via 1inch direct");
+  });
+
+  it("does NOT fall back when filter contains a second exchange (1inch is not exclusive)", async () => {
+    fetchQuoteMock.mockRejectedValue(
+      new Error("No available routes for the requested swap"),
+    );
+    oneInchKeyOverride = "test-key";
+
+    const { prepareSwap } = await import("../src/modules/swap/index.js");
+    await expect(
+      prepareSwap({
+        wallet: EVM_WALLET,
+        fromChain: "ethereum",
+        toChain: "ethereum",
+        fromToken: ETH_USDC,
+        toToken: ETH_WETH,
+        amount: "100",
+        exchanges: ["1inch", "uniswap"],
+      }),
+    ).rejects.toThrow(/no route satisfying/);
+    expect(fetchOneInchSwapMock).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fall back when no 1inch API key is configured", async () => {
+    fetchQuoteMock.mockRejectedValue(
+      new Error("No available routes for the requested swap"),
+    );
+    // resolveOneInchApiKey is already returning undefined via the
+    // top-of-file mock — no override needed.
+    const { prepareSwap } = await import("../src/modules/swap/index.js");
+    await expect(
+      prepareSwap({
+        wallet: EVM_WALLET,
+        fromChain: "ethereum",
+        toChain: "ethereum",
+        fromToken: ETH_USDC,
+        toToken: ETH_WETH,
+        amount: "100",
+        exchanges: ["1inch"],
+      }),
+    ).rejects.toThrow(/no route satisfying/);
+    expect(fetchOneInchSwapMock).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fall back for exact-out (1inch v6 has no toAmount endpoint)", async () => {
+    fetchQuoteMock.mockRejectedValue(
+      new Error("No available routes for the requested swap"),
+    );
+    oneInchKeyOverride = "test-key";
+
+    const { prepareSwap } = await import("../src/modules/swap/index.js");
+    await expect(
+      prepareSwap({
+        wallet: EVM_WALLET,
+        fromChain: "ethereum",
+        toChain: "ethereum",
+        fromToken: ETH_USDC,
+        toToken: ETH_WETH,
+        amount: "100",
+        amountSide: "to",
+        exchanges: ["1inch"],
+      }),
+    ).rejects.toThrow(/no route satisfying/);
+    expect(fetchOneInchSwapMock).not.toHaveBeenCalled();
+  });
+
+  it("surfaces both errors when 1inch fallback also fails", async () => {
+    fetchQuoteMock.mockRejectedValue(new Error("LiFi NotFoundError"));
+    fetchOneInchSwapMock.mockRejectedValue(new Error("1inch 400: bad pair"));
+    oneInchKeyOverride = "test-key";
+
+    const { prepareSwap } = await import("../src/modules/swap/index.js");
+    await expect(
+      prepareSwap({
+        wallet: EVM_WALLET,
+        fromChain: "ethereum",
+        toChain: "ethereum",
+        fromToken: ETH_USDC,
+        toToken: ETH_WETH,
+        amount: "100",
+        exchanges: ["1inch"],
+      }),
+    ).rejects.toThrow(/LiFi:.*1inch:/);
   });
 });

@@ -131,6 +131,51 @@ export const curveStableNgPlainPoolAbi = [
 ] as const;
 
 /**
+ * Legacy StableSwap pool ABI — used by the canonical Curve stETH/ETH
+ * pool at `0xDC24316b9AE028F1497c275EB9192a3Ea0f67022`. Predates the
+ * stable_ng generation: exchange takes `int128` indices (not `uint256`)
+ * and the pool is `payable` so coin0=ETH can be sent as `msg.value`.
+ * Issue #615.
+ *
+ * Source: Etherscan-verified Vyper source for the pool, cross-checked
+ * against `lib/constants/abis/stable-swap-pool.json` in @curvefi/api.
+ * `coins(0)` returns the ETH sentinel `0xeeee...eeee`; `coins(1)`
+ * returns the stETH token address.
+ */
+export const curveLegacyStableSwapAbi = [
+  {
+    type: "function",
+    name: "exchange",
+    stateMutability: "payable",
+    inputs: [
+      { name: "i", type: "int128" },
+      { name: "j", type: "int128" },
+      { name: "dx", type: "uint256" },
+      { name: "min_dy", type: "uint256" },
+    ],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "get_dy",
+    stateMutability: "view",
+    inputs: [
+      { name: "i", type: "int128" },
+      { name: "j", type: "int128" },
+      { name: "dx", type: "uint256" },
+    ],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "coins",
+    stateMutability: "view",
+    inputs: [{ name: "i", type: "uint256" }],
+    outputs: [{ type: "address" }],
+  },
+] as const;
+
+/**
  * Gauge V5 — staking + reward claims for stable_ng pool LP tokens.
  * Source: gauge_v5.json bundled in @curvefi/api. Only the methods we use.
  */

@@ -91,6 +91,13 @@ export const CONTRACTS = {
       gaugeController: "0x2F50D538606Fa9EDD2B11E2446BEb18C9D5846bB",
       /** Universal AddressProvider (CREATE2-deterministic across chains). */
       addressProvider: "0x0000000022D53366457F9d5E68Ec105046FC4383",
+      /**
+       * Canonical legacy StableSwap stETH/ETH pool. coin0 = native ETH
+       * (sentinel 0xeeee...eeee), coin1 = stETH. Used by
+       * `prepare_curve_swap` (issue #615) — historically the
+       * tightest-spread venue for stETH↔ETH conversions.
+       */
+      stEthEthPool: "0xDC24316b9AE028F1497c275EB9192a3Ea0f67022",
     },
   },
   arbitrum: {

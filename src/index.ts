@@ -434,10 +434,14 @@ import {
 
 import { getCompoundPositions } from "./modules/compound/index.js";
 import { getCurvePositions } from "./modules/curve/positions.js";
-import { buildCurveAddLiquidity } from "./modules/curve/actions.js";
+import {
+  buildCurveAddLiquidity,
+  buildCurveStethSwap,
+} from "./modules/curve/actions.js";
 import {
   getCurvePositionsInput,
   prepareCurveAddLiquidityInput,
+  prepareCurveSwapInput,
 } from "./modules/curve/schemas.js";
 import { getCompoundMarketInfo } from "./modules/compound/market-info.js";
 import { getMarketIncidentStatus } from "./modules/incidents/index.js";
@@ -5705,6 +5709,25 @@ async function main() {
       },
     },
     txHandler("prepare_curve_add_liquidity", buildCurveAddLiquidity)
+  );
+
+  registerTool(server,
+    "prepare_curve_swap",
+    {
+      description:
+        "Build an unsigned Curve swap on the canonical legacy stETH/ETH pool (0xDC24316b9AE028F1497c275EB9192a3Ea0f67022) — historically the tightest-spread venue for stETH↔ETH conversions, beating LiFi/1inch aggregator routing on this pair. Issue #615. " +
+        "Two directions: `eth_to_steth` (sends native ETH as msg.value, no approval) and `steth_to_eth` (chains an stETH approval to the pool first). Slippage gate REQUIRED: pass either `slippageBps` (server reads `get_dy` and applies the cap) or `minOut` (explicit decimal-string uint256). The pool's `exchange()` accepts `min_dy=0` silently — defaulting to that would let MEV extract the entire output. " +
+        "v0.1 scope: this pool only. Other Curve pools use distinct ABIs (cryptoswap, tricrypto, stable_ng) and routing them through the same selector would silently encode wrong calldata; per-pool dispatch is a follow-up. For other Curve pairs, fall back to `prepare_swap` (LiFi).",
+      inputSchema: prepareCurveSwapInput.shape,
+      annotations: {
+        title: "Prepare Curve Swap",
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    txHandler("prepare_curve_swap", buildCurveStethSwap)
   );
 
   // ---- Module 9: Morpho Blue ----

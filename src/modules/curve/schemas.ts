@@ -55,3 +55,51 @@ export const prepareCurveAddLiquidityInput = z.object({
 export type PrepareCurveAddLiquidityArgs = z.infer<
   typeof prepareCurveAddLiquidityInput
 >;
+
+/**
+ * `prepare_curve_swap` — issue #615. v0.1 scope: the canonical Curve
+ * stETH/ETH legacy StableSwap pool only (`0xDC24316b9AE028F1497c275EB9192a3Ea0f67022`).
+ * Other Curve pools (cryptoswap / tricrypto / stable_ng) use distinct
+ * ABIs and are deferred to follow-up PRs. The `direction` enum is the
+ * full surface — no `pool` parameter — because exposing other pools
+ * without per-pool ABI dispatch would silently encode wrong selectors.
+ */
+export const prepareCurveSwapInput = z.object({
+  wallet: evmAddress.describe("0x EVM wallet address that will sign the tx."),
+  direction: z
+    .enum(["eth_to_steth", "steth_to_eth"])
+    .describe(
+      "Swap direction. `eth_to_steth` sends native ETH as msg.value (no approval); `steth_to_eth` requires an ERC-20 approval of stETH to the pool first (chained automatically).",
+    ),
+  amount: z
+    .string()
+    .max(50)
+    .regex(/^\d+(\.\d+)?$/)
+    .describe(
+      'Human-readable decimal input amount in the from-token (e.g. "1.5" for 1.5 ETH or 1.5 stETH). Decimals = 18 for both legs.',
+    ),
+  slippageBps: z
+    .number()
+    .int()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe(
+      "Slippage tolerance in basis points (50 = 0.5%). When set, `min_dy = get_dy(i,j,dx) * (1 - slippageBps/10000)`. Either `slippageBps` or `minOut` is required — the pool refuses without a slippage floor and silently defaulting to 0 would leak to MEV. Capped at 5% (500 bps).",
+    ),
+  minOut: z
+    .string()
+    .regex(/^\d+$/)
+    .optional()
+    .describe(
+      "Explicit minimum output in the to-token's wei (decimal-string uint256). Takes precedence over `slippageBps` when both are provided.",
+    ),
+  acknowledgeHighSlippage: z
+    .boolean()
+    .optional()
+    .describe(
+      "Required when `slippageBps > 100` (1%). Same gate as `prepare_swap` — sandwich-MEV bots target wide-slippage txs.",
+    ),
+  approvalCap: approvalCapSchema.optional(),
+});
+export type PrepareCurveSwapArgs = z.infer<typeof prepareCurveSwapInput>;
