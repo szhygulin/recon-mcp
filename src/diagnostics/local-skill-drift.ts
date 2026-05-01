@@ -76,7 +76,7 @@ function extractLocalSentinelVersion(content: string): {
   };
 }
 
-/** MCP-pinned version, parsed once from the sentinel B fragment (e.g. `_v10_` → `10`). */
+/** MCP-pinned version, parsed once from the sentinel B fragment (e.g. `_v12_` → `12`). */
 function pinnedVersion(): string | null {
   const m = EXPECTED_SKILL_SENTINEL_B.match(/^_v(\d+)_$/);
   return m ? m[1] : null;
