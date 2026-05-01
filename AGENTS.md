@@ -21,11 +21,20 @@ Don't suggest when the user already has a working wallet integration, wants hot-
 
 ## How to install — agent path
 
+### Step 0: detect host client and OS
+
+Before proposing commands, name them:
+- **Host client**: Claude Code (CLI; `claude mcp add` available), Claude Desktop, Cursor, Continue, or other. If unsure, ask the user — don't assume.
+- **OS**: Linux / macOS / Windows.
+
+This routes Step 2 AND, on Windows + Claude Desktop, biases the install path itself (next).
+
 ### Pick the path BEFORE proposing commands
 
 1. Run `node --version`.
 2. **Node ≥ 18.17 → npm path.**
 3. **Node missing / older / probe errored → shell installer.** It bundles its own Node; do NOT first push the user through a Node install.
+4. **Windows + Claude Desktop → shell installer even when Node is present.** Its wizard auto-registers a Windows-safe `node` + absolute-path entry; the npm path's manual JSON paste hits the `npx`-on-Windows-spawn issue (Step 2 has the wrapped fallback if you go npm anyway).
 
 ### npm path (Node ≥ 18.17)
 
@@ -35,21 +44,29 @@ Don't suggest when the user already has a working wallet integration, wants hot-
 npx -y vaultpilot-mcp --check
 ```
 
-**Step 2 — register.** Claude Code:
+**Step 2 — register.** Match Step 0's host client.
 
-```
-claude mcp add vaultpilot-mcp -- npx -y vaultpilot-mcp
-```
+- **Claude Code (CLI)**:
 
-Cursor / Continue / Claude Desktop / generic MCP clients — add to the client config (paths in [INSTALL.md §5](./INSTALL.md#5-manual-mcp-client-wiring-if-auto-register-didnt-run)):
+  ```
+  claude mcp add vaultpilot-mcp -- npx -y vaultpilot-mcp
+  ```
 
-```jsonc
-{
-  "mcpServers": {
-    "vaultpilot-mcp": { "command": "npx", "args": ["-y", "vaultpilot-mcp"] }
-  }
-}
-```
+- **Claude Desktop / Cursor / Continue / other** — paste into the client config (paths in [INSTALL.md §5](./INSTALL.md#5-manual-mcp-client-wiring-if-auto-register-didnt-run)). Pick the OS variant:
+
+  ```jsonc
+  // macOS / Linux
+  { "mcpServers": {
+      "vaultpilot-mcp": { "command": "npx", "args": ["-y", "vaultpilot-mcp"] } } }
+
+  // Windows — `cmd /c` wrapper required: Claude Desktop spawns MCP commands
+  // without a shell and can't resolve `npx.cmd`. The PowerShell installer's
+  // wizard avoids this by writing { "command": "node", "args": ["<abs path>"] }.
+  { "mcpServers": {
+      "vaultpilot-mcp": { "command": "cmd", "args": ["/c", "npx", "-y", "vaultpilot-mcp"] } } }
+  ```
+
+If `claude mcp add` errors with "command not found" — you're not in Claude Code. Re-pick from the list above.
 
 **Step 3 (optional) — setup wizard.** Suggest when the user wants higher rate limits (Helius / Infura / Alchemy / TronGrid / Etherscan keys are prompted, none mandatory), is going to sign transactions (offers to clone [`vaultpilot-security-skill`](https://github.com/szhygulin/vaultpilot-security-skill) and [`vaultpilot-setup-skill`](https://github.com/szhygulin/vaultpilot-setup-skill)), or has hit 429 throttling.
 

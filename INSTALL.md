@@ -161,8 +161,12 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | vaultpilot-mcp | head -c
 Add to the client config:
 
 ```jsonc
-// Path B (npm)
+// Path B (npm) — macOS / Linux
 { "mcpServers": { "vaultpilot-mcp": { "command": "vaultpilot-mcp" } } }
+
+// Path B (npm) — Windows + Claude Desktop (no-shell spawn; .cmd needs cmd /c)
+{ "mcpServers": { "vaultpilot-mcp": {
+    "command": "cmd", "args": ["/c", "vaultpilot-mcp"] } } }
 
 // Path A (bundled binary) — absolute path required
 { "mcpServers": { "vaultpilot-mcp": { "command": "/abs/path/to/vaultpilot-mcp-<platform>-<arch>-server" } } }
@@ -238,6 +242,7 @@ All paths — clean up shared state:
 - **"Windows protected your PC"** — SmartScreen. Click **More info** → **Run anyway**.
 - **Wizard hangs at "Pairing Ledger Live…"** — WC relay timed out. Ensure Ledger Live mobile is open, has internet, recent build. Ctrl-C and re-run with `--skip-pairing`; pair later via `pair_ledger_live`.
 - **MCP client doesn't see vaultpilot-mcp** — auto-register didn't catch your client. Add the JSON entry from section 5; restart.
+- **Windows + Claude Desktop, manual entry, "Failed to start MCP server" / `ENOENT`** — `command: "npx"` (or `command: "vaultpilot-mcp"`) doesn't resolve `npx.cmd` / `.cmd` shims without a shell on Windows. Wrap with `cmd /c` (section 5) or re-run the PowerShell installer to let the wizard write the `node` + absolute-path entry.
 - **Solana sends fail with "blockhash expired"** — should not happen on v0.6.1+ (durable-nonce-protected). File an issue with the preview output if it does.
 - **Linux: TRON / Solana signing returns "permission denied" on USB** — missing Ledger udev rules. Re-run the wizard, or install from [Ledger's repo](https://github.com/LedgerHQ/udev-rules).
 - **WalletConnect "peer not currently reachable" on `send_transaction`** — closing the WC sub-app inside Ledger Live or sleeping the host machine breaks reachability without ending the session. The MCP retains the persisted session; recovery is reopen WC in Ledger Live (Discover → WalletConnect, or Settings → Connected Apps → WalletConnect) and re-call `send_transaction` on the **same handle** within its 15-min TTL — no re-pair. If reopening doesn't restore reachability after a few seconds, the session is genuinely ended; run `pair_ledger_live` for a fresh one. Mobile drops faster than desktop because OS app suspension can outlast the relay's topic TTL.
