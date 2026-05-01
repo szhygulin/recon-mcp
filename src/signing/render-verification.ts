@@ -284,6 +284,34 @@ function formatRecipientSuffix(
  * NOTE: ERC-20 approvals suppress this block too — the signature is universally
  * known, the cross-check would be noise, and the verification block itself is
  * suppressed (Ledger clear-signs approves natively).
+ *
+ * Issue #625 trim: the directive prose was reduced to imperative checklist
+ * items only. The threat-model rationale (why we don't want a verbatim relay
+ * of the verification block, why the agent must not duplicate the 4byte check
+ * via WebFetch, why preview_send is mandatory before send_transaction) lives
+ * in source comments below — the agent does not need to re-read the WHY each
+ * turn; the WHAT is what drives behavior.
+ *
+ * What the trimmed block must still teach:
+ *   - relay the [CROSS-CHECK SUMMARY] verbatim as the lead line(s);
+ *   - replace the verification-block wall-of-data with a compact bullet;
+ *   - end with a single next-step prompt (no menu);
+ *   - call preview_send(handle) BEFORE send_transaction.
+ *
+ * What was deliberately removed (rationale only — present in source for
+ * future maintainers, NOT in the per-turn agent context):
+ *   - "do NOT WebFetch to 4byte / swiss-knife to duplicate the check" —
+ *     the [CROSS-CHECK SUMMARY] block already carries the verbatim-relay
+ *     directive; agents that obey one obey the other.
+ *   - "do NOT fabricate a ✓ cross-check passed line" — covered by the
+ *     verbatim-relay rule on the CROSS-CHECK SUMMARY block.
+ *   - "do NOT echo the handle UUID — it is opaque internal state" — the
+ *     compact-bullet template names the fields the agent SHOULD include;
+ *     the handle isn't on that list, which is sufficient direction.
+ *   - "preview_send pins nonce + EIP-1559 fees, computes the EIP-1559 RLP
+ *     hash the Ledger device displays in blind-sign mode..." — the agent
+ *     learns this when preview_send actually runs (its own agent-task
+ *     block teaches the protocol); pre-teaching it here is duplication.
  */
 export function renderAgentTaskBlock(
   tx: Pick<UnsignedTx, "data">,
@@ -292,22 +320,19 @@ export function renderAgentTaskBlock(
   const lines = [
     "[AGENT TASK — DO NOT FORWARD THIS BLOCK TO THE USER]",
     `Replace the VERIFY-BEFORE-SIGNING block above with a COMPACT bullet`,
-    `summary — do NOT relay it verbatim to the user. The raw block is a wall`,
-    `of hex/struct data that drowns the sentence that actually matters.`,
+    `summary — do NOT relay it verbatim.`,
     ``,
     `Do this, in order:`,
     `  1. The server already ran the independent 4byte.directory cross-check`,
-    `     and emitted a block marked "[CROSS-CHECK SUMMARY — RELAY VERBATIM`,
-    `     TO USER ...]" above. Copy that summary VERBATIM as the FIRST line(s)`,
-    `     of your reply. Keep the "✓" / "✗" prefix unchanged. If it says`,
-    `     "DO NOT SEND" (mismatch), stop and do not produce the bullet summary`,
-    `     — refusing is the correct action. If it says "error", "no-signature",`,
-    `     or "not-applicable", still relay it so the user knows why there is no`,
-    `     independent check this turn — then proceed. Do NOT skip this relay;`,
-    `     do NOT script your own WebFetch to 4byte or swiss-knife to duplicate`,
+    `     and emitted it in a [CROSS-CHECK SUMMARY — RELAY VERBATIM ...] block`,
+    `     above. Copy that block VERBATIM as the FIRST line(s) of your reply.`,
+    `     Keep the "✓" / "✗" prefix unchanged. If "DO NOT SEND" (mismatch),`,
+    `     stop — refusing is the correct action. If "error" / "no-signature"`,
+    `     / "not-applicable", still relay so the user knows why there is no`,
+    `     independent check.`,
+    `     Do NOT script your own WebFetch to 4byte / swiss-knife to duplicate`,
     `     the check; do NOT fabricate a "✓ cross-check passed" line.`,
-    `  2. Produce a COMPACT bullet summary of the prepared tx, NOT a verbatim`,
-    `     relay of the VERIFY-BEFORE-SIGNING block. Required shape:`,
+    `  2. Produce a COMPACT bullet summary. Required shape:`,
     `       - Headline: "Prepared <action> — <one-line human summary>"`,
     `       - From: <sender address>`,
     `       - To: <to address> (<label if known, e.g. "LiFi diamond", "Aave`,
@@ -320,32 +345,14 @@ export function renderAgentTaskBlock(
     `       - supplies / withdraws / deposits: "Amount: <human amount>"`,
     `       - sends: "Amount: <human amount>"`,
     `       - approves (when rendered): "Spender: <addr> / Cap: <amount>"`,
-    `     Do NOT dump the raw "VERIFY BEFORE SIGNING" hex/struct block.`,
-    `     Do NOT echo the handle UUID — it is opaque internal state used only`,
-    `     by send_transaction / verify_tx_decode.`,
-    `  3. End your reply with ONE line directing the user at the next step:`,
+    `     Do NOT echo the handle UUID — opaque internal state.`,
+    `  3. End with ONE line, no menu:`,
     `       "Reply 'send' to continue — I'll run end-to-end integrity checks`,
     `        at that point and report the results before Ledger prompts you."`,
-    `     Do NOT surface a menu of options here. The mandatory integrity`,
-    `     checks (agent-side ABI decode + pair-consistency hash) run at`,
-    `     preview_send time, unprompted, and you report them in a CHECKS`,
-    `     PERFORMED block at that point. The swiss-knife decoder URL is`,
-    `     already embedded in the VERIFY BEFORE SIGNING block above as a`,
-    `     fallback the user can hit if your preview-time ABI decode is`,
-    `     low-confidence — do NOT surface it as a prompted option now.`,
     `  4. When the user replies "send", call preview_send(handle) BEFORE`,
-    `     calling send_transaction. preview_send pins nonce + EIP-1559 fees,`,
-    `     computes the EIP-1559 pre-sign RLP hash the Ledger device will`,
-    `     display in blind-sign mode, and returns an agent-task block telling`,
-    `     you to auto-run the two mandatory integrity checks. Follow that`,
-    `     block's CHECKS PERFORMED protocol before calling send_transaction.`,
-    `     The LEDGER BLIND-SIGN HASH block emitted by preview_send is marked`,
-    `     "RELAY VERBATIM TO USER; THEY MATCH ON-DEVICE" — the user reads it`,
-    `     BEFORE the Ledger device prompts, so the hash is on-screen when the`,
-    `     device prompt appears. On-device, verify  To = <to address>  and`,
-    `     Value = <human native amount>; the device clear-signs for Aave /`,
-    `     Lido / 1inch / LiFi / approve plugins, otherwise blind-signs with`,
-    `     the hash from the LEDGER BLIND-SIGN HASH block.`,
+    `     send_transaction. preview_send emits its own agent-task block`,
+    `     describing the CHECKS PERFORMED protocol — follow that block's`,
+    `     instructions before send_transaction.`,
   ];
   return lines.join("\n");
 }
@@ -482,6 +489,39 @@ export function renderPrepareReceiptBlock(args: {
  * agent renders its CHECKS PERFORMED block from — server authors the
  * threat taxonomy + required keywords; agent paraphrases naturally but
  * must cover every listed threat.
+ *
+ * Issue #625 trim — what was removed and where it lives now:
+ *   - "Protects against: …" prose at each CHECK header. Threat-model
+ *     rationale; agent does not need to re-read WHY each turn. Captured
+ *     in this comment block: CHECK 1 protects against MCP-side calldata
+ *     tampering — if the server rewrote the bytes, the agent's model-
+ *     weight decode disagrees with the prepare-time compact summary.
+ *     CHECK 2 protects against the server reporting tuple T with
+ *     preSignHash=hash(Y) where Y≠T, then forwarding Y to WalletConnect.
+ *     The on-device hash match alone does NOT catch that (device sees
+ *     hash(Y), chat sees hash(Y), they agree); only a local recompute
+ *     of hash(T) from the pinned tuple catches the discrepancy.
+ *   - Long SELECTOR-NAME ANCHOR paragraph explaining why 4byte counts
+ *     as a separate trust boundary from the agent's weights and the
+ *     server's ABI. The compressed bullet retains the rule (\"you MAY
+ *     cite the function name from [CROSS-CHECK SUMMARY]\"); the
+ *     trust-boundary justification was always for human readers, not
+ *     for the agent's per-turn behavior.
+ *   - Live-regression note about the column-0 hash render (2026-04-27,
+ *     hash showed literal Markdown source under 14-space indent). The
+ *     directive (column 0, blank lines above/below, both wrappers,
+ *     reuse the wrapper everywhere) stays inline; the historical
+ *     context belongs in source.
+ *   - Verbose NOTATION section explaining `{a|b}` alternation and that
+ *     Markdown link/code-fence syntax is literal. Compressed to one
+ *     line; the agent does not need a glossary to read alternation.
+ *   - Multi-paragraph SECOND-LLM CHECK + SEND-CALL CONTRACT prose. The
+ *     IMPERATIVE bullets stay; the why-each-bullet rationale doesn't.
+ *
+ * Test contract: every keyword listed in `checksPayload.<x>.keywords`
+ * must still appear in the rendered output (verbatim) and the block
+ * must hit the size ceilings asserted in `test/preview-verify-agent-
+ * task-block.test.ts`.
  */
 export function renderPreviewVerifyAgentTaskBlock(args: {
   chain: string;
@@ -543,80 +583,43 @@ export function renderPreviewVerifyAgentTaskBlock(args: {
     "[AGENT TASK — RUN THESE CHECKS NOW, DO NOT ASK THE USER]",
     ...(simple
       ? [
-          "You MUST run the ABI DECODE integrity check UNPROMPTED and report",
-          "the result in a prominent CHECKS PERFORMED block. The user already",
-          "consented to verification by calling preview_send — do NOT surface",
-          "a yes/no menu. This tx is a Ledger clear-sign type (native send,",
-          "ERC-20 transfer, or ERC-20 approve), so the PAIR-CONSISTENCY HASH",
-          "check is skipped: Ledger shows decoded fields on-device and the",
-          "hash-match path never fires, so the recompute adds no information",
-          "the user can act on.",
+          "Run the ABI DECODE integrity check UNPROMPTED. Report in a CHECKS",
+          "PERFORMED block. PAIR-CONSISTENCY HASH is skipped: Ledger clear-",
+          "signs this tx type (see CLEAR-SIGN block below) so the hash-match",
+          "path never fires.",
         ]
       : [
-          "You MUST run BOTH of the following integrity checks UNPROMPTED and",
-          "report results in a prominent CHECKS PERFORMED block. The user already",
-          "consented to verification by calling preview_send — do NOT surface a",
-          "yes/no menu for these two. They run every send, no exceptions.",
+          "Run BOTH integrity checks UNPROMPTED. Report in a CHECKS PERFORMED",
+          "block. They run every send, no menu, no exceptions.",
         ]),
     "",
     "CHECK 1 — AGENT-SIDE ABI DECODE",
-    "  Protects against: MCP-side calldata tampering. If the server rewrote",
-    "  the bytes, your model-weight decode disagrees with the compact summary",
-    "  you showed at prepare time.",
-    "",
-    "  - Decode the `data` field of the prepared tx from first principles",
-    "    using your built-in ABI knowledge of the target contract. Do NOT",
-    "    re-read the server's humanDecode; the point is a reading from a",
-    "    separate trust boundary (model weights, not server code).",
-    "  - SELECTOR-NAME ANCHOR when weights are insufficient: if your model",
-    "    weights don't cover the 4-byte selector (common for LiFi-diamond,",
-    "    1inch-aggregation-router, and other custom DeFi routers), you MAY",
-    "    cite the function name from the `[CROSS-CHECK SUMMARY]` block the",
-    "    server emitted at PREPARE time. That summary is the result of an",
-    "    independent 4byte.directory lookup — a public registry built from",
-    "    unrelated on-chain traffic — and its signature was re-encode-",
-    "    verified byte-for-byte against the calldata. 4byte is a separate",
-    "    DATA SOURCE from the server's ABI and from your model weights: the",
-    "    server fetches it via HTTP but does not author its contents. Treat",
-    "    it as a legitimate selector→name anchor for the honest-server case.",
-    "    (For the compromised-server case, the user's vaultpilot-preflight",
-    "    skill deliberately does NOT rely on 4byte — the skill's model-",
-    "    weights-only stance is the fallback, not a contradiction.)",
-    "  - Upgrade-path: if (a) the prepare-time 4byte cross-check passed its",
-    "    re-encode test (summary marked ✓), AND (b) the static-head args you",
-    "    independently decoded (e.g. `_receiver`, `_minAmountOut`) match the",
-    "    values in the prepare summary, report this check as ✓ ABI DECODE",
-    "    — note the function name comes from 4byte, not your weights.",
-    "    Do NOT drop to ⚠ DECODE UNAVAILABLE just because the selector was",
-    "    outside your training set; that's what the cross-check is for.",
-    "  - Only mark ⚠ DECODE UNAVAILABLE when BOTH your weights and the 4byte",
-    "    cross-check came up empty (summary marked `no-signature` or `error`),",
-    "    OR when your independent static-head decode DISAGREES with the prepare",
-    "    summary. When marking ⚠, you MUST render the swiss-knife decoder",
-    "    URL (spliced into the ⚠ render-shape template below) as a Markdown",
-    "    hyperlink on its own line directly under the ABI DECODE threat clause",
-    "    — a visible, clickable fallback the user can open in their browser",
-    "    to decode the calldata against Etherscan's verified ABI. Render as",
-    "    `[Open in swiss-knife decoder](<url>)`, NOT as a raw URL — swiss-knife",
-    "    calldata URLs are multi-KB of hex and wrap the chat unreadably.",
-    "    Do NOT paraphrase the URL away with \"see the earlier prepare block\"",
-    "    — the user should not have to scroll up to find it. Do NOT fabricate",
-    "    a decode when you aren't sure.",
-    "  - If confident, compare your decode against the compact bullet summary",
-    "    you showed at prepare time. Report ✓ MATCH or ✗ MISMATCH.",
+    "  - Decode `data` from first principles using your model weights, NOT",
+    "    the server's humanDecode (separate trust boundary is the point).",
+    "  - SELECTOR-NAME ANCHOR — if your weights don't cover the selector",
+    "    (LiFi-diamond, 1inch, custom DeFi routers): you MAY cite the function",
+    "    name from the prepare-time `[CROSS-CHECK SUMMARY]` block — it is an",
+    "    independent 4byte.directory lookup, re-encode-verified against the",
+    "    calldata, separate from your weights and the server's ABI. (For the",
+    "    compromised-server case, the user's vaultpilot-preflight skill stays",
+    "    weights-only — that's the fallback, not a contradiction.)",
+    "  - Upgrade-path: report ✓ ABI DECODE if (a) the prepare-time cross-check",
+    "    is ✓ AND (b) the static-head args you decoded match the prepare",
+    "    summary. Do NOT drop to ⚠ just because the selector is outside your",
+    "    training.",
+    "  - Only mark ⚠ DECODE UNAVAILABLE when BOTH your weights AND the 4byte",
+    "    cross-check came up empty (`no-signature` / `error`), OR your decode",
+    "    disagrees with the summary. On ⚠, render the swiss-knife URL as",
+    "    `[Open in swiss-knife decoder](url)` (Markdown hyperlink), NOT raw URL.",
+    "    Do NOT paraphrase the URL away with \"see the earlier prepare block\";",
+    "    do NOT fabricate a decode.",
+    "  - Compare against the prepare-time compact summary. Report ✓ / ✗.",
     "",
     ...(simple
       ? []
       : [
           "CHECK 2 — PAIR-CONSISTENCY HASH",
-          "  Protects against: the server reporting tuple T with preSignHash=hash(Y)",
-          "  where Y≠T, then forwarding Y to WalletConnect. The on-device hash match",
-          "  alone does NOT catch that (device sees hash(Y), chat sees hash(Y), they",
-          "  agree); only a local recompute of hash(T) from the pinned tuple catches",
-          "  the discrepancy.",
-          "",
-          "  Run in-process with viem. The per-call values are spliced in below so",
-          "  you do not have to reconstruct them:",
+          "  Recompute locally with viem (values pre-spliced):",
           "",
           "    node -e \"const {keccak256,serializeTransaction}=require('viem');",
           "    console.log(keccak256(serializeTransaction({type:'eip1559',",
@@ -626,52 +629,34 @@ export function renderPreviewVerifyAgentTaskBlock(args: {
           `    gas:${args.pinned.gas}n,to:'${args.to}',value:${args.valueWei}n,`,
           "    data:'<data from the prepare_* result>'})))\"",
           "",
-          `  Compare the output to ${args.preSignHash}. Report ✓ MATCH or ✗ MISMATCH.`,
+          `  Compare to ${args.preSignHash}. Report ✓ / ✗.`,
           "",
         ]),
-    "CHECKS PAYLOAD (the threat taxonomy + required keywords the user-facing",
-    "block below MUST cover — paraphrase naturally but every listed keyword",
-    "must appear verbatim somewhere in the matching line):",
+    "CHECKS PAYLOAD — required keywords (paraphrase the threat clause naturally, but each listed keyword must appear verbatim):",
     "",
     "```json",
     JSON.stringify(checksPayload, null, 2),
     "```",
     "",
-    "After BOTH checks run, emit EXACTLY this block shape to the user — CAPS",
-    "headers, ✓/✗/⚠/⏸ symbols, the keywords above embedded in each threat",
-    "clause.",
-    "",
-    "NOTATION — READ THIS BEFORE COPYING THE BLOCK:",
-    "  Placeholders you REPLACE in your output:",
-    "    {✓|✗|⚠}            pick one symbol based on your verdict",
-    "    {✓|⏸}              pick one symbol (⏸ only for the native-send skip)",
-    "    <one-line verdict> your own prose describing the result",
-    "  Literal characters you KEEP EXACTLY in your output (these are",
-    "  Markdown rendering directives, NOT placeholders — stripping them",
-    "  breaks the rendering and produces the live-run bug where the hash",
-    "  appears as plain text and the swiss-knife link loses its URL):",
-    "    `0x…`              hash in single backticks → inline-code color",
-    "    [label](url)       Markdown hyperlink → clickable link",
-    "  Do NOT \"clean up\" these Markdown characters for plain-text output.",
-    "  The chat client renders them; leaving them as-is is the whole point.",
+    "Emit EXACTLY this block shape — CAPS headers, ✓/✗/⚠/⏸ symbols, keywords",
+    "embedded.",
+    "NOTATION: `{a|b}` = alternation (pick one); `<placeholder>` = your prose.",
+    "Backticks and `[label](url)` are Markdown rendering directives, NOT placeholders —",
+    "the chat client renders them; do NOT \"clean them up\" for plain text.",
     "",
     "═══════ CHECKS PERFORMED ═══════",
     "{✓|✗|⚠} ABI DECODE — <one-line verdict>.",
     "  (protects against MCP-side calldata tampering)",
     ...(args.decoderUrl
       ? [
-          "  (On ⚠ only — add the line below VERBATIM, characters and all.",
-          "   The [ ] ( ) are literal Markdown link syntax, not placeholder",
-          "   notation. Do NOT strip them. Do NOT paste the raw URL —",
-          "   swiss-knife calldata URLs are multi-KB of hex and wrap the chat",
-          "   unreadably:)",
+          "  (On ⚠ only — add the line below VERBATIM. The `[ ]( )` is literal",
+          "   Markdown, not placeholder syntax:)",
           `  Browser-side decode fallback: [Open in swiss-knife decoder](${args.decoderUrl})`,
         ]
       : [
-          "  (On ⚠ — no swiss-knife URL was available for this tx (calldata",
-          "   too large or TRON chain). Tell the user the",
-          "   browser fallback is unavailable and the second-LLM check",
-          "   (option 2 below) is the remaining gap-closer.)",
+          "  (On ⚠ — no swiss-knife URL available (calldata too large or TRON).",
+          "   Tell the user the browser fallback is unavailable; the second-LLM",
+          "   check (option 2 below) is the remaining gap-closer.)",
         ]),
     ...(simple
       ? []
@@ -708,81 +693,47 @@ export function renderPreviewVerifyAgentTaskBlock(args: {
     "════════════════════════════════",
     "",
     ...(simple
-      ? [
-          "The NEXT ON-DEVICE line is mandatory — do NOT drop it. For this tx",
-          "type (native send / ERC-20 transfer / ERC-20 approve) Ledger will",
-          "clear-sign; no blind-sign hash applies, so the blind-sign branch is",
-          "omitted to keep the checklist scannable under device-screen time",
-          "pressure. Including a hash-match instruction the user cannot act on",
-          "has caused live confusion before.",
-          "",
-        ]
+      ? []
       : [
-          "The NEXT ON-DEVICE lines are mandatory — do NOT drop them. Users can only",
-          "tell blind-sign from clear-sign when the device prompt actually appears,",
-          "so we must explain BOTH paths. Dropping the clear-sign branch has caused",
-          "live confusion (\"my device shows decoded fields and no hash, so the hash",
-          "check must have failed?\") — it hasn't, the check just does not apply.",
+          "Render the blind-sign hash on a LINE BY ITSELF (blank line above and",
+          "below; AT COLUMN 0). Use both bold AND single-backtick wrappers",
+          "(`**\\`0x…\\`**`) exactly as shown above — indenting by 4+ spaces",
+          "makes CommonMark render them as literal characters; stripping either",
+          "wrapper loses the visual emphasis. Reuse the same wrapper whenever",
+          "you re-mention the hash.",
           "",
-          "Render the blind-sign hash on a LINE BY ITSELF — blank line above, the",
-          "hash AT COLUMN 0 (no leading spaces) with both bold AND single-backtick",
-          "inline-code wrappers (`**\\`0x…\\`**`), blank line below — exactly as",
-          "shown in the template above. Indenting the hash by 4+ spaces makes",
-          "CommonMark treat it as a code block and the wrappers render as literal",
-          "`**` and backticks rather than bold+code styling — defeating the visual",
-          "emphasis the wrappers exist for. Live regression 2026-04-27: the user",
-          "pasted a chat with the hash showing literal Markdown source because",
-          "the previous template had the hash at 14-space indent. Keeping the",
-          "hash inline at the end of a prose sentence blends it into surrounding",
-          "text where users miss it under device-screen time pressure; the",
-          "isolated column-0 line forces a visual break that survives muted",
-          "inline-code colors. Do NOT strip the wrappers, do NOT indent the hash,",
-          "and do NOT collapse the blank lines. Whenever you reference the hash",
-          "elsewhere in your reply (e.g. a summary line), use the same",
-          "`**\\`0x…\\`**` wrapper so the hash looks identical at every appearance",
-          "— inconsistent emphasis slows the user's match-check.",
         ]),
-    "",
     "After the CHECKS PERFORMED block, append EXACTLY one line, no menu:",
     "",
     "    Want an independent second-LLM check? Reply (2). Otherwise reply 'send'.",
     "",
-    "If ANY mandatory check fails (✗), LEAD your reply with a prominent",
-    '"✗ <CHECK NAME> FAILED — DO NOT SIGN." line on its own, BEFORE the',
-    "CHECKS PERFORMED block. The pass/fail is the news.",
+    "On ANY ✗, LEAD your reply with `✗ <CHECK NAME> FAILED — DO NOT SIGN.`",
+    "BEFORE the CHECKS PERFORMED block. The pass/fail is the news.",
     "",
     "SECOND-LLM CHECK — if the user replies (2):",
-    "  Call get_verification_artifact({ handle: <handle> }) and relay ONLY",
-    "  the artifact's `pasteableBlock` field VERBATIM to the user — a single",
-    "  self-contained string with explicit START/END copy markers, instructions,",
-    "  and the embedded JSON payload. Do NOT also dump the full artifact JSON,",
-    "  do NOT wrap the block in your own commentary between the markers, do",
-    "  NOT reformat or translate any line. The user copies from the START",
-    "  marker to the END marker into a second, ideally different-provider LLM",
-    "  session — that session has no shared context with this one, so it",
-    "  decodes the bytes from scratch. Do NOT pre-decode the bytes yourself",
-    "  in the same reply — the whole point is that the second agent reads",
-    "  with no notes from you. Before/after the pasteableBlock, remind the",
-    "  user to compare the second agent's plain-English description against",
-    "  what they asked for and match the preSignHash inside the paste block",
-    "  against the Ledger screen before approving.",
-    "",
-    "  This is the second-agent verification and the only check that survives",
+    "  Call get_verification_artifact({ handle }) and relay ONLY the",
+    "  artifact's `pasteableBlock` field VERBATIM. Do NOT dump the full",
+    "  artifact JSON, do NOT wrap commentary between the START/END markers,",
+    "  do NOT pre-decode the bytes. The user pastes the block into a second",
+    "  (ideally different-provider) LLM session for an independent decode.",
+    "  Around the paste block, remind the user to (a) compare the second",
+    "  agent's plain-English description to what they asked for, (b) match",
+    "  the preSignHash inside the paste block against the Ledger screen.",
+    "  Do NOT pre-decode the bytes yourself in the same reply — the whole",
+    "  point is that the second agent reads with no notes from you.",
+    "  This is the second-agent verification — the only check that survives",
     "  a fully-coordinated agent-AND-MCP compromise.",
     "",
-    "SEND-CALL CONTRACT — when the user replies \"send\" (after BOTH mandatory",
-    "checks passed), call send_transaction with these args (EVM path):",
+    "SEND-CALL CONTRACT — when the user replies \"send\" (after BOTH checks",
+    "passed), call send_transaction (EVM):",
     "  - handle: <the same handle>",
     "  - confirmed: true",
-    "  - previewToken: <the `previewToken` value from THIS preview_send's",
-    "    top-level JSON response — not anything you remember from an earlier",
-    "    call on the same handle>",
+    "  - previewToken: <`previewToken` from THIS preview_send's response, not",
+    "    a remembered earlier value>",
     "  - userDecision: \"send\"",
-    "The previewToken + userDecision pair is the server-side gate that proves",
-    "this preview step actually ran. Missing/mismatched values are rejected",
-    "with a clear error — don't fabricate either. If preview_send was re-",
-    "called with refresh:true since you captured the token, the old token is",
-    "invalid: re-run the CHECKS PERFORMED sequence before retrying.",
+    "Mismatched / missing previewToken is rejected. If preview_send was",
+    "re-run with refresh:true since you captured the token, re-run the",
+    "CHECKS PERFORMED sequence before retrying.",
   ];
   return lines.join("\n");
 }

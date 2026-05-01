@@ -129,9 +129,12 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     expect(block).toMatch(/AGENT TASK — RUN THESE CHECKS NOW/);
     expect(block).toMatch(/DO NOT ASK THE USER/);
     // Pair-consistency framing — the narrower attack shape (pinned tuple
-    // vs. hash of different bytes) is the reason this check exists.
+    // vs. hash of different bytes) is the reason this check exists. #625
+    // moved the multi-line threat-model rationale to the function's source
+    // docstring; the surviving in-block signal is the threat-name parenthetical
+    // in the CHECKS PERFORMED template.
     expect(block).toMatch(/pair-consistency/i);
-    expect(block).toMatch(/on-device hash match/i);
+    expect(block).toMatch(/protects against MCP lying about the bytes sent to WalletConnect/);
     // The per-call values are spliced into the viem command so the agent
     // doesn't have to reconstruct them — keeps the mandatory check cheap.
     expect(block).toContain("nonce:7");
@@ -363,7 +366,8 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     expect(block).toMatch(/NEXT ON-DEVICE/);
     expect(block).not.toMatch(/BLIND-SIGN mode/);
     // The expanded CLEAR-SIGN branch names the tx types this flag covers.
-    expect(block).toMatch(/native ETH send, ERC-20 transfer, or[\s\S]*ERC-20 approve/);
+    // `\s` accommodates the line wrap in the rendered template (`ERC-20\napprove`).
+    expect(block).toMatch(/native ETH send, ERC-20 transfer, or ERC-20\s+approve/);
     // The ABI DECODE check still runs — it's the one integrity check we keep.
     expect(block).toMatch(/CHECK 1 — AGENT-SIDE ABI DECODE/);
     expect(block).toContain('"abiDecode"');
@@ -391,6 +395,55 @@ describe("renderPreviewVerifyAgentTaskBlock", () => {
     expect(block).toMatch(/PAIR-CONSISTENCY HASH/);
     expect(block).toMatch(/BLIND-SIGN mode/);
     expect(block).toContain('"pairConsistencyHash"');
+  });
+
+  // Issue #625: the post-preview agent-task block previously rendered to
+  // ~10.9 KB (full DeFi) / ~8.4 KB (clear-sign) per emission, dominated
+  // by threat-model rationale and historical regression notes the agent
+  // does not need to re-read each turn. Trimmed by moving rationale to
+  // the function's source docstring and compressing the directive prose.
+  // The ceilings below leave headroom for minor wording adjustments while
+  // catching a regression that reflates either branch back toward its
+  // pre-#625 size.
+  it("full-DeFi block stays under 7 KB (#625 size regression guard)", async () => {
+    const { renderPreviewVerifyAgentTaskBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const block = renderPreviewVerifyAgentTaskBlock({
+      chain: "ethereum",
+      preSignHash: "0x" + "a".repeat(64),
+      pinned: {
+        nonce: 42,
+        maxFeePerGas: "20000000000",
+        maxPriorityFeePerGas: "1000000000",
+        gas: "120000",
+      },
+      to: "0x" + "b".repeat(40),
+      valueWei: "0",
+      decoderUrl: "https://swiss-knife.xyz/decoder?calldata=0x12",
+      clearSignOnly: false,
+    });
+    expect(block.length).toBeLessThan(7000);
+  });
+
+  it("clear-sign block stays under 5.5 KB (#625 size regression guard)", async () => {
+    const { renderPreviewVerifyAgentTaskBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const block = renderPreviewVerifyAgentTaskBlock({
+      chain: "ethereum",
+      preSignHash: "0x" + "a".repeat(64),
+      pinned: {
+        nonce: 42,
+        maxFeePerGas: "20000000000",
+        maxPriorityFeePerGas: "1000000000",
+        gas: "120000",
+      },
+      to: "0x" + "b".repeat(40),
+      valueWei: "0",
+      clearSignOnly: true,
+    });
+    expect(block.length).toBeLessThan(5500);
   });
 });
 

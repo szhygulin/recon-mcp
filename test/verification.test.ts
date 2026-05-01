@@ -326,6 +326,23 @@ describe("collectVerificationBlocks — approve→action chain only renders the 
     expect(task).not.toContain(stamped.verification!.payloadHashShort);
   });
 
+  // Issue #625: the prepare-time agent-task block previously rendered to
+  // ~3.5 KB per emission, dominated by step-4 preview_send pre-teaching
+  // and inline step-3 caveat prose. Trimmed by moving rationale to source
+  // comments and compressing step 4 to a one-line pointer at preview_send's
+  // own task block. The ceiling leaves headroom for minor wording while
+  // catching a reflation regression.
+  it("renderAgentTaskBlock stays under 2.3 KB (#625 size regression guard)", async () => {
+    const { renderAgentTaskBlock } = await import(
+      "../src/signing/render-verification.js"
+    );
+    const block = renderAgentTaskBlock({
+      data: ("0x12345678" + "00".repeat(64)) as `0x${string}`,
+    });
+    expect(block).not.toBeNull();
+    expect(block!.length).toBeLessThan(2300);
+  });
+
   it("truncates long nested hex blobs inside struct args (no 2KB callData wall)", () => {
     // 1 KB of hex (2048 chars after 0x) — emulates LiFi _swapData[].callData.
     const longHex = "0x" + "ab".repeat(1024);
