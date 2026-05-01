@@ -383,6 +383,15 @@ export async function buildCurveSwap(
   const description =
     `Swap ${p.amount} ${fromMeta.symbol} → ≥${minOutFormatted} ${toMeta.symbol} via Curve ${poolLabel} (${pool})`;
 
+  // Curve pools are NOT in `classifyDestination`'s recognized set
+  // (Aave / Compound / Morpho / Lido / EigenLayer / Uniswap NPM+Router /
+  // LiFi Diamond / known ERC-20s). Without an ack, `assertTransactionSafe`'s
+  // catch-all "unknown destination" refusal blocks the swap leg at
+  // preview/send time. The destination-trust source here is server-side
+  // pool validation: `ensureSupportedCurvePool` already restricted `pool`
+  // to a curated entry (legacy stETH/ETH) or a stable_ng factory plain
+  // pool. Issue #626 — companion to #618 (which softened the spender
+  // gate but left the destination gate hard-failing).
   const swapTx: UnsignedTx = {
     chain: "ethereum",
     to: pool,
@@ -401,6 +410,7 @@ export async function buildCurveSwap(
         ...(p.slippageBps !== undefined ? { slippageBps: String(p.slippageBps) } : {}),
       },
     },
+    acknowledgedNonProtocolTarget: true,
   };
 
   if (fromIsNative) return swapTx;

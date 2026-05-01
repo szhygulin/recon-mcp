@@ -442,6 +442,10 @@ describe("buildCurveSwap (issue #615 v0.2)", () => {
     expect(tx.decoded?.args.i).toBe("0");
     expect(tx.decoded?.args.j).toBe("1");
     expect(tx.decoded?.args.minOut).toBe("0.995 stETH");
+    // Curve pool isn't in classifyDestination's recognized set; the swap leg
+    // must carry acknowledgedNonProtocolTarget so assertTransactionSafe
+    // accepts it at preview/send time. Issue #626.
+    expect(tx.acknowledgedNonProtocolTarget).toBe(true);
   });
 
   it("legacy stETH/ETH (curated): stETH input chains an approval to the pool, value=0", async () => {
@@ -477,6 +481,11 @@ describe("buildCurveSwap (issue #615 v0.2)", () => {
     expect(cur.decoded?.functionName).toBe("exchange");
     expect(cur.decoded?.args.i).toBe("1");
     expect(cur.decoded?.args.j).toBe("0");
+    // Swap leg goes to the Curve pool (non-protocol target); the ack flag
+    // bypasses assertTransactionSafe's catch-all destination refusal.
+    // Companion to the approve leg's acknowledgedNonAllowlistedSpender
+    // (#618). Issue #626.
+    expect(cur.acknowledgedNonProtocolTarget).toBe(true);
   });
 
   it("ERC-20 input: refuses without acknowledgeNonAllowlistedSpender (Curve pool sits outside protocol allowlist)", async () => {
@@ -576,6 +585,9 @@ describe("buildCurveSwap (issue #615 v0.2)", () => {
     expect(cur.decoded?.args.i).toBe("0");
     expect(cur.decoded?.args.j).toBe("1");
     expect(cur.description).toMatch(/stable_ng plain pool/i);
+    // Same fix as the legacy stETH/ETH path — stable_ng pools are also
+    // non-protocol targets at the pre-sign destination gate.
+    expect(cur.acknowledgedNonProtocolTarget).toBe(true);
   });
 
   it("rejects meta pools with an actionable error", async () => {
