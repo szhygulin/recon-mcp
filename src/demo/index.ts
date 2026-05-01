@@ -438,7 +438,7 @@ export function isBroadcastTool(toolName: string): boolean {
  * `getDemoModeReason()` so the leave-demo path matches how demo got
  * activated:
  *
- *   - explicit-env: "unset VAULTPILOT_DEMO and restart" (existing copy).
+ *   - explicit-env: "drop VAULTPILOT_DEMO from MCP-client config + restart client".
  *   - auto-fresh-install: "run vaultpilot-mcp-setup, restart, then pair"
  *     — there's no env var to unset; setup writes the config that turns
  *     auto-demo OFF on the next boot.
@@ -463,7 +463,7 @@ export function alwaysGatedRefusalMessage(toolName: string): string {
   // explicit-env (or any unexpected reason — fail to the existing copy).
   return (
     baseRefusal +
-    ` Otherwise: unset VAULTPILOT_DEMO and restart the MCP server with a real Ledger paired.`
+    ` Otherwise: drop VAULTPILOT_DEMO from your MCP-client config and restart the client (e.g. Claude Code) with a real Ledger paired — restarting only the server process does not clear the env var, since the client re-launches the server with the same env on every reconnect.`
   );
 }
 
@@ -627,8 +627,9 @@ export function buildSimulationEnvelope(args: {
       `shows the on-chain effect that would have occurred against the live demo wallet. ` +
       `simulatedTxHash is a deterministic placeholder derived from the unsigned-tx handle ` +
       `(prefix: 0xdemo) — it is not a real transaction hash and will return 'unknown' from ` +
-      `any block explorer. To execute for real: unset VAULTPILOT_DEMO, restart the MCP ` +
-      `server with a real Ledger paired, then re-run the prepare → preview → send flow.`,
+      `any block explorer. To execute for real: drop VAULTPILOT_DEMO from your MCP-client ` +
+      `config and restart the client (e.g. Claude Code) with a real Ledger paired, then ` +
+      `re-run the prepare → preview → send flow.`,
   };
 }
 
@@ -657,7 +658,7 @@ export function renderSimulationEnvelopeBlock(envelope: SimulationEnvelope): str
   lines.push(`- **Simulation:** ${status}`);
   lines.push("");
   lines.push(
-    "To execute for real: unset `VAULTPILOT_DEMO`, restart the MCP server with a real Ledger paired, then re-run the prepare → preview → send flow.",
+    "To execute for real: drop `VAULTPILOT_DEMO` from your MCP-client config and restart the client (e.g. Claude Code) with a real Ledger paired, then re-run the prepare → preview → send flow.",
   );
   return lines.join("\n");
 }

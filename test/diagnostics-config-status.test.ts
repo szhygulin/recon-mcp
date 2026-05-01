@@ -310,7 +310,11 @@ describe("get_vaultpilot_config_status — demo-mode discoverability (issue #371
     expect(status.demoMode.active).toBe(true);
     expect(status.demoMode.envVar).toBe("VAULTPILOT_DEMO");
     expect(status.demoMode.howToEnable).toContain("active");
-    expect(status.demoMode.howToEnable).toContain("unset");
+    // #613 — exit recipe must point at the MCP-CLIENT restart, not just the
+    // server, since restarting the server alone preserves the env var the
+    // client re-launches it with.
+    expect(status.demoMode.howToEnable).toContain("MCP-client config");
+    expect(status.demoMode.howToEnable).toContain("restart the client");
   });
 
   it("does NOT treat truthy-ish values like '1' or 'TRUE' as enabled — strict 'true' only", async () => {

@@ -295,11 +295,12 @@ describe("alwaysGatedRefusalMessage — branches on reason", () => {
     expect(msg).not.toContain("unset VAULTPILOT_DEMO and restart");
   });
 
-  it("explicit-env: leave path is `unset VAULTPILOT_DEMO and restart` (existing copy preserved)", async () => {
+  it("explicit-env: leave path tells the user to drop the env var from the MCP-client config and restart the client (#613 — restarting the server alone does not clear it)", async () => {
     process.env[ENV_KEY] = "true";
     const { alwaysGatedRefusalMessage } = await import("../src/demo/index.js");
     const msg = alwaysGatedRefusalMessage("pair_ledger_btc");
-    expect(msg).toContain("unset VAULTPILOT_DEMO and restart");
+    expect(msg).toContain("drop VAULTPILOT_DEMO from your MCP-client config");
+    expect(msg).toContain("restart the client");
     expect(msg).not.toContain("Auto-demo is on");
   });
 });
