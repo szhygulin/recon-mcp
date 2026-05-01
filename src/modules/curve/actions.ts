@@ -275,8 +275,29 @@ export async function buildCurveStethSwap(
 
   if (ethToSteth) return swapTx;
 
-  // stETH → ETH: prepend ERC-20 approval of stETH to the pool. stETH
-  // is a rebasing OpenZeppelin-style token, no USDT quirk, but
+  // stETH → ETH: prepend ERC-20 approval of stETH to the pool. The pool
+  // address is NOT in the global approve-allowlist (Aave / Compound /
+  // Morpho / Lido Queue / EigenLayer / Uniswap NPM+Router / LiFi
+  // Diamond), so the user must opt in via
+  // `acknowledgeNonAllowlistedSpender: true` BEFORE the prepare path
+  // mints a handle. The flag is the affirmative gate; without it, fail
+  // fast with a clear message so the agent knows to surface the
+  // trade-off to the user. With it, stamp the approval tx so
+  // `assertTransactionSafe` skips the spender-allowlist refusal at
+  // preview/send time.
+  if (p.acknowledgeNonAllowlistedSpender !== true) {
+    throw new Error(
+      `prepare_curve_swap (steth_to_eth) builds an approve to the Curve stETH/ETH pool ` +
+        `(${pool}), which is NOT in the protocol approve-allowlist (Aave Pool, Compound Comet, ` +
+        `Morpho Blue, Lido Queue, EigenLayer, Uniswap NPM, Uniswap SwapRouter02, LiFi Diamond). ` +
+        `The allowlist is a security recommendation: it limits approvals to a small set of ` +
+        `well-known spenders to keep prompt-injection drains from sliding through. Curve's ` +
+        `stETH/ETH pool is a 5+ year immutable contract and the historical canonical venue ` +
+        `for this pair, but it sits outside that curated set. Surface the trade-off to the ` +
+        `user, then retry with \`acknowledgeNonAllowlistedSpender: true\` to opt in.`,
+    );
+  }
+  // stETH is a rebasing OpenZeppelin-style token, no USDT quirk, but
   // buildApprovalTx still handles the reset path defensively.
   const meta = await resolveTokenMeta("ethereum", stETH);
   const { approvalAmount, display } = resolveApprovalCap(p.approvalCap, dx, meta.decimals);
@@ -291,5 +312,17 @@ export async function buildCurveStethSwap(
     symbol: meta.symbol,
     spenderLabel: `Curve stETH/ETH pool ${pool}`,
   });
+  if (approval !== null) {
+    // Surface the advisory in the description so the prepare receipt
+    // tells the user (via the agent) that the spender is non-allowlisted
+    // — security recommendation, not a hard requirement, but worth
+    // verifying before signing.
+    approval.description =
+      `${approval.description} ⚠ ADVISORY: spender is the Curve stETH/ETH pool, NOT in the ` +
+      `protocol approve-allowlist; user opted in via acknowledgeNonAllowlistedSpender. ` +
+      `Verify the on-device approve target matches ${pool}.`;
+    // Flow the affirmative-ack flag through to assertTransactionSafe.
+    approval.acknowledgedNonAllowlistedSpender = true;
+  }
   return chainApproval(approval, swapTx);
 }

@@ -100,6 +100,19 @@ export const prepareCurveSwapInput = z.object({
     .describe(
       "Required when `slippageBps > 100` (1%). Same gate as `prepare_swap` — sandwich-MEV bots target wide-slippage txs.",
     ),
+  acknowledgeNonAllowlistedSpender: z
+    .literal(true)
+    .optional()
+    .describe(
+      "AFFIRMATIVE GATE — required for `direction: \"steth_to_eth\"`. The approve step targets the canonical Curve stETH/ETH pool " +
+        "(0xDC24316b9AE028F1497c275EB9192a3Ea0f67022), which is NOT in the global protocol approve-allowlist (Aave Pool, Compound " +
+        "Comet, Morpho Blue, Lido Queue, EigenLayer, Uniswap NPM, Uniswap SwapRouter02, LiFi Diamond). The allowlist is a security " +
+        "recommendation, not a hard requirement: it limits approvals to a small set of well-known spenders to keep prompt-injection " +
+        "drains from sliding through. Setting this flag is the user's affirmative ack that they understand the approval target sits " +
+        "outside that curated set — the on-device clear-sign of `approve(<curve-pool>, <amount>)` and the prepare-receipt warning " +
+        "advisory are the verification anchors. Do NOT default this to true silently; surface the trade-off to the user first. " +
+        "Ignored for `direction: \"eth_to_steth\"` (no approval; native ETH is sent as msg.value).",
+    ),
   approvalCap: approvalCapSchema.optional(),
 });
 export type PrepareCurveSwapArgs = z.infer<typeof prepareCurveSwapInput>;

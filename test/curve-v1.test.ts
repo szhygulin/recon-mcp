@@ -391,11 +391,17 @@ describe("buildCurveStethSwap (issue #615)", () => {
       direction: "steth_to_eth",
       amount: "1.0",
       slippageBps: 50,
+      acknowledgeNonAllowlistedSpender: true,
     });
 
     // Head should be the approval; action sits at the tail.
     expect(tx.to).toBe(STETH_TOKEN);
     expect(tx.decoded?.functionName).toBe("approve");
+    // The approval head must carry the affirmative-ack flag so
+    // assertTransactionSafe accepts the non-allowlisted spender at
+    // preview/send time.
+    expect(tx.acknowledgedNonAllowlistedSpender).toBe(true);
+    expect(tx.description).toMatch(/ADVISORY.*Curve stETH\/ETH pool.*allowlist/i);
     type WithNext = typeof tx & { next?: typeof tx };
     let cur: typeof tx = tx;
     while ((cur as WithNext).next !== undefined) cur = (cur as WithNext).next!;
@@ -404,6 +410,44 @@ describe("buildCurveStethSwap (issue #615)", () => {
     expect(cur.decoded?.functionName).toBe("exchange");
     expect(cur.decoded?.args.i).toBe("1");
     expect(cur.decoded?.args.j).toBe("0");
+  });
+
+  it("steth_to_eth: refuses without acknowledgeNonAllowlistedSpender", async () => {
+    const client = poolClient({ getDy: 10n ** 18n, allowance: 0n });
+    vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+    vi.doMock("../src/modules/shared/token-meta.js", () => ({
+      resolveTokenMeta: async () => ({ symbol: "stETH", decimals: 18 }),
+    }));
+
+    const { buildCurveStethSwap } = await import("../src/modules/curve/actions.js");
+    await expect(
+      buildCurveStethSwap({
+        wallet: WALLET,
+        direction: "steth_to_eth",
+        amount: "1.0",
+        slippageBps: 50,
+      }),
+    ).rejects.toThrow(/acknowledgeNonAllowlistedSpender|approve-allowlist|recommendation/i);
+  });
+
+  it("eth_to_steth: ignores acknowledgeNonAllowlistedSpender (no approval is built)", async () => {
+    const client = poolClient({ getDy: 10n ** 18n });
+    vi.doMock("../src/data/rpc.js", () => ({ getClient: () => client }));
+    vi.doMock("../src/modules/shared/token-meta.js", () => ({
+      resolveTokenMeta: async () => ({ symbol: "stETH", decimals: 18 }),
+    }));
+
+    const { buildCurveStethSwap } = await import("../src/modules/curve/actions.js");
+    const tx = await buildCurveStethSwap({
+      wallet: WALLET,
+      direction: "eth_to_steth",
+      amount: "1.0",
+      slippageBps: 50,
+      // No ack — eth_to_steth path does not build an approval, so the
+      // gate is irrelevant.
+    });
+    expect(tx.acknowledgedNonAllowlistedSpender).toBeUndefined();
+    expect(tx.next).toBeUndefined();
   });
 
   it("requires slippage gate — refuses when neither slippageBps nor minOut is set", async () => {

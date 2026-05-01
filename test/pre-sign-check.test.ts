@@ -32,6 +32,7 @@ const USDT_ETH = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
 const WETH_ETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 const ATTACKER = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 const WALLET = "0x1111111111111111111111111111111111111111";
+const STETH_TOKEN_ETH = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84";
 
 beforeEach(() => {
   readContractMock.mockReset();
@@ -163,6 +164,61 @@ describe("Pre-sign check: approve() spender allowlist", () => {
         description: "approve on fake token",
       })
     ).rejects.toThrow(/token is not in our recognized set/);
+  });
+
+  it("ACCEPTS approve(non-allowlisted-spender, amount) when acknowledgedNonAllowlistedSpender flag is stamped", async () => {
+    // prepare_curve_swap (and future tools targeting deep-liquidity
+    // venues outside the curated approve-allowlist) takes the user's
+    // schema-enforced `acknowledgeNonAllowlistedSpender: true` at
+    // prepare time and stamps the flag on the approval tx. The
+    // pre-sign check skips the spender-allowlist refusal when the flag
+    // is set, treating the allowlist as a security recommendation
+    // rather than a hard requirement. Every other defense
+    // (transfer-on-unknown-token, ABI-selector check, payload-hash
+    // pin, simulation, chainId) stays active.
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const CURVE_STETH_POOL = "0xDC24316b9AE028F1497c275EB9192a3Ea0f67022";
+    const data = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [CURVE_STETH_POOL as `0x${string}`, 1_000_000_000n],
+    });
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: STETH_TOKEN_ETH as `0x${string}`,
+        data,
+        value: "0",
+        from: WALLET,
+        description: "Approve stETH for Curve stETH/ETH pool (acked)",
+        acknowledgedNonAllowlistedSpender: true,
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it("REJECTS approve(non-allowlisted-spender, amount) WITHOUT the ack flag — default refusal still fires", async () => {
+    // The ack flag is the explicit opt-out; absent the flag, the
+    // refusal still fires verbatim. This is what protects the
+    // canonical prompt-injection pattern (a compromised agent that
+    // doesn't know to fabricate the flag, or a non-Curve prepare path
+    // that would have built a drain approval).
+    const { assertTransactionSafe } = await import("../src/signing/pre-sign-check.js");
+    const CURVE_STETH_POOL = "0xDC24316b9AE028F1497c275EB9192a3Ea0f67022";
+    const data = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [CURVE_STETH_POOL as `0x${string}`, 1_000_000_000n],
+    });
+    await expect(
+      assertTransactionSafe({
+        chain: "ethereum",
+        to: STETH_TOKEN_ETH as `0x${string}`,
+        data,
+        value: "0",
+        from: WALLET,
+        description: "Approve stETH for Curve stETH/ETH pool (NOT acked)",
+      })
+    ).rejects.toThrow(/spender is not in the protocol allowlist/);
   });
 
   it("ACCEPTS approve(non-allowlisted-spender, 0) — the revoke pattern (issue #305)", async () => {

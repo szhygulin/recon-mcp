@@ -254,13 +254,26 @@ export async function assertTransactionSafe(tx: UnsignedTx): Promise<void> {
     if (amount === 0n) return;
     const allowlist = buildSpenderAllowlist(tx.chain);
     if (!allowlist.has(spender)) {
+      // Per-prepare-tool affirmative-ack escape hatch. A prepare_* tool
+      // that legitimately approves a non-allowlisted spender (e.g.
+      // `prepare_curve_swap` → Curve stETH/ETH pool) takes the user's
+      // schema-enforced `acknowledgeNonAllowlistedSpender: true` and
+      // stamps this flag on the tx. The flag flows through the
+      // server-minted handle, so the agent cannot fabricate it on a tx
+      // that didn't come through such a path. Without the ack the
+      // refusal still fires — the allowlist is the default; the ack is
+      // the explicit opt-out.
+      if (tx.acknowledgedNonAllowlistedSpender === true) return;
       throw new Error(
         `Pre-sign check: refusing approve(spender=${spender}, ...) on ${tx.chain} — spender is ` +
           `not in the protocol allowlist (Aave Pool, Compound Comet, Morpho Blue, Lido Queue, ` +
           `EigenLayer, Uniswap NPM, Uniswap SwapRouter02, LiFi Diamond). This is the canonical phishing/prompt-injection ` +
           `pattern. If you need to approve a different spender, do it from the Ledger Live app directly. ` +
           `(Revokes — approve(spender, 0) — bypass this check; if you want to revoke an existing ` +
-          `allowance, run prepare_revoke_approval instead of crafting your own approve.)`
+          `allowance, run prepare_revoke_approval instead of crafting your own approve. ` +
+          `A prepare_* tool may also accept an explicit per-tool ` +
+          `\`acknowledgeNonAllowlistedSpender: true\` to opt out of this default after surfacing ` +
+          `the trade-off to the user.)`
       );
     }
     return;

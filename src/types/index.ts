@@ -1320,6 +1320,29 @@ export interface UnsignedTx {
    */
   safeTxOrigin?: boolean;
   /**
+   * Set when the tx was built by a prepare_* tool that emits an
+   * approve(spender, amount) where the spender is NOT in the canonical
+   * protocol allowlist (Aave Pool, Compound Comet, Morpho Blue, Lido
+   * Queue, EigenLayer, Uniswap NPM, Uniswap SwapRouter02, LiFi Diamond),
+   * AND the user passed the affirmative `acknowledgeNonAllowlistedSpender:
+   * true` schema-enforced gate at prepare time. Read by
+   * `assertTransactionSafe` to skip ONLY the approve-spender-allowlist
+   * refusal — every other pre-sign defense (chainId, simulation, payload
+   * hash, ABI-selector check, transfer-on-unknown-token) stays active.
+   *
+   * Use case: tools like `prepare_curve_swap` that target a deep-liquidity
+   * venue whose spender is well-known but isn't in the curated approve
+   * allowlist. The allowlist remains a security recommendation: a warning
+   * advisory is surfaced in the prepare receipt so the agent can relay
+   * the trade-off to the user before they opt in.
+   *
+   * Trust note: like `acknowledgedNonProtocolTarget` and `safeTxOrigin`,
+   * this flag flows through the handle store keyed by the server-minted
+   * UUID. The agent cannot fabricate it on a tx that didn't come through
+   * a prepare path that explicitly accepted the schema gate.
+   */
+  acknowledgedNonAllowlistedSpender?: boolean;
+  /**
    * Invariant #14 — durable-binding source-of-truth verification (issue
    * #460). When the tx binds funds to a durable on-chain object selected
    * from a multi-candidate set (Compound Comet, Morpho marketId, Uniswap
